@@ -23,7 +23,7 @@ Designed as the backend for a lightweight Open WebUI tool, with a future goal of
 ## Quick Start
 
 ```bash
-git clone https://github.com/immortalbob/minisearch
+git clone https://github.com/immortalbob/MiniSearch
 cd minisearch
 # Edit docker-compose.yml with your settings
 docker compose up -d
