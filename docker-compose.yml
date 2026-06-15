@@ -1,0 +1,27 @@
+services:
+  minisearch:
+    build: .
+    container_name: minisearch
+    restart: unless-stopped
+    ports:
+      - "8888:8000"
+    environment:
+      # Kiwix
+      KIWIX_URL: "http://kiwix:8080"
+      # FreshRSS
+      FRESHRSS_URL: "http://freshrss"
+      FRESHRSS_USER: ""
+      FRESHRSS_API_PASSWORD: ""
+      FRESHRSS_MAX_ARTICLES: "10"
+      # SearXNG
+      SEARXNG_URL: "http://searxng:8080"
+      # Open-Meteo
+      FORECAST_LATITUDE: "35.1894"
+      FORECAST_LONGITUDE: "-114.0530"
+      FORECAST_LOCATION_NAME: "Kingman, Arizona"
+    networks:
+      - ai-net
+
+networks:
+  ai-net:
+    external: true
