@@ -14,7 +14,7 @@ class Tools:
     class Valves(BaseModel):
         MINISEARCH_URL: str = Field(
             default="http://minisearch:8000",
-            description="Base URL of the MiniSearch container",
+            description="Base URL of the MiniSearch container"
         )
 
     def __init__(self):
@@ -30,7 +30,7 @@ class Tools:
         - kiwix: Offline knowledge base — Wikipedia, Stack Exchange, iFixit, FreeCodeCamp, DevDocs
         - forecast: 3-day weather forecast — use for future conditions, tomorrow, tonight, upcoming weather
         - news: Recent articles from RSS feeds — use for news, headlines, recent articles
-        - web: Live web search via SearXNG — use for current events, recent information, or anything that may have changed
+        - web: Web search via SearXNG — not yet implemented
 
         :param query: The full question or search query
         :param source: The source to query. Default is "auto".

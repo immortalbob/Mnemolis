@@ -2,12 +2,15 @@
 
 A unified local knowledge search API for self-hosted homelabs. MiniSearch runs as a Docker container on your internal network and routes queries to the appropriate backend — offline knowledge, weather forecast, RSS news, or live web search — via a single endpoint.
 
+Exposes both a **REST API** and an **MCP server** so any client can connect to it.
+
 ## Integrations
 
-MiniSearch is currently consumed by two clients:
-
-- **[minisearch_tool.py](minisearch_tool.py)** — Open WebUI tool that gives your chat models a single `search()` function routing to all four backends
-- **[MiniSearch Intents](https://github.com/immortalbob/minisearch_intents)** — Home Assistant custom integration that registers MiniSearch as a native LLM API, selectable from any HA conversation agent (Ollama, OpenAI, etc.)
+| Client | Protocol | How |
+|--------|----------|-----|
+| [Open WebUI](minisearch_tool.py) | REST | Lightweight tool that POSTs to `/search` |
+| [MiniSearch Intents](https://github.com/immortalbob/minisearch_intents) | REST | Native HA LLM API integration |
+| Any MCP client (Claude Desktop, Cursor, etc.) | MCP/SSE | Connect to `http://your-host:8888/mcp/sse` |
 
 ## Sources
 
@@ -68,7 +71,7 @@ search:
     - json
 ```
 
-## API
+## REST API
 
 ### `POST /search`
 
@@ -95,12 +98,38 @@ Returns the list of available sources.
 ### `GET /health`
 Health check.
 
+## MCP
+
+MiniSearch exposes an MCP server via SSE at `/mcp/sse` on the same port as the REST API.
+
+### Connecting Claude Desktop
+
+Add this to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "minisearch": {
+      "url": "http://your-host-ip:8888/mcp/sse"
+    }
+  }
+}
+```
+
+### Connecting any MCP client
+
+SSE endpoint: `http://your-host-ip:8888/mcp/sse`
+
+The MCP server exposes a single `search` tool with the same interface as the REST API.
+
 ## Adding a New Source
 
 1. Create `app/sources/your_source.py` with a `search(query: str) -> str` function
 2. Add any config vars to `app/config.py` and `docker-compose.yml`
 3. Import and register it in `app/router.py` — add to `SOURCE_MAP` and optionally `INTENT_MAP`
 4. Rebuild: `docker compose up -d --build`
+
+The new source is automatically available via both REST and MCP.
 
 ## Project Structure
 
@@ -112,7 +141,8 @@ MiniSearch/
 ├── minisearch_tool.py      # Open WebUI bridge tool
 ├── README.md
 └── app/
-    ├── main.py             # FastAPI app
+    ├── main.py             # FastAPI app + MCP mount
+    ├── mcp_server.py       # MCP SSE server
     ├── router.py           # Intent detection and source routing
     ├── config.py           # Settings via environment variables
     └── sources/

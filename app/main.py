@@ -1,12 +1,18 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from starlette.routing import Mount
+
 from app.router import route, SOURCE_MAP
+from app.mcp_server import mcp_app
 
 app = FastAPI(
     title="MiniSearch",
     description="Unified local knowledge search API. Routes queries to Kiwix, Open-Meteo, FreshRSS, or SearXNG.",
-    version="1.0.0",
+    version="2.0.0",
 )
+
+# Mount MCP SSE server at /mcp
+app.mount("/mcp", mcp_app)
 
 
 class SearchRequest(BaseModel):

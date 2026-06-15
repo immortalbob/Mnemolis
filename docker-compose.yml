@@ -4,7 +4,7 @@ services:
     container_name: minisearch
     restart: unless-stopped
     ports:
-      - "8888:8000"
+      - "8888:8000"   # REST API + MCP SSE (mounted at /mcp/sse)
     environment:
       # Kiwix
       KIWIX_URL: "http://kiwix:8080"
