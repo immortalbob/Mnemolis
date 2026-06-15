@@ -2,7 +2,12 @@
 
 A unified local knowledge search API for self-hosted homelabs. MiniSearch runs as a Docker container on your internal network and routes queries to the appropriate backend — offline knowledge, weather forecast, RSS news, or live web search — via a single endpoint.
 
-Designed as the backend for a lightweight Open WebUI tool, with a future goal of MCP server exposure so any service on your network can query it.
+## Integrations
+
+MiniSearch is currently consumed by two clients:
+
+- **[minisearch_tool.py](minisearch_tool.py)** — Open WebUI tool that gives your chat models a single `search()` function routing to all four backends
+- **[MiniSearch Intents](https://github.com/immortalbob/minisearch_intents)** — Home Assistant custom integration that registers MiniSearch as a native LLM API, selectable from any HA conversation agent (Ollama, OpenAI, etc.)
 
 ## Sources
 
@@ -24,7 +29,7 @@ Designed as the backend for a lightweight Open WebUI tool, with a future goal of
 
 ```bash
 git clone https://github.com/immortalbob/MiniSearch
-cd minisearch
+cd MiniSearch
 # Edit docker-compose.yml with your settings
 docker compose up -d
 ```
@@ -90,12 +95,6 @@ Returns the list of available sources.
 ### `GET /health`
 Health check.
 
-## Open WebUI Integration
-
-Install `minisearch_tool.py` as a Tool in Open WebUI (**Workspace → Tools → New Tool**). Set the `MINISEARCH_URL` Valve to your MiniSearch instance (e.g. `http://minisearch:8000` if Open WebUI is on the same Docker network).
-
-This gives your model a single `search()` function that routes to all four backends automatically.
-
 ## Adding a New Source
 
 1. Create `app/sources/your_source.py` with a `search(query: str) -> str` function
@@ -106,7 +105,7 @@ This gives your model a single `search()` function that routes to all four backe
 ## Project Structure
 
 ```
-minisearch/
+MiniSearch/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
@@ -129,7 +128,6 @@ Local-first, privacy-preserving, subscription-free. MiniSearch is designed for h
 
 ## Roadmap
 
-- [ ] MCP server wrapper so any service on the network can query MiniSearch
 - [ ] Per-source result caching
 - [ ] Additional source modules (Home Assistant, Jellyfin, etc.)
 
