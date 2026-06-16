@@ -89,6 +89,8 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `FORECAST_LATITUDE` | Forecast location latitude | `35.1894` |
 | `FORECAST_LONGITUDE` | Forecast location longitude | `-114.0530` |
 | `FORECAST_LOCATION_NAME` | Human-readable location name | `Kingman, Arizona` |
+| `OLLAMA_URL` | Ollama API endpoint for intelligent routing | `http://192.168.3.162:11434` |
+| `OLLAMA_MODEL` | Model to use for source and book selection | `qwen3:8b` |
 
 ### FreshRSS API setup
 1. Enable API access: **Administration → Authentication → Allow API access**
@@ -111,6 +113,20 @@ Also generate a unique `secret_key` in `searxng/settings.yml`:
 openssl rand -hex 32
 ```
 
+### Kiwix LLM-assisted routing
+MiniSearch uses Ollama in two ways for Kiwix queries:
+
+1. **Source selection** — when `auto` is used and no keyword matches, Ollama picks the best source (kiwix, forecast, news, or web) based on the query
+2. **Book selection** — once routed to Kiwix, Ollama picks the best 1-2 ZIM books from your catalog for the query
+
+The book list is built dynamically from your Kiwix catalog at startup — no hardcoded list, no rebuild needed when you add new ZIMs. To force a refresh after adding ZIMs:
+
+```bash
+curl -X POST http://your-host:8888/catalog/refresh
+```
+
+If `OLLAMA_URL` is left blank, MiniSearch falls back to keyword-based routing and Wikipedia for all Kiwix queries.
+
 ## REST API
 
 ### `POST /search`
@@ -128,7 +144,10 @@ Response:
 {
   "query": "what is molybdenum",
   "source_used": "kiwix",
-  "result": "# Molybdenum\nSource: wikipedia_en_all_maxi_2026-02\n\n..."
+  "result": "# Molybdenum\nSource: wikipedia_en_all_maxi_2026-02\n\n...",
+  "success": true,
+  "cached": false,
+  "error": null
 }
 ```
 
@@ -136,7 +155,30 @@ Response:
 Returns the list of available sources.
 
 ### `GET /health`
-Health check.
+Returns status, number of Kiwix books loaded, and cache entry count.
+
+### `GET /catalog`
+Lists all books currently loaded from the Kiwix catalog.
+
+### `POST /catalog/refresh`
+Forces a re-scan of the Kiwix catalog without restarting the container.
+
+### `GET /cache`
+Shows all current cache entries with age and expiry time.
+
+### `POST /cache/clear`
+Clears all cached results from memory and disk.
+
+## Caching
+
+MiniSearch caches results in memory and persists them to disk so the cache survives container restarts. TTLs are set per source:
+
+| Source | TTL |
+|--------|-----|
+| `kiwix` | 24 hours |
+| `web` | 1 hour |
+| `forecast` | 30 minutes |
+| `news` | 15 minutes |
 
 ## MCP
 
@@ -196,12 +238,12 @@ MiniSearch/
 ├── searxng/
 │   └── settings.yml               # SearXNG config with JSON enabled
 └── app/
-    ├── main.py                     # FastAPI app + MCP mount
+    ├── main.py                     # FastAPI app + MCP mount + cache/catalog endpoints
     ├── mcp_server.py               # MCP SSE server
-    ├── router.py                   # Intent detection and source routing
+    ├── router.py                   # Intent detection, source routing, and caching
     ├── config.py                   # Settings via environment variables
     └── sources/
-        ├── kiwix.py                # Offline knowledge base
+        ├── kiwix.py                # Offline knowledge base — dynamic catalog + LLM routing
         ├── forecast.py             # Open-Meteo weather forecast
         ├── freshrss.py             # FreshRSS RSS reader
         └── searxng.py              # SearXNG web search
@@ -213,8 +255,7 @@ Local-first, privacy-preserving, subscription-free. MiniSearch is designed for h
 
 ## Roadmap
 
-- [ ] Per-source result caching
-- [ ] Additional source modules (Home Assistant, Jellyfin, etc.)
+- [ ] Additional source modules (Uptime Kuma, Jellyfin, etc.)
 
 ## Contributing
 
