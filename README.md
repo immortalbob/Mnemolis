@@ -244,6 +244,12 @@ Shows all current cache entries with age and expiry time.
 ### `POST /cache/clear`
 Clears all cached results from memory and disk.
 
+### `GET /cache/routing`
+Shows all current routing cache entries — source and Kiwix book selection decisions cached to avoid redundant Ollama calls.
+
+### `POST /cache/routing/clear`
+Clears all routing cache entries from memory and disk.
+
 ## Caching
 
 MiniSearch caches results in memory and persists them to disk so the cache survives container restarts. TTLs are set per source:
@@ -307,7 +313,7 @@ The new source is automatically available via both REST and MCP.
 docker exec minisearch python3 -m pytest /app/tests/ -v
 ```
 
-71 tests covering intent routing, cache logic, Kiwix scoring, search term cleaning, and FreshRSS article filtering.
+104 tests covering intent routing, cache logic, Kiwix scoring, search term cleaning, FreshRSS article filtering, and all source modules via mocking.
 
 ## Project Structure
 
@@ -318,6 +324,7 @@ MiniSearch/
 ├── docker-compose.example.yml      # full stack example
 ├── requirements.txt
 ├── pytest.ini
+├── CHANGELOG.md
 ├── minisearch_tool.py              # Open WebUI bridge tool
 ├── README.md
 ├── searxng/
@@ -325,7 +332,11 @@ MiniSearch/
 ├── tests/
 │   ├── test_router.py              # intent detection, cache, fallback logic
 │   ├── test_kiwix.py               # scoring and search term cleaning
-│   └── test_freshrss.py            # general query detection, article scoring
+│   ├── test_freshrss.py            # general query detection, article scoring
+│   ├── test_freshrss_network.py    # FreshRSS network calls via mocking
+│   ├── test_forecast.py            # forecast parsing and thresholds via mocking
+│   ├── test_searxng.py             # SearXNG search and guard via mocking
+│   └── test_uptime_kuma.py         # Uptime Kuma status parsing via mocking
 └── app/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog endpoints
     ├── mcp_server.py               # MCP SSE server
