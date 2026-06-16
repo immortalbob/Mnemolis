@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import requests
-from app.sources import kiwix, forecast, freshrss, searxng
+from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma
 from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,6 +27,12 @@ INTENT_MAP = {
         "search for", "what is happening", "who won", "did they",
         "search online",
     ],
+    "uptime": [
+        "uptime", "status", "is down", "what's down", "whats down",
+        "any outages", "service status", "network status", "monitoring",
+        "what services", "are all services", "is everything up",
+        "what is offline", "what is online",
+    ],
 }
 
 SOURCE_MAP = {
@@ -34,6 +40,7 @@ SOURCE_MAP = {
     "forecast": forecast.search,
     "news": freshrss.search,
     "web": searxng.search,
+    "uptime": uptime_kuma.search,
 }
 
 SOURCE_DESCRIPTIONS = {
@@ -41,6 +48,7 @@ SOURCE_DESCRIPTIONS = {
     "forecast": "3-day weather forecast. Use for any question about future weather conditions, temperature, rain, wind, or sunrise/sunset.",
     "news": "Recent RSS news articles from the user's feeds. Use for current events, headlines, or recent news.",
     "web": "Live web search via SearXNG. Use for current events, recent information, or anything that may have changed recently.",
+    "uptime": "Uptime Kuma monitor status. Use when asked about service status, what is down, or network health.",
 }
 
 # Fallback chain — if a source returns no results, try these in order
@@ -55,13 +63,76 @@ CACHE_TTL = {
     "forecast": 1800, # 30 minutes
     "news": 900,      # 15 minutes
     "web": 3600,      # 1 hour
+    "uptime": 60,     # 1 minute — status changes fast
 }
+
+NO_RESULT_PHRASES = [
+    "no results found",
+    "no recent articles",
+    "not yet implemented",
+    "could not fetch",
+    "no books available",
+    "could not determine",
+]
 
 # In-memory cache: key -> (result, timestamp)
 _cache: dict[str, tuple[str, float]] = {}
+_cache_dirty_count: int = 0
+_CACHE_SAVE_INTERVAL: int = 5  # save to disk every N writes
 
 
-def _load_cache() -> None:
+# ---------------------------------------------------------------------------
+# Cache internals
+# ---------------------------------------------------------------------------
+
+def _cache_key(source: str, query: str) -> str:
+    return f"{source}:{query.lower().strip()}"
+
+
+def _get_cached(source: str, query: str) -> str | None:
+    key = _cache_key(source, query)
+    if key in _cache:
+        result, timestamp = _cache[key]
+        ttl = CACHE_TTL.get(source, 3600)
+        if time.time() - timestamp < ttl:
+            _LOGGER.info("Cache hit for source='%s' query='%s'", source, query[:50])
+            return result
+        else:
+            del _cache[key]
+    return None
+
+
+def _set_cached(source: str, query: str, result: str) -> None:
+    global _cache_dirty_count
+    key = _cache_key(source, query)
+    _cache[key] = (result, time.time())
+    _cache_dirty_count += 1
+    _LOGGER.info("Cached result for source='%s' query='%s'", source, query[:50])
+    if _cache_dirty_count >= _CACHE_SAVE_INTERVAL:
+        _save_cache()
+        _cache_dirty_count = 0
+
+
+def _save_cache() -> None:
+    """Persist cache to disk."""
+    try:
+        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+        with open(CACHE_FILE, "w") as f:
+            json.dump(_cache, f)
+    except Exception as e:
+        _LOGGER.warning("Could not save cache to disk: %s", e)
+
+
+def _looks_empty(result: str) -> bool:
+    result_lower = result.lower()
+    return any(phrase in result_lower for phrase in NO_RESULT_PHRASES)
+
+
+# ---------------------------------------------------------------------------
+# Cache public API
+# ---------------------------------------------------------------------------
+
+def load_cache() -> None:
     """Load cache from disk on startup."""
     global _cache
     try:
@@ -69,7 +140,6 @@ def _load_cache() -> None:
             with open(CACHE_FILE, "r") as f:
                 raw = json.load(f)
             now = time.time()
-            # Filter out expired entries on load
             loaded = {}
             for key, (result, timestamp) in raw.items():
                 source = key.split(":")[0]
@@ -83,14 +153,10 @@ def _load_cache() -> None:
         _cache = {}
 
 
-def _save_cache() -> None:
-    """Persist cache to disk."""
-    try:
-        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-        with open(CACHE_FILE, "w") as f:
-            json.dump(_cache, f)
-    except Exception as e:
-        _LOGGER.warning("Could not save cache to disk: %s", e)
+def check_cached(source: str, query: str) -> bool:
+    """Return True if a valid cached result exists for this source+query."""
+    return _get_cached(source, query) is not None
+
 
 def get_cache_stats() -> list[dict]:
     """Return cache entries with age and expiry info."""
@@ -117,50 +183,17 @@ def get_cache_count() -> int:
 
 def clear_cache() -> int:
     """Clear all cache entries and persist to disk. Returns count removed."""
+    global _cache_dirty_count
     count = len(_cache)
     _cache.clear()
+    _cache_dirty_count = 0
     _save_cache()
     return count
 
 
-NO_RESULT_PHRASES = [
-    "no results found",
-    "no recent articles",
-    "not yet implemented",
-    "could not fetch",
-    "no books available",
-    "could not determine",
-]
-
-
-def _cache_key(source: str, query: str) -> str:
-    return f"{source}:{query.lower().strip()}"
-
-
-def _get_cached(source: str, query: str) -> str | None:
-    key = _cache_key(source, query)
-    if key in _cache:
-        result, timestamp = _cache[key]
-        ttl = CACHE_TTL.get(source, 3600)
-        if time.time() - timestamp < ttl:
-            _LOGGER.info("Cache hit for source='%s' query='%s'", source, query[:50])
-            return result
-        else:
-            del _cache[key]
-    return None
-
-
-def _set_cached(source: str, query: str, result: str) -> None:
-    key = _cache_key(source, query)
-    _cache[key] = (result, time.time())
-    _LOGGER.info("Cached result for source='%s' query='%s'", source, query[:50])
-    _save_cache()
-
-
-def _looks_empty(result: str) -> bool:
-    result_lower = result.lower()
-    return any(phrase in result_lower for phrase in NO_RESULT_PHRASES)
-
+# ---------------------------------------------------------------------------
+# Intent detection
+# ---------------------------------------------------------------------------
 
 def _keyword_detect(query: str) -> str | None:
     """Fast keyword-based intent detection. Returns source name or None if no match."""
@@ -237,6 +270,10 @@ def detect_intent(query: str) -> str:
     return _llm_detect(query)
 
 
+# ---------------------------------------------------------------------------
+# Routing
+# ---------------------------------------------------------------------------
+
 def route(query: str, source: str = "auto") -> str:
     if source == "auto":
         source = detect_intent(query)
@@ -247,20 +284,17 @@ def route(query: str, source: str = "auto") -> str:
     if not handler:
         return f"Unknown source '{source}'. Valid options: {', '.join(SOURCE_MAP.keys())}."
 
-    # Check cache
     cached = _get_cached(source, query)
     if cached:
         return cached
 
     result = handler(query)
 
-    # Fallback if result looks empty or failed
     if _looks_empty(result) and source in FALLBACK_CHAIN:
         fallback_source = FALLBACK_CHAIN[source]
         _LOGGER.info("Result from '%s' looks empty, falling back to '%s'", source, fallback_source)
         fallback_handler = SOURCE_MAP.get(fallback_source)
         if fallback_handler:
-            # Check cache for fallback too
             cached_fallback = _get_cached(fallback_source, query)
             if cached_fallback:
                 return cached_fallback
@@ -271,7 +305,6 @@ def route(query: str, source: str = "auto") -> str:
                 return fallback_result
             _LOGGER.warning("Fallback to '%s' also returned empty result", fallback_source)
 
-    # Cache successful results
     if not _looks_empty(result):
         _set_cached(source, query, result)
 

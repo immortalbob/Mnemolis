@@ -1,79 +1,9 @@
 # MiniSearch
 
-A unified local knowledge search API for self-hosted homelabs. MiniSearch runs as a Docker container on your internal network and routes queries to the appropriate backend — offline knowledge, weather forecast, RSS news, or live web search — via a single endpoint.
+A unified local knowledge search API for self-hosted homelabs. MiniSearch runs as a Docker container on your internal network and routes queries to the appropriate backend — offline knowledge, weather forecast, RSS news, live web search, or service monitoring — via a single endpoint.
 
 Exposes both a **REST API** and an **MCP server** so any client can connect to it.
 
-## Architecture
-
-### Voice Assistant Flow
-
-```text
-ESP32 Voice Assistant
-          │
-          ▼
-   Home Assistant
-          │
-          ▼
- MiniSearch_Intents
-          │
-          ▼
-     MiniSearch
-          │
-          ├──────────────┐
-          │              │
-          ▼              ▼
-       Ollama      Source Providers
-          │        ├─ Kiwix
-          │        ├─ FreshRSS
-          │        ├─ SearXNG
-          │        └─ Open-Meteo
-          │
-          ▼
-   Source Selection
-   Book Selection
-   Query Routing
-          │
-          ▼
-      Response
-          │
-          ▼
- Home Assistant TTS
-          │
-          ▼
-      ESP32
-
-````
-### Multi-Client Architecture
-
-```text
-                Open WebUI
-                     │
-                REST API
-                     │
-
-Claude Desktop ──────┼────── MCP
-
-Cursor ──────────────┼────── MCP
-
-                     ▼
-
-               MiniSearch
-
-                     ▲
-
-                     │ REST API
-
-                     ▲
-
-          MiniSearch_Intents
-
-                     ▲
-
-                     │
-
-            Home Assistant
-```
 ## Integrations
 
 | Client | Protocol | How |
@@ -90,6 +20,7 @@ Cursor ──────────────┼────── MCP
 | `forecast` | [Open-Meteo](https://open-meteo.com/) | 3-day weather forecast, no API key required |
 | `news` | [FreshRSS](https://freshrss.github.io/FreshRSS/) | Recent articles from your RSS feeds via GReader API |
 | `web` | [SearXNG](https://searxng.github.io/searxng/) | Live web search via your local SearXNG instance |
+| `uptime` | [Uptime Kuma](https://uptime.kuma.pet/) | Service monitor status — reports any down services |
 | `auto` | — | MiniSearch detects intent and picks the best source |
 
 ## Requirements
@@ -113,26 +44,24 @@ docker network create ai-net
 
 # Copy and edit the example compose file
 cp docker-compose.example.yml docker-compose.yml
-# Fill in FRESHRSS_USER, FRESHRSS_API_PASSWORD, your coordinates, and secret_key in searxng/settings.yml
+# Fill in credentials, your coordinates, and secret_key in searxng/settings.yml
 
 docker compose up -d
 ```
 
 ### What's not in the full stack
-The example compose intentionally excludes Home Assistant and Ollama — these are typically long-running services with their own existing setup and shouldn't be managed by MiniSearch's compose file.
+The example compose intentionally excludes Home Assistant, Ollama, and Uptime Kuma — these are typically long-running services with their own existing setup.
 
-If you're running Ollama or Home Assistant in Docker and want them reachable by MiniSearch, make sure they're also connected to `ai-net`:
+If you're running any of these in Docker and want them reachable by MiniSearch, connect them to `ai-net`:
 
 ```bash
 docker network connect ai-net ollama
 docker network connect ai-net homeassistant
 ```
 
-Or add `ai-net` to their existing compose files under `networks:`. Container name resolution only works between containers on the same network — if MiniSearch can't reach Ollama by hostname, check network membership first.
-
 ### MiniSearch only
 
-If you already have Kiwix, FreshRSS, and SearXNG running:
+If you already have the backends running:
 
 ```bash
 git clone https://github.com/immortalbob/MiniSearch
@@ -143,6 +72,10 @@ docker compose up -d
 
 Hit `http://your-host:8888/health` to confirm it's running.
 Full API docs at `http://your-host:8888/docs`.
+
+## Configuration
+
+All settings are passed as environment variables in `docker-compose.yml`:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -156,6 +89,9 @@ Full API docs at `http://your-host:8888/docs`.
 | `FORECAST_LONGITUDE` | Forecast location longitude | `-114.0530` |
 | `FORECAST_LOCATION_NAME` | Human-readable location name | `Kingman, Arizona` |
 | `FORECAST_TIMEZONE` | Timezone for forecast times | `America/Phoenix` |
+| `UPTIME_KUMA_URL` | Uptime Kuma URL | _(blank — disables uptime source)_ |
+| `UPTIME_KUMA_USERNAME` | Uptime Kuma username | |
+| `UPTIME_KUMA_PASSWORD` | Uptime Kuma password | |
 | `OLLAMA_URL` | Ollama API endpoint for intelligent routing | _(blank — disables LLM routing)_ |
 | `OLLAMA_MODEL` | Model to use for source and book selection | `qwen3:8b` |
 
@@ -183,7 +119,7 @@ openssl rand -hex 32
 ### Kiwix LLM-assisted routing
 MiniSearch uses Ollama in two ways for Kiwix queries:
 
-1. **Source selection** — when `auto` is used and no keyword matches, Ollama picks the best source (kiwix, forecast, news, or web) based on the query
+1. **Source selection** — when `auto` is used and no keyword matches, Ollama picks the best source based on the query
 2. **Book selection** — once routed to Kiwix, Ollama picks the best 1-2 ZIM books from your catalog for the query
 
 The book list is built dynamically from your Kiwix catalog at startup — no hardcoded list, no rebuild needed when you add new ZIMs. To force a refresh after adding ZIMs:
@@ -246,6 +182,7 @@ MiniSearch caches results in memory and persists them to disk so the cache survi
 | `web` | 1 hour |
 | `forecast` | 30 minutes |
 | `news` | 15 minutes |
+| `uptime` | 1 minute |
 
 ## MCP
 
@@ -287,7 +224,7 @@ Popular ZIMs for a homelab stack:
 
 1. Create `app/sources/your_source.py` with a `search(query: str) -> str` function
 2. Add any config vars to `app/config.py` and `docker-compose.yml`
-3. Import and register it in `app/router.py` — add to `SOURCE_MAP` and optionally `INTENT_MAP`
+3. Import and register it in `app/router.py` — add to `SOURCE_MAP`, `INTENT_MAP`, `SOURCE_DESCRIPTIONS`, and `CACHE_TTL`
 4. Rebuild: `docker compose up -d --build`
 
 The new source is automatically available via both REST and MCP.
@@ -313,7 +250,8 @@ MiniSearch/
         ├── kiwix.py                # Offline knowledge base — dynamic catalog + LLM routing
         ├── forecast.py             # Open-Meteo weather forecast
         ├── freshrss.py             # FreshRSS RSS reader
-        └── searxng.py              # SearXNG web search
+        ├── searxng.py              # SearXNG web search
+        └── uptime_kuma.py          # Uptime Kuma service monitoring
 ```
 
 ## Philosophy
@@ -322,7 +260,7 @@ Local-first, privacy-preserving, subscription-free. MiniSearch is designed for h
 
 ## Roadmap
 
-- [ ] Additional source modules (Uptime Kuma, Home Assistant, etc.)
+- [ ] Additional source modules (Home Assistant, Jellyfin, etc.)
 
 ## Contributing
 

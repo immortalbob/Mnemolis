@@ -1,6 +1,9 @@
 import re
+import logging
 import requests
 from app.config import settings
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _get_token() -> str | None:
@@ -11,11 +14,15 @@ def _get_token() -> str | None:
             timeout=5,
         )
         if resp.status_code != 200:
+            _LOGGER.warning("FreshRSS auth failed: HTTP %d", resp.status_code)
             return None
         for line in resp.text.splitlines():
             if line.startswith("Auth="):
                 return line[5:]
-    except Exception:
+        _LOGGER.warning("FreshRSS auth response missing Auth= token")
+        return None
+    except Exception as e:
+        _LOGGER.warning("FreshRSS auth request failed: %s", e)
         return None
 
 
@@ -31,6 +38,7 @@ def search(query: str) -> str:
             timeout=10,
         )
         if resp.status_code != 200:
+            _LOGGER.warning("FreshRSS articles request failed: HTTP %d", resp.status_code)
             return f"Error: FreshRSS returned {resp.status_code}"
         items = resp.json().get("items", [])
         if not items:
@@ -41,6 +49,8 @@ def search(query: str) -> str:
             source = item.get("origin", {}).get("title", "Unknown source")
             summary = re.sub(r"<[^>]+>", "", item.get("summary", {}).get("content", ""))[:300].strip()
             results.append(f"**{title}** ({source})\n{summary}")
+        _LOGGER.info("FreshRSS returned %d articles", len(results))
         return "\n\n---\n\n".join(results)
     except Exception as e:
+        _LOGGER.error("FreshRSS fetch error: %s", e)
         return f"Error fetching FreshRSS articles: {e}"

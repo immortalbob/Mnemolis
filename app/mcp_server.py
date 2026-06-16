@@ -31,7 +31,8 @@ async def list_tools() -> list[Tool]:
                 "Automatically selects the best source based on the query. "
                 "Sources: 'auto' (default), 'kiwix' (offline knowledge — Wikipedia, "
                 "Stack Exchange, iFixit, FreeCodeCamp, DevDocs), 'forecast' (3-day "
-                "weather forecast), 'news' (recent RSS articles), 'web' (live web search)."
+                "weather forecast), 'news' (recent RSS articles), 'web' (live web search), "
+                "'uptime' (Uptime Kuma service status)."
             ),
             inputSchema={
                 "type": "object",
@@ -42,7 +43,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "source": {
                         "type": "string",
-                        "enum": ["auto", "kiwix", "forecast", "news", "web"],
+                        "enum": ["auto", "kiwix", "forecast", "news", "web", "uptime"],
                         "default": "auto",
                         "description": "The source to query. Use 'auto' to let MiniSearch decide."
                     }

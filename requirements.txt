@@ -5,3 +5,4 @@ beautifulsoup4
 pydantic
 pydantic-settings
 mcp[cli]
+uptime-kuma-api

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -9,10 +10,11 @@ from app.router import (
     route,
     SOURCE_MAP,
     detect_intent,
+    check_cached,
     get_cache_stats,
     get_cache_count,
     clear_cache,
-    _load_cache,
+    load_cache,
 )
 from app.mcp_server import mcp_app
 from app.sources.kiwix import get_books, refresh_catalog
@@ -23,17 +25,16 @@ _LOGGER = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load Kiwix catalog and cache on startup."""
-    import asyncio
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, get_books)
-    await loop.run_in_executor(None, _load_cache)
+    await loop.run_in_executor(None, load_cache)
     yield
 
 
 app = FastAPI(
     title="MiniSearch",
     description="Unified local knowledge search API. Routes queries to Kiwix, Open-Meteo, FreshRSS, or SearXNG.",
-    version="2.4.0",
+    version="2.5.0",
     lifespan=lifespan,
 )
 
@@ -97,12 +98,11 @@ def cache_clear():
 
 @app.post("/search", response_model=SearchResponse)
 def search(request: SearchRequest):
-    from app.router import _get_cached
     resolved_source = (
         request.source if request.source != "auto"
         else detect_intent(request.query)
     )
-    was_cached = _get_cached(resolved_source, request.query) is not None
+    was_cached = check_cached(resolved_source, request.query)
 
     try:
         result = route(request.query, request.source)

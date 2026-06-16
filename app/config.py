@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     forecast_location_name: str = "Kingman, Arizona"
     forecast_timezone: str = "America/Phoenix"
 
+    # Uptime Kuma
+    uptime_kuma_url: str = ""
+    uptime_kuma_username: str = ""
+    uptime_kuma_password: str = ""
+
     # Ollama — for LLM-assisted Kiwix book and source selection
     # Leave blank to disable LLM routing and fall back to keyword matching + Wikipedia
     ollama_url: str = ""

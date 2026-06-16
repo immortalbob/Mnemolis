@@ -180,6 +180,7 @@ def _search_book(query: str, book: str, limit: int = 5) -> list:
         soup = BeautifulSoup(response.content, "html.parser")
         results_div = soup.find("div", class_="results")
         if not results_div:
+            _LOGGER.debug("No results div in Kiwix response for book=%s query=%s", book, query[:50])
             return []
         results = []
         for item in results_div.find_all("li"):
@@ -196,8 +197,10 @@ def _search_book(query: str, book: str, limit: int = 5) -> list:
                 "url": url,
                 "book": book,
             })
+        _LOGGER.debug("Kiwix search returned %d results from %s", len(results), book)
         return results
-    except Exception:
+    except Exception as e:
+        _LOGGER.warning("Kiwix search failed for book=%s: %s", book, e)
         return []
 
 
@@ -217,12 +220,25 @@ def _fetch_article(url: str, max_chars: int = 3000) -> str:
             or soup.find("body")
         )
         if not content:
+            _LOGGER.warning("Could not find article content at %s", url)
             return ""
         text = content.get_text(separator="\n", strip=True)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text[:max_chars].strip()
-    except Exception:
+    except Exception as e:
+        _LOGGER.warning("Failed to fetch article from %s: %s", url, e)
         return ""
+
+
+def _score_result(result: dict, query: str, primary_book: str) -> int:
+    # Score a search result by relevance to the query
+    query_words = set(query.lower().split())
+    title_words = set(result["title"].lower().split())
+    excerpt_words = set(result["excerpt"].lower().split())
+    title_hits = len(query_words & title_words)
+    excerpt_hits = len(query_words & excerpt_words)
+    primary_bonus = 2 if result["book"] == primary_book else 0
+    return title_hits * 3 + excerpt_hits + primary_bonus
 
 
 def search(query: str) -> str:
@@ -253,22 +269,11 @@ def search(query: str) -> str:
     if not all_results:
         return f"No results found in {', '.join(selected_books)}."
 
-    # Score results — prefer results whose title contains query words
-    query_words = set(query.lower().split())
-    def _score(r):
-        title_words = set(r["title"].lower().split())
-        excerpt_words = set(r["excerpt"].lower().split())
-        title_hits = len(query_words & title_words)
-        excerpt_hits = len(query_words & excerpt_words)
-        # Bonus for primary book (first in selected_books)
-        primary_bonus = 2 if r["book"] == selected_books[0] else 0
-        return title_hits * 3 + excerpt_hits + primary_bonus
-
-    scored = sorted(all_results, key=_score, reverse=True)
+    scored = sorted(all_results, key=lambda r: _score_result(r, query, selected_books[0]), reverse=True)
     top = scored[0]
     _LOGGER.info(
         "Selected article '%s' from %s (score=%d)",
-        top["title"], top["book"], _score(top)
+        top["title"], top["book"], _score_result(top, query, selected_books[0])
     )
 
     article_text = _fetch_article(top["url"])
