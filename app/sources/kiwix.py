@@ -259,10 +259,9 @@ def _score_result(result: dict, query: str, primary_book: str) -> int:
     excerpt_lower = result["excerpt"].lower()
 
     # Strip stop words from query for word-level scoring
+    # If all words are stop words, leave query_words empty — don't fall back
+    # to full query as that would let stop words inflate scores
     query_words = set(query_lower.split()) - _STOP_WORDS
-    if not query_words:
-        # All stop words — fall back to full query
-        query_words = set(query_lower.split())
 
     title_words = set(title_lower.split()) - _STOP_WORDS
     excerpt_words = set(excerpt_lower.split()) - _STOP_WORDS
@@ -273,14 +272,11 @@ def _score_result(result: dict, query: str, primary_book: str) -> int:
     if query_lower == title_lower:
         score += 20
 
-    # Title starts with the core query terms
-    query_core = " ".join(sorted(query_words))
-    if title_lower.startswith(query_core) or any(
-        title_lower.startswith(w) for w in query_words if len(w) > 3
-    ):
+    # Title starts with a meaningful query term (stop words already removed from query_words)
+    if any(title_lower.startswith(w) for w in query_words if len(w) > 3):
         score += 10
 
-    # Word-level title hits
+    # Word-level title hits (stop words already removed)
     title_hits = len(query_words & title_words)
     score += title_hits * 5
 

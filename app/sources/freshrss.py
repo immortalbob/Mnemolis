@@ -26,7 +26,12 @@ _STOP_WORDS = {
 
 def _is_general_query(query: str) -> bool:
     """Return True if the query is a general news request with no specific topic."""
-    words = set(query.lower().split())
+    query_lower = query.lower().strip()
+    # Check if the full query matches a general phrase
+    if query_lower in _GENERAL_QUERIES:
+        return True
+    # Check if all meaningful words (after stop word removal) are general terms
+    words = set(query_lower.split())
     meaningful = words - _STOP_WORDS
     return not meaningful or meaningful.issubset(_GENERAL_QUERIES)
 
