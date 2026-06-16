@@ -356,7 +356,13 @@ Local-first, privacy-preserving, subscription-free. MiniSearch is designed for h
 
 ## Roadmap
 
-- [ ] Additional source modules (Home Assistant, Jellyfin, etc.)
+- [ ] Additional source module for Home Assistant
+- [ ] Routing cache tests — cache exists, no tests for it yet
+- [ ] Version pinning across two repos
+- [ ] MiniSearch Intents: Timer tool — HA intent interception conflict unresolved
+- [ ] MiniSearch Intents: Compound unit conversion — 8B model limitation
+- [ ] General: Stress test LLM routing under load
+- [ ] General: Community source modules (Jellyfin, Paperless-ngx, etc.) — contributor territory
 
 ## Contributing
 
