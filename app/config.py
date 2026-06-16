@@ -1,7 +1,10 @@
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = ConfigDict(env_file=".env")
+
     # Kiwix
     kiwix_url: str = "http://kiwix:8080"
 
@@ -29,9 +32,6 @@ class Settings(BaseSettings):
     # Leave blank to disable LLM routing and fall back to keyword matching + Wikipedia
     ollama_url: str = ""
     ollama_model: str = "qwen3:8b"
-
-    class Config:
-        env_file = ".env"
 
 
 settings = Settings()
