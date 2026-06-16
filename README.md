@@ -25,10 +25,32 @@ Exposes both a **REST API** and an **MCP server** so any client can connect to i
 ## Requirements
 
 - Docker + Docker Compose
-- An existing Docker network (default: `ai-net`)
+- A Docker network for container communication (default: `ai-net`)
 - One or more of the supported backends running and reachable on the same network
 
 ## Quick Start
+
+### Full stack (recommended)
+
+The repo includes an example compose file and SearXNG config to get all services running together:
+
+```bash
+git clone https://github.com/immortalbob/MiniSearch
+cd MiniSearch
+
+# Create the shared network if it doesn't exist
+docker network create ai-net
+
+# Copy and edit the example compose file
+cp docker-compose.example.yml docker-compose.yml
+# Fill in FRESHRSS_USER, FRESHRSS_API_PASSWORD, your coordinates, and secret_key in searxng/settings.yml
+
+docker compose up -d
+```
+
+### MiniSearch only
+
+If you already have Kiwix, FreshRSS, and SearXNG running:
 
 ```bash
 git clone https://github.com/immortalbob/MiniSearch
@@ -62,13 +84,19 @@ All settings are passed as environment variables in `docker-compose.yml`:
 3. Use that password for `FRESHRSS_API_PASSWORD` (it's separate from your login password)
 
 ### SearXNG JSON format
-MiniSearch queries SearXNG's JSON API. Make sure `json` is enabled in your SearXNG `settings.yml`:
+MiniSearch queries SearXNG's JSON API. The included `searxng/settings.yml` already has this enabled. If you're using an existing SearXNG instance, make sure `json` is in your formats list:
 
 ```yaml
 search:
   formats:
     - html
     - json
+```
+
+Also generate a unique `secret_key` in `searxng/settings.yml`:
+
+```bash
+openssl rand -hex 32
 ```
 
 ## REST API
@@ -122,6 +150,18 @@ SSE endpoint: `http://your-host-ip:8888/mcp/sse`
 
 The MCP server exposes a single `search` tool with the same interface as the REST API.
 
+## Kiwix ZIM files
+
+Download ZIM files from [library.kiwix.org](https://library.kiwix.org) and place them in `./data/kiwix/`. The example compose mounts this directory into the Kiwix container automatically.
+
+Popular ZIMs for a homelab stack:
+- `wikipedia_en_all_maxi` — full English Wikipedia
+- `unix.stackexchange.com_en_all` — Unix & Linux Stack Exchange
+- `raspberrypi.stackexchange.com_en_all` — Raspberry Pi Stack Exchange
+- `ifixit_en_all` — iFixit repair guides
+- `freecodecamp_en_all` — FreeCodeCamp
+- `devdocs_en_python` — Python DevDocs
+
 ## Adding a New Source
 
 1. Create `app/sources/your_source.py` with a `search(query: str) -> str` function
@@ -136,20 +176,23 @@ The new source is automatically available via both REST and MCP.
 ```
 MiniSearch/
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml              # your config (not committed)
+├── docker-compose.example.yml      # full stack example
 ├── requirements.txt
-├── minisearch_tool.py      # Open WebUI bridge tool
+├── minisearch_tool.py              # Open WebUI bridge tool
 ├── README.md
+├── searxng/
+│   └── settings.yml               # SearXNG config with JSON enabled
 └── app/
-    ├── main.py             # FastAPI app + MCP mount
-    ├── mcp_server.py       # MCP SSE server
-    ├── router.py           # Intent detection and source routing
-    ├── config.py           # Settings via environment variables
+    ├── main.py                     # FastAPI app + MCP mount
+    ├── mcp_server.py               # MCP SSE server
+    ├── router.py                   # Intent detection and source routing
+    ├── config.py                   # Settings via environment variables
     └── sources/
-        ├── kiwix.py        # Offline knowledge base
-        ├── forecast.py     # Open-Meteo weather forecast
-        ├── freshrss.py     # FreshRSS RSS reader
-        └── searxng.py      # SearXNG web search
+        ├── kiwix.py                # Offline knowledge base
+        ├── forecast.py             # Open-Meteo weather forecast
+        ├── freshrss.py             # FreshRSS RSS reader
+        └── searxng.py              # SearXNG web search
 ```
 
 ## Philosophy

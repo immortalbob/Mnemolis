@@ -1,0 +1,41 @@
+# SearXNG settings for MiniSearch integration
+# Place this file at ./searxng/settings.yml relative to your docker-compose.yml
+# Full settings reference: https://docs.searxng.org/admin/settings/settings.html
+
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "SearXNG"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  # JSON format MUST be enabled for MiniSearch to query SearXNG
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "change-this-to-a-random-string"  # generate with: openssl rand -hex 32
+  limiter: false       # set to true if exposing publicly
+  image_proxy: false
+  port: 8080
+  bind_address: "0.0.0.0"
+
+ui:
+  static_use_hash: true
+  default_theme: simple
+
+# Uncomment and configure to enable specific engines
+# engines:
+#   - name: google
+#     engine: google
+#     shortcut: g
+#   - name: bing
+#     engine: bing
+#     shortcut: b
+#   - name: duckduckgo
+#     engine: duckduckgo
+#     shortcut: d

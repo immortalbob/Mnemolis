@@ -1,0 +1,108 @@
+# MiniSearch Full Stack — Example Docker Compose
+# This file shows all services that MiniSearch can connect to, running together on ai-net.
+# Copy to docker-compose.yml and fill in your credentials before running.
+#
+# Usage:
+#   docker network create ai-net
+#   docker compose up -d
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # MiniSearch — unified search API
+  # REST API: http://your-host:8888
+  # MCP SSE:  http://your-host:8888/mcp/sse
+  # API docs: http://your-host:8888/docs
+  # ---------------------------------------------------------------------------
+  minisearch:
+    build: .
+    container_name: minisearch
+    restart: unless-stopped
+    ports:
+      - "8888:8000"
+    environment:
+      KIWIX_URL: "http://kiwix:8080"
+      FRESHRSS_URL: "http://freshrss"
+      FRESHRSS_USER: ""               # your FreshRSS username
+      FRESHRSS_API_PASSWORD: ""       # your FreshRSS API password (Profile → API password)
+      FRESHRSS_MAX_ARTICLES: "10"
+      SEARXNG_URL: "http://searxng:8080"
+      FORECAST_LATITUDE: "35.1894"    # your latitude
+      FORECAST_LONGITUDE: "-114.0530" # your longitude
+      FORECAST_LOCATION_NAME: "Kingman, Arizona"
+    networks:
+      - ai-net
+    depends_on:
+      - kiwix
+      - freshrss
+      - searxng
+
+  # ---------------------------------------------------------------------------
+  # Kiwix — offline knowledge base
+  # Web UI: http://your-host:8081
+  # Add ZIM files to your data directory, then mount them here.
+  # Download ZIMs at: https://library.kiwix.org
+  # ---------------------------------------------------------------------------
+  kiwix:
+    image: ghcr.io/kiwix/kiwix-serve:latest
+    container_name: kiwix
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./data/kiwix:/data   # place your .zim files here
+    command: /data
+    networks:
+      - ai-net
+
+  # ---------------------------------------------------------------------------
+  # FreshRSS — self-hosted RSS reader
+  # Web UI: http://your-host:8082
+  # After first run, complete setup at the web UI, then:
+  #   1. Administration → Authentication → Allow API access
+  #   2. Profile → API password → set a password
+  #   3. Add that password to FRESHRSS_API_PASSWORD above
+  # ---------------------------------------------------------------------------
+  freshrss:
+    image: freshrss/freshrss:latest
+    container_name: freshrss
+    restart: unless-stopped
+    ports:
+      - "8082:80"
+    environment:
+      TZ: America/Phoenix   # your timezone
+      CRON_MIN: "*/15"      # feed refresh interval
+    volumes:
+      - freshrss_data:/var/www/FreshRSS/data
+      - freshrss_extensions:/var/www/FreshRSS/extensions
+    networks:
+      - ai-net
+
+  # ---------------------------------------------------------------------------
+  # SearXNG — self-hosted web search
+  # Web UI: http://your-host:8080
+  # Requires custom settings.yml — see searxng/settings.yml in this repo.
+  # ---------------------------------------------------------------------------
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng   # must contain settings.yml
+    networks:
+      - ai-net
+
+  # ---------------------------------------------------------------------------
+  # Note: Open-Meteo (weather forecast) is an external API — no container needed.
+  # It requires no API key and is the only external call MiniSearch makes.
+  # ---------------------------------------------------------------------------
+
+volumes:
+  freshrss_data:
+  freshrss_extensions:
+
+networks:
+  ai-net:
+    external: true
