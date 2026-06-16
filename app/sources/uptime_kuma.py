@@ -4,13 +4,6 @@ from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
 
-STATUS_LABELS = {
-    0: "DOWN",
-    1: "UP",
-    2: "PENDING",
-    3: "MAINTENANCE",
-}
-
 
 def _get_status_from_heartbeats(heartbeats: dict, monitor_id: int) -> int:
     """Extract most recent status from heartbeats for a given monitor."""

@@ -8,7 +8,7 @@ _LOGGER = logging.getLogger(__name__)
 # Words that indicate a general "give me everything" news request
 # — skip filtering for these so Jarvis gets a full feed summary
 _GENERAL_QUERIES = {
-    "news", "headlines", "articles", "feeds", "latest", "recent",
+    "news", "headlines", "feeds",
     "what's happening", "whats happening", "my feeds", "rss",
 }
 

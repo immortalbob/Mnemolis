@@ -31,6 +31,7 @@ def _describe(code) -> str:
 
 
 def _fmt_time(iso: str) -> str:
+    # %-I removes leading zero on Linux/macOS — works in Docker container, not on Windows
     return datetime.fromisoformat(iso).strftime("%-I:%M %p").lower()
 
 

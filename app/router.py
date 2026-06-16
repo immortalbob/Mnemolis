@@ -12,26 +12,24 @@ CACHE_FILE = "/app/data/cache.json"
 
 INTENT_MAP = {
     "forecast": [
-        "forecast", "weather", "tomorrow", "tonight", "this weekend",
-        "later today", "will it rain", "will it snow", "will it be",
+        "forecast", "weather", "tomorrow", "this weekend",
+        "later today", "will it rain", "will it snow",
         "high temp", "low temp", "precipitation", "wind forecast",
         "going to be hot", "going to be cold",
     ],
     "news": [
-        "news", "headlines", "articles", "feeds", "rss",
-        "what's happening", "latest", "recent articles", "my feeds",
+        "news", "headlines", "feeds", "rss",
+        "recent articles", "my feeds",
     ],
     "web": [
         "search the web", "google", "look it up online",
-        "current events", "web search", "look up", "find online",
-        "search for", "what is happening", "who won", "did they",
-        "search online",
+        "current events", "web search", "find online",
+        "who won", "search online",
     ],
     "uptime": [
-        "uptime", "status", "is down", "what's down", "whats down",
-        "any outages", "service status", "network status", "monitoring",
-        "what services", "are all services", "is everything up",
-        "what is offline", "what is online",
+        "uptime", "is down", "what's down", "whats down",
+        "any outages", "service status", "network status",
+        "are all services", "is everything up", "what is offline",
     ],
 }
 
