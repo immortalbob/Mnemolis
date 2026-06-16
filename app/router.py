@@ -1,5 +1,8 @@
+import time
 import logging
+import requests
 from app.sources import kiwix, forecast, freshrss, searxng
+from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,11 +32,29 @@ SOURCE_MAP = {
     "web": searxng.search,
 }
 
+SOURCE_DESCRIPTIONS = {
+    "kiwix": "Offline knowledge base — Wikipedia, Stack Exchange, iFixit, FreeCodeCamp, DevDocs. Use for factual, encyclopedic, or technical questions.",
+    "forecast": "3-day weather forecast. Use for any question about future weather conditions, temperature, rain, wind, or sunrise/sunset.",
+    "news": "Recent RSS news articles from the user's feeds. Use for current events, headlines, or recent news.",
+    "web": "Live web search via SearXNG. Use for current events, recent information, or anything that may have changed recently.",
+}
+
 # Fallback chain — if a source returns no results, try these in order
 FALLBACK_CHAIN = {
     "kiwix": "web",
     "news": "web",
 }
+
+# Cache TTL in seconds per source
+CACHE_TTL = {
+    "kiwix": 86400,   # 24 hours
+    "forecast": 1800, # 30 minutes
+    "news": 900,      # 15 minutes
+    "web": 3600,      # 1 hour
+}
+
+# In-memory cache: key -> (result, timestamp)
+_cache: dict[str, tuple[str, float]] = {}
 
 NO_RESULT_PHRASES = [
     "no results found",
@@ -45,21 +66,107 @@ NO_RESULT_PHRASES = [
 ]
 
 
+def _cache_key(source: str, query: str) -> str:
+    return f"{source}:{query.lower().strip()}"
+
+
+def _get_cached(source: str, query: str) -> str | None:
+    key = _cache_key(source, query)
+    if key in _cache:
+        result, timestamp = _cache[key]
+        ttl = CACHE_TTL.get(source, 3600)
+        if time.time() - timestamp < ttl:
+            _LOGGER.info("Cache hit for source='%s' query='%s'", source, query[:50])
+            return result
+        else:
+            del _cache[key]
+    return None
+
+
+def _set_cached(source: str, query: str, result: str) -> None:
+    key = _cache_key(source, query)
+    _cache[key] = (result, time.time())
+    _LOGGER.info("Cached result for source='%s' query='%s'", source, query[:50])
+
+
 def _looks_empty(result: str) -> bool:
-    """Return True if the result string looks like a failure or empty response."""
     result_lower = result.lower()
     return any(phrase in result_lower for phrase in NO_RESULT_PHRASES)
 
 
-def detect_intent(query: str) -> str:
+def _keyword_detect(query: str) -> str | None:
+    """Fast keyword-based intent detection. Returns source name or None if no match."""
     query_lower = query.lower()
     for source, triggers in INTENT_MAP.items():
         for trigger in triggers:
             if trigger in query_lower:
-                _LOGGER.info("Intent detected: '%s' matched trigger '%s' -> %s", query[:50], trigger, source)
+                _LOGGER.info(
+                    "Keyword intent: '%s' matched trigger '%s' -> %s",
+                    query[:50], trigger, source
+                )
                 return source
-    _LOGGER.info("Intent detected: '%s' -> kiwix (default fallback)", query[:50])
+    return None
+
+
+def _llm_detect(query: str) -> str:
+    """Ask Ollama to pick the best source for the query. Falls back to kiwix."""
+    if not settings.ollama_url or not settings.ollama_model:
+        return "kiwix"
+
+    source_list = "\n".join(
+        f"- {name}: {desc}"
+        for name, desc in SOURCE_DESCRIPTIONS.items()
+    )
+
+    prompt = (
+        f"You are a search router. Given a user query and a list of available search sources, "
+        f"return ONLY the exact source name that best matches the query. "
+        f"No explanation, no punctuation, just the source name.\n\n"
+        f"Query: {query}\n\n"
+        f"Available sources:\n{source_list}\n\n"
+        f"Best source name:"
+    )
+
+    try:
+        resp = requests.post(
+            f"{settings.ollama_url}/api/generate",
+            json={
+                "model": settings.ollama_model,
+                "prompt": prompt,
+                "stream": False,
+                "think": False,
+                "options": {"temperature": 0, "num_predict": 20},
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        raw = data.get("response", "").strip()
+        if not raw:
+            thinking = data.get("thinking", "")
+            lines = [l.strip() for l in thinking.splitlines() if l.strip()]
+            raw = lines[-1] if lines else ""
+        chosen = raw.strip(".").strip().lower()
+
+        if chosen in SOURCE_MAP:
+            _LOGGER.info("LLM intent: '%s' -> %s", query[:50], chosen)
+            return chosen
+
+        _LOGGER.warning("LLM returned unknown source '%s', falling back to kiwix", chosen)
+
+    except Exception as e:
+        _LOGGER.warning("LLM source detection failed: %s", e)
+
     return "kiwix"
+
+
+def detect_intent(query: str) -> str:
+    """Detect intent using keyword matching first, Ollama as fallback."""
+    source = _keyword_detect(query)
+    if source:
+        return source
+    _LOGGER.info("No keyword match for '%s', asking LLM for source selection", query[:50])
+    return _llm_detect(query)
 
 
 def route(query: str, source: str = "auto") -> str:
@@ -72,6 +179,11 @@ def route(query: str, source: str = "auto") -> str:
     if not handler:
         return f"Unknown source '{source}'. Valid options: {', '.join(SOURCE_MAP.keys())}."
 
+    # Check cache
+    cached = _get_cached(source, query)
+    if cached:
+        return cached
+
     result = handler(query)
 
     # Fallback if result looks empty or failed
@@ -80,10 +192,19 @@ def route(query: str, source: str = "auto") -> str:
         _LOGGER.info("Result from '%s' looks empty, falling back to '%s'", source, fallback_source)
         fallback_handler = SOURCE_MAP.get(fallback_source)
         if fallback_handler:
+            # Check cache for fallback too
+            cached_fallback = _get_cached(fallback_source, query)
+            if cached_fallback:
+                return cached_fallback
             fallback_result = fallback_handler(query)
             if not _looks_empty(fallback_result):
                 _LOGGER.info("Fallback to '%s' succeeded", fallback_source)
+                _set_cached(fallback_source, query, fallback_result)
                 return fallback_result
             _LOGGER.warning("Fallback to '%s' also returned empty result", fallback_source)
+
+    # Cache successful results
+    if not _looks_empty(result):
+        _set_cached(source, query, result)
 
     return result
