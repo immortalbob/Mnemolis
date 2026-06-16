@@ -4,6 +4,78 @@ A unified local knowledge search API for self-hosted homelabs. MiniSearch runs a
 
 Exposes both a **REST API** and an **MCP server** so any client can connect to it.
 
+## Architecture
+
+### Voice Assistant Flow
+
+```text
+ESP32 Voice Assistant
+          │
+          ▼
+   Home Assistant
+          │
+          ▼
+ MiniSearch_Intents
+          │
+          ▼
+     MiniSearch
+          │
+          ├──────────────┐
+          │              │
+          ▼              ▼
+       Ollama      Source Providers
+          │        ├─ Kiwix
+          │        ├─ FreshRSS
+          │        ├─ SearXNG
+          │        ├─ Open-Meteo
+          │        └─ Uptime Kuma
+          │
+          ▼
+   Source Selection
+   Book Selection
+   Query Routing
+          │
+          ▼
+      Response
+          │
+          ▼
+ Home Assistant TTS
+          │
+          ▼
+      ESP32
+```
+
+### Multi-Client Architecture
+
+```text
+                Open WebUI
+                     │
+                REST API
+                     │
+
+Claude Desktop ──────┼────── MCP
+
+Cursor ──────────────┼────── MCP
+
+                     ▼
+
+               MiniSearch
+
+                     ▲
+
+                     │ REST API
+
+                     ▲
+
+          MiniSearch_Intents
+
+                     ▲
+
+                     │
+
+            Home Assistant
+```
+
 ## Integrations
 
 | Client | Protocol | How |
@@ -44,24 +116,26 @@ docker network create ai-net
 
 # Copy and edit the example compose file
 cp docker-compose.example.yml docker-compose.yml
-# Fill in credentials, your coordinates, and secret_key in searxng/settings.yml
+# Fill in FRESHRSS_USER, FRESHRSS_API_PASSWORD, your coordinates, and secret_key in searxng/settings.yml
 
 docker compose up -d
 ```
 
 ### What's not in the full stack
-The example compose intentionally excludes Home Assistant, Ollama, and Uptime Kuma — these are typically long-running services with their own existing setup.
+The example compose intentionally excludes Home Assistant, Ollama, and Uptime Kuma — these are typically long-running services with their own existing setup and shouldn't be managed by MiniSearch's compose file.
 
-If you're running any of these in Docker and want them reachable by MiniSearch, connect them to `ai-net`:
+If you're running Ollama or Home Assistant in Docker and want them reachable by MiniSearch, make sure they're also connected to `ai-net`:
 
 ```bash
 docker network connect ai-net ollama
 docker network connect ai-net homeassistant
 ```
 
+Or add `ai-net` to their existing compose files under `networks:`. Container name resolution only works between containers on the same network — if MiniSearch can't reach Ollama by hostname, check network membership first.
+
 ### MiniSearch only
 
-If you already have the backends running:
+If you already have Kiwix, FreshRSS, and SearXNG running:
 
 ```bash
 git clone https://github.com/immortalbob/MiniSearch
