@@ -92,6 +92,37 @@ def _save_cache() -> None:
     except Exception as e:
         _LOGGER.warning("Could not save cache to disk: %s", e)
 
+def get_cache_stats() -> list[dict]:
+    """Return cache entries with age and expiry info."""
+    now = time.time()
+    entries = []
+    for key, (result, timestamp) in _cache.items():
+        source, query = key.split(":", 1)
+        ttl = CACHE_TTL.get(source, 3600)
+        age = int(now - timestamp)
+        entries.append({
+            "source": source,
+            "query": query,
+            "age_seconds": age,
+            "ttl_seconds": ttl,
+            "expires_in": max(0, ttl - age),
+        })
+    return entries
+
+
+def get_cache_count() -> int:
+    """Return number of cache entries."""
+    return len(_cache)
+
+
+def clear_cache() -> int:
+    """Clear all cache entries and persist to disk. Returns count removed."""
+    count = len(_cache)
+    _cache.clear()
+    _save_cache()
+    return count
+
+
 NO_RESULT_PHRASES = [
     "no results found",
     "no recent articles",

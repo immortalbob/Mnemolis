@@ -253,9 +253,33 @@ def search(query: str) -> str:
     if not all_results:
         return f"No results found in {', '.join(selected_books)}."
 
-    # Use top result from primary book if available, otherwise first result overall
-    top = all_results[0]
+    # Score results — prefer results whose title contains query words
+    query_words = set(query.lower().split())
+    def _score(r):
+        title_words = set(r["title"].lower().split())
+        excerpt_words = set(r["excerpt"].lower().split())
+        title_hits = len(query_words & title_words)
+        excerpt_hits = len(query_words & excerpt_words)
+        # Bonus for primary book (first in selected_books)
+        primary_bonus = 2 if r["book"] == selected_books[0] else 0
+        return title_hits * 3 + excerpt_hits + primary_bonus
+
+    scored = sorted(all_results, key=_score, reverse=True)
+    top = scored[0]
+    _LOGGER.info(
+        "Selected article '%s' from %s (score=%d)",
+        top["title"], top["book"], _score(top)
+    )
+
     article_text = _fetch_article(top["url"])
+    if not article_text:
+        # Try next best result
+        for candidate in scored[1:]:
+            article_text = _fetch_article(candidate["url"])
+            if article_text:
+                top = candidate
+                break
+
     if not article_text:
         return f"Found {top['title']} but could not fetch article content.\nURL: {top['url']}"
 

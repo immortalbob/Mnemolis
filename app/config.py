@@ -18,10 +18,11 @@ class Settings(BaseSettings):
     forecast_latitude: float = 35.1894
     forecast_longitude: float = -114.0530
     forecast_location_name: str = "Kingman, Arizona"
+    forecast_timezone: str = "America/Phoenix"
 
-    # Ollama — for LLM-assisted Kiwix book selection
-    # Leave blank to disable LLM routing and fall back to Wikipedia
-    ollama_url: str = "http://192.168.3.162:11434"
+    # Ollama — for LLM-assisted Kiwix book and source selection
+    # Leave blank to disable LLM routing and fall back to keyword matching + Wikipedia
+    ollama_url: str = ""
     ollama_model: str = "qwen3:8b"
 
     class Config:

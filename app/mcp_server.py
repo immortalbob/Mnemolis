@@ -1,11 +1,11 @@
 """
 MiniSearch MCP Server
-Exposes MiniSearch as an MCP tool server over stdio or SSE transport.
-Run alongside the FastAPI server to make MiniSearch available to any MCP client.
+Exposes MiniSearch as an MCP tool server via SSE transport.
+Mounted at /mcp by the FastAPI app in main.py.
 """
 
-import asyncio
 import logging
+import asyncio
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
@@ -15,10 +15,8 @@ from starlette.requests import Request
 
 from app.router import route, SOURCE_MAP
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
-# MCP server instance
 server = Server("minisearch")
 
 
@@ -68,12 +66,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text="Error: query is required.")]
 
     try:
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, route, query, source
-        )
+        result = await asyncio.to_thread(route, query, source)
         return [TextContent(type="text", text=result)]
     except Exception as e:
-        logger.error(f"MiniSearch MCP error: {e}")
+        _LOGGER.error("MiniSearch MCP error: %s", e)
         return [TextContent(type="text", text=f"Error: {e}")]
 
 
@@ -99,5 +95,4 @@ def create_sse_app() -> Starlette:
     )
 
 
-# Export for use in main.py
 mcp_app = create_sse_app()

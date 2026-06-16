@@ -1,19 +1,40 @@
-import time
 import logging
-from fastapi import FastAPI
-from pydantic import BaseModel
+from contextlib import asynccontextmanager
 from typing import Optional
 
-from app.router import route, SOURCE_MAP, detect_intent, _cache, CACHE_TTL
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+from app.router import (
+    route,
+    SOURCE_MAP,
+    detect_intent,
+    get_cache_stats,
+    get_cache_count,
+    clear_cache,
+    _load_cache,
+)
 from app.mcp_server import mcp_app
 from app.sources.kiwix import get_books, refresh_catalog
 
 _LOGGER = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load Kiwix catalog and cache on startup."""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, get_books)
+    await loop.run_in_executor(None, _load_cache)
+    yield
+
+
 app = FastAPI(
     title="MiniSearch",
     description="Unified local knowledge search API. Routes queries to Kiwix, Open-Meteo, FreshRSS, or SearXNG.",
-    version="2.3.0",
+    version="2.4.0",
+    lifespan=lifespan,
 )
 
 app.mount("/mcp", mcp_app)
@@ -33,22 +54,13 @@ class SearchResponse(BaseModel):
     error: Optional[str] = None
 
 
-@app.on_event("startup")
-async def startup():
-    import asyncio
-    from app.router import _load_cache
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, get_books)
-    await loop.run_in_executor(None, _load_cache)
-
-
 @app.get("/health")
 def health():
     books = get_books()
     return {
         "status": "ok",
         "kiwix_books_loaded": len(books),
-        "cache_entries": len(_cache),
+        "cache_entries": get_cache_count(),
     }
 
 
@@ -72,38 +84,24 @@ def catalog_refresh():
 @app.get("/cache")
 def cache_stats():
     """Show current cache entries and their age."""
-    now = time.time()
-    entries = []
-    for key, (result, timestamp) in _cache.items():
-        source, query = key.split(":", 1)
-        ttl = CACHE_TTL.get(source, 3600)
-        age = int(now - timestamp)
-        entries.append({
-            "source": source,
-            "query": query,
-            "age_seconds": age,
-            "ttl_seconds": ttl,
-            "expires_in": max(0, ttl - age),
-        })
+    entries = get_cache_stats()
     return {"count": len(entries), "entries": entries}
 
 
 @app.post("/cache/clear")
 def cache_clear():
     """Clear all cached results."""
-    from app.router import _save_cache
-    count = len(_cache)
-    _cache.clear()
-    _save_cache()
+    count = clear_cache()
     return {"status": "cleared", "entries_removed": count}
 
 
 @app.post("/search", response_model=SearchResponse)
 def search(request: SearchRequest):
     from app.router import _get_cached
-    resolved_source = request.source if request.source != "auto" else detect_intent(request.query)
-
-    # Check if result will be from cache for response metadata
+    resolved_source = (
+        request.source if request.source != "auto"
+        else detect_intent(request.query)
+    )
     was_cached = _get_cached(resolved_source, request.query) is not None
 
     try:

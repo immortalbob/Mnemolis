@@ -1,6 +1,9 @@
+import logging
 import requests
 from datetime import datetime
 from app.config import settings
+
+_LOGGER = logging.getLogger(__name__)
 
 WMO = {
     0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "overcast",
@@ -42,7 +45,7 @@ def search(query: str) -> str:
                 "temperature_unit": "fahrenheit",
                 "windspeed_unit": "mph",
                 "precipitation_unit": "inch",
-                "timezone": "America/Phoenix",
+                "timezone": settings.forecast_timezone,
                 "forecast_days": 3,
             },
             timeout=10,
@@ -50,6 +53,7 @@ def search(query: str) -> str:
         response.raise_for_status()
         daily = response.json().get("daily", {})
     except Exception as e:
+        _LOGGER.error("Forecast fetch failed: %s", e)
         return f"Unable to retrieve forecast: {e}"
 
     lines = []

@@ -30,6 +30,7 @@ services:
       FORECAST_LATITUDE: "35.1894"    # your latitude
       FORECAST_LONGITUDE: "-114.0530" # your longitude
       FORECAST_LOCATION_NAME: "Kingman, Arizona"
+      FORECAST_TIMEZONE: "America/Phoenix"
     networks:
       - ai-net
     depends_on:
