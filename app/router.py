@@ -64,6 +64,109 @@ CACHE_TTL = {
     "uptime": 60,     # 1 minute — status changes fast
 }
 
+# ---------------------------------------------------------------------------
+# Routing cache — stores source and book selection decisions to skip Ollama calls
+# ---------------------------------------------------------------------------
+
+ROUTING_CACHE_FILE = "/app/data/routing_cache.json"
+ROUTING_CACHE_TTL = 3600  # 1 hour — routing decisions are stable but not permanent
+_routing_cache: dict[str, tuple[str, float]] = {}
+
+
+def _routing_cache_key(query: str) -> str:
+    return query.lower().strip()
+
+
+def _get_routing(query: str) -> str | None:
+    """Return cached routing decision for query, or None if not cached/expired."""
+    key = _routing_cache_key(query)
+    if key in _routing_cache:
+        decision, timestamp = _routing_cache[key]
+        if time.time() - timestamp < ROUTING_CACHE_TTL:
+            _LOGGER.info("Routing cache hit for query: '%s' -> %s", query[:50], decision)
+            return decision
+        else:
+            del _routing_cache[key]
+    return None
+
+
+def _set_routing(query: str, decision: str) -> None:
+    """Cache a routing decision for a query."""
+    key = _routing_cache_key(query)
+    _routing_cache[key] = (decision, time.time())
+    _LOGGER.info("Cached routing decision: '%s' -> %s", query[:50], decision)
+    _save_routing_cache()
+
+
+def _save_routing_cache() -> None:
+    """Persist routing cache to disk."""
+    try:
+        os.makedirs(os.path.dirname(ROUTING_CACHE_FILE), exist_ok=True)
+        with open(ROUTING_CACHE_FILE, "w") as f:
+            json.dump(_routing_cache, f)
+    except Exception as e:
+        _LOGGER.warning("Could not save routing cache to disk: %s", e)
+
+
+def load_routing_cache() -> None:
+    """Load routing cache from disk on startup."""
+    global _routing_cache
+    try:
+        if not os.path.exists(ROUTING_CACHE_FILE):
+            return
+        with open(ROUTING_CACHE_FILE, "r") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            _routing_cache = {}
+            return
+        now = time.time()
+        loaded = {}
+        for key, value in raw.items():
+            try:
+                if not isinstance(value, list) or len(value) != 2:
+                    continue
+                decision, timestamp = value
+                if not isinstance(decision, str) or not isinstance(timestamp, (int, float)):
+                    continue
+                if now - float(timestamp) < ROUTING_CACHE_TTL:
+                    loaded[key] = (decision, float(timestamp))
+            except Exception:
+                continue
+        _routing_cache = loaded
+        _LOGGER.info("Loaded %d routing cache entries from disk", len(_routing_cache))
+    except json.JSONDecodeError as e:
+        _LOGGER.warning("Routing cache corrupted: %s, starting fresh", e)
+        _routing_cache = {}
+    except Exception as e:
+        _LOGGER.warning("Could not load routing cache: %s", e)
+        _routing_cache = {}
+
+
+def get_routing_cache_stats() -> list[dict]:
+    """Return routing cache entries with age and expiry info."""
+    now = time.time()
+    entries = []
+    for key, (decision, timestamp) in _routing_cache.items():
+        age = int(now - timestamp)
+        entries.append({
+            "query": key,
+            "decision": decision,
+            "age_seconds": age,
+            "ttl_seconds": ROUTING_CACHE_TTL,
+            "expires_in": max(0, ROUTING_CACHE_TTL - age),
+        })
+    return entries
+
+
+def clear_routing_cache() -> int:
+    """Clear all routing cache entries. Returns count removed."""
+    global _routing_cache
+    count = len(_routing_cache)
+    _routing_cache = {}
+    _save_routing_cache()
+    return count
+
+
 NO_RESULT_PHRASES = [
     "no results found",
     "no recent articles",
@@ -253,7 +356,13 @@ def _keyword_detect(query: str) -> str | None:
 
 
 def _llm_detect(query: str) -> str:
-    """Ask Ollama to pick the best source for the query. Falls back to kiwix."""
+    """Ask Ollama to pick the best source for the query. Falls back to kiwix.
+    Checks routing cache first to avoid redundant Ollama calls."""
+    # Check routing cache first
+    cached = _get_routing(f"source:{query}")
+    if cached:
+        return cached
+
     if not settings.ollama_url or not settings.ollama_model:
         return "kiwix"
 
@@ -294,6 +403,7 @@ def _llm_detect(query: str) -> str:
 
         if chosen in SOURCE_MAP:
             _LOGGER.info("LLM intent: '%s' -> %s", query[:50], chosen)
+            _set_routing(f"source:{query}", chosen)
             return chosen
 
         _LOGGER.warning("LLM returned unknown source '%s', falling back to kiwix", chosen)
@@ -301,6 +411,7 @@ def _llm_detect(query: str) -> str:
     except Exception as e:
         _LOGGER.warning("LLM source detection failed: %s", e)
 
+    _set_routing(f"source:{query}", "kiwix")
     return "kiwix"
 
 

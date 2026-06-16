@@ -66,6 +66,8 @@ def _get_token() -> str | None:
 
 
 def search(query: str) -> str:
+    if not settings.freshrss_url or not settings.freshrss_user:
+        return "FreshRSS is not configured. Set FRESHRSS_URL and FRESHRSS_USER."
     token = _get_token()
     if not token:
         return "Error: Could not authenticate with FreshRSS. Check credentials."

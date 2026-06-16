@@ -7,6 +7,11 @@ from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
 
+# Lazy import to avoid circular imports
+def _get_book_routing(query: str):
+    from app.router import _get_routing, _set_routing
+    return _get_routing, _set_routing
+
 # ---------------------------------------------------------------------------
 # Dynamic book discovery
 # ---------------------------------------------------------------------------
@@ -92,9 +97,23 @@ def refresh_catalog() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> list[str]:
-    """Ask Ollama to pick the best books for the query. Returns ranked list of book names."""
+    """Ask Ollama to pick the best books for the query. Returns ranked list of book names.
+    Checks routing cache first to avoid redundant Ollama calls."""
     if not books:
         return []
+
+    # Check routing cache
+    get_routing, set_routing = _get_book_routing(query)
+    cache_key = f"books:{query}"
+    cached = get_routing(cache_key)
+    if cached:
+        # Stored as comma-separated book names
+        cached_books = [b.strip() for b in cached.split(",") if b.strip()]
+        book_names = {b["name"] for b in books}
+        valid = [b for b in cached_books if b in book_names]
+        if valid:
+            _LOGGER.info("Routing cache hit for book selection: '%s' -> %s", query[:50], valid)
+            return valid
 
     book_list = "\n".join(
         f"- {b['name']}: {b['title']} — {b['summary'][:100]}"
@@ -150,6 +169,7 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> l
         chosen = chosen[:max_books]
         if chosen:
             _LOGGER.info("LLM selected books: %s", chosen)
+            set_routing(cache_key, ",".join(chosen))
             return chosen
 
         _LOGGER.warning("LLM returned no valid books from '%s', falling back", raw)
@@ -161,8 +181,13 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> l
     book_names_list = [b["name"] for b in books]
     for name in book_names_list:
         if "wikipedia" in name:
-            return [name]
-    return [book_names_list[0]] if book_names_list else []
+            result = [name]
+            set_routing(cache_key, ",".join(result))
+            return result
+    result = [book_names_list[0]] if book_names_list else []
+    if result:
+        set_routing(cache_key, ",".join(result))
+    return result
 
 
 # ---------------------------------------------------------------------------

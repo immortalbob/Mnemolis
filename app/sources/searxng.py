@@ -7,6 +7,8 @@ _LOGGER = logging.getLogger(__name__)
 
 def search(query: str) -> str:
     """Search the web via local SearXNG instance."""
+    if not settings.searxng_url:
+        return "SearXNG is not configured. Set SEARXNG_URL."
     try:
         resp = requests.get(
             f"{settings.searxng_url}/search",
