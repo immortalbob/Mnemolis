@@ -48,6 +48,18 @@ cp docker-compose.example.yml docker-compose.yml
 docker compose up -d
 ```
 
+### What's not in the full stack
+The example compose intentionally excludes Home Assistant and Ollama — these are typically long-running services with their own existing setup and shouldn't be managed by MiniSearch's compose file.
+
+If you're running Ollama or Home Assistant in Docker and want them reachable by MiniSearch, make sure they're also connected to `ai-net`:
+
+```bash
+docker network connect ai-net ollama
+docker network connect ai-net homeassistant
+```
+
+Or add `ai-net` to their existing compose files under `networks:`. Container name resolution only works between containers on the same network — if MiniSearch can't reach Ollama by hostname, check network membership first.
+
 ### MiniSearch only
 
 If you already have Kiwix, FreshRSS, and SearXNG running:
