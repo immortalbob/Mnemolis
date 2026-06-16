@@ -91,10 +91,10 @@ def refresh_catalog() -> list[dict]:
 # LLM-assisted book selection
 # ---------------------------------------------------------------------------
 
-def _pick_book_with_llm(query: str, books: list[dict]) -> str:
-    """Ask Ollama to pick the best book for the query. Returns book name."""
+def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> list[str]:
+    """Ask Ollama to pick the best books for the query. Returns ranked list of book names."""
     if not books:
-        return ""
+        return []
 
     book_list = "\n".join(
         f"- {b['name']}: {b['title']} — {b['summary'][:100]}"
@@ -103,11 +103,12 @@ def _pick_book_with_llm(query: str, books: list[dict]) -> str:
 
     prompt = (
         f"You are a search router. Given a user query and a list of available Kiwix offline "
-        f"knowledge bases, return ONLY the exact book name (the full identifier) that best "
-        f"matches the query. No explanation, no punctuation, just the book name.\n\n"
+        f"knowledge bases, return up to {max_books} book names that best match the query, "
+        f"ranked by relevance, as a comma-separated list. "
+        f"Return ONLY the exact book names separated by commas. No explanation, no punctuation other than commas.\n\n"
         f"Query: {query}\n\n"
         f"Available books:\n{book_list}\n\n"
-        f"Best book name:"
+        f"Best book names (comma-separated, most relevant first):"
     )
 
     try:
@@ -118,7 +119,7 @@ def _pick_book_with_llm(query: str, books: list[dict]) -> str:
                 "prompt": prompt,
                 "stream": False,
                 "think": False,
-                "options": {"temperature": 0, "num_predict": 100},
+                "options": {"temperature": 0, "num_predict": 150},
             },
             timeout=10,
         )
@@ -130,21 +131,28 @@ def _pick_book_with_llm(query: str, books: list[dict]) -> str:
             thinking = data.get("thinking", "")
             lines = [l.strip() for l in thinking.splitlines() if l.strip()]
             raw = lines[-1] if lines else ""
-        chosen = raw.strip(".").strip()
 
-        # Validate against known books
         book_names = {b["name"] for b in books}
-        if chosen in book_names:
-            _LOGGER.info("LLM selected book: %s", chosen)
+        chosen = []
+
+        for candidate in raw.split(","):
+            candidate = candidate.strip().strip(".")
+            if candidate in book_names:
+                chosen.append(candidate)
+            else:
+                # Fuzzy match
+                for name in book_names:
+                    if candidate in name or name in candidate:
+                        if name not in chosen:
+                            chosen.append(name)
+                        break
+
+        chosen = chosen[:max_books]
+        if chosen:
+            _LOGGER.info("LLM selected books: %s", chosen)
             return chosen
 
-        # Fuzzy match — LLM might return partial name
-        for name in book_names:
-            if chosen in name or name in chosen:
-                _LOGGER.info("LLM fuzzy matched: %s -> %s", chosen, name)
-                return name
-
-        _LOGGER.warning("LLM returned unknown book '%s', falling back", chosen)
+        _LOGGER.warning("LLM returned no valid books from '%s', falling back", raw)
 
     except Exception as e:
         _LOGGER.warning("LLM book selection failed: %s", e)
@@ -153,8 +161,8 @@ def _pick_book_with_llm(query: str, books: list[dict]) -> str:
     book_names_list = [b["name"] for b in books]
     for name in book_names_list:
         if "wikipedia" in name:
-            return name
-    return book_names_list[0] if book_names_list else ""
+            return [name]
+    return [book_names_list[0]] if book_names_list else []
 
 
 # ---------------------------------------------------------------------------
@@ -224,19 +232,29 @@ def search(query: str) -> str:
         return "No books available in Kiwix catalog."
 
     if settings.ollama_url and settings.ollama_model:
-        book = _pick_book_with_llm(query, books)
+        selected_books = _pick_books_with_llm(query, books, max_books=2)
     else:
-        # Fallback — Wikipedia if available
-        book = next((b["name"] for b in books if "wikipedia" in b["name"]), books[0]["name"])
+        # Fallback — Wikipedia first
+        fallback = next((b["name"] for b in books if "wikipedia" in b["name"]), books[0]["name"])
+        selected_books = [fallback]
 
-    if not book:
+    if not selected_books:
         return "Could not determine which Kiwix book to search."
 
-    results = _search_book(query, book)
-    if not results:
-        return f"No results found in {book}."
+    # Search each selected book, collect results, deduplicate by URL
+    all_results = []
+    seen_urls = set()
+    for book in selected_books:
+        for r in _search_book(query, book, limit=3):
+            if r["url"] not in seen_urls:
+                seen_urls.add(r["url"])
+                all_results.append(r)
 
-    top = results[0]
+    if not all_results:
+        return f"No results found in {', '.join(selected_books)}."
+
+    # Use top result from primary book if available, otherwise first result overall
+    top = all_results[0]
     article_text = _fetch_article(top["url"])
     if not article_text:
         return f"Found {top['title']} but could not fetch article content.\nURL: {top['url']}"
