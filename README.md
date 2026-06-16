@@ -255,8 +255,22 @@ Local-first, privacy-preserving, subscription-free. MiniSearch is designed for h
 
 ## Roadmap
 
-- [ ] Additional source modules (Uptime Kuma, Jellyfin, etc.)
+- [ ] Additional source modules (Uptime Kuma, Home Assistant, etc.)
 
 ## Contributing
 
 PRs welcome. New source modules are the easiest contribution — drop a file in `sources/`, register it in the router, done.
+
+### Proposed modules
+
+Looking for contributors interested in building out additional sources:
+
+- **Jellyfin** — search local media library by title, genre, or actor
+- **Paperless-ngx** — search scanned documents and OCR'd content
+- **Mealie** — search self-hosted recipe library
+- **Grocy** — query pantry inventory, shopping list, or expiring items
+- **Calibre** — search local ebook library
+- **Navidrome** — search self-hosted music library by artist, album, or track
+- **Immich** — search local photo library by date, album, or description
+
+Each source only needs a single `search(query: str) -> str` function. See any existing file in `app/sources/` as a reference.
