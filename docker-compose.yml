@@ -16,14 +16,19 @@ services:
       # SearXNG
       SEARXNG_URL: "http://searxng:8080"
       # Ollama (for LLM-assisted Kiwix book selection)
-      OLLAMA_URL: "http://ollama:11434"
+      OLLAMA_URL: "http://192.168.3.162:11434"
       OLLAMA_MODEL: "qwen3:8b"
       # Open-Meteo
       FORECAST_LATITUDE: "35.1894"
       FORECAST_LONGITUDE: "-114.0530"
       FORECAST_LOCATION_NAME: "Kingman, Arizona"
+    volumes:
+      - minisearch_data:/app/data
     networks:
       - ai-net
+
+volumes:
+  minisearch_data:
 
 networks:
   ai-net:
