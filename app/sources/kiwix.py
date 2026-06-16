@@ -230,15 +230,70 @@ def _fetch_article(url: str, max_chars: int = 3000) -> str:
         return ""
 
 
+# Stop words to strip before scoring — same set as freshrss for consistency
+_STOP_WORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "dare", "ought",
+    "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+    "as", "into", "through", "about", "what", "which", "who", "whom",
+    "this", "that", "these", "those", "i", "me", "my", "we", "our",
+    "you", "your", "he", "she", "it", "they", "them", "their",
+    "tell", "explain", "describe", "define", "give", "show", "find",
+    "get", "how", "why", "when", "where",
+}
+
+
 def _score_result(result: dict, query: str, primary_book: str) -> int:
-    # Score a search result by relevance to the query
-    query_words = set(query.lower().split())
-    title_words = set(result["title"].lower().split())
-    excerpt_words = set(result["excerpt"].lower().split())
+    """Score a search result by relevance to the query.
+
+    Scoring breakdown:
+    - Exact title match (case-insensitive): +20
+    - Title starts with query (after stop word removal): +10
+    - Each query word in title (stop words removed): +5 each
+    - Each query word in excerpt (stop words removed, normalized): +1 each
+    - Primary book bonus: +2
+    """
+    query_lower = query.lower().strip()
+    title_lower = result["title"].lower().strip()
+    excerpt_lower = result["excerpt"].lower()
+
+    # Strip stop words from query for word-level scoring
+    query_words = set(query_lower.split()) - _STOP_WORDS
+    if not query_words:
+        # All stop words — fall back to full query
+        query_words = set(query_lower.split())
+
+    title_words = set(title_lower.split()) - _STOP_WORDS
+    excerpt_words = set(excerpt_lower.split()) - _STOP_WORDS
+
+    score = 0
+
+    # Exact title match — strongest signal
+    if query_lower == title_lower:
+        score += 20
+
+    # Title starts with the core query terms
+    query_core = " ".join(sorted(query_words))
+    if title_lower.startswith(query_core) or any(
+        title_lower.startswith(w) for w in query_words if len(w) > 3
+    ):
+        score += 10
+
+    # Word-level title hits
     title_hits = len(query_words & title_words)
+    score += title_hits * 5
+
+    # Word-level excerpt hits — normalize by excerpt length to avoid bias
     excerpt_hits = len(query_words & excerpt_words)
-    primary_bonus = 2 if result["book"] == primary_book else 0
-    return title_hits * 3 + excerpt_hits + primary_bonus
+    excerpt_len = max(len(excerpt_words), 1)
+    score += int((excerpt_hits / excerpt_len) * 10)
+
+    # Primary book bonus
+    if result["book"] == primary_book:
+        score += 2
+
+    return score
 
 
 def search(query: str) -> str:
@@ -257,11 +312,20 @@ def search(query: str) -> str:
     if not selected_books:
         return "Could not determine which Kiwix book to search."
 
+    # Strip stop words from query for Kiwix search — cleaner signal for its search engine
+    # Keep original query for scoring so context is preserved
+    search_terms = " ".join(
+        w for w in query.lower().split()
+        if w not in _STOP_WORDS and len(w) > 1
+    ) or query
+
+    _LOGGER.info("Kiwix search terms: '%s' (from query: '%s')", search_terms, query[:50])
+
     # Search each selected book, collect results, deduplicate by URL
     all_results = []
     seen_urls = set()
     for book in selected_books:
-        for r in _search_book(query, book, limit=3):
+        for r in _search_book(search_terms, book, limit=5):
             if r["url"] not in seen_urls:
                 seen_urls.add(r["url"])
                 all_results.append(r)
