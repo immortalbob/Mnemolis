@@ -144,10 +144,6 @@ docker compose up -d
 Hit `http://your-host:8888/health` to confirm it's running.
 Full API docs at `http://your-host:8888/docs`.
 
-## Configuration
-
-All settings are passed as environment variables in `docker-compose.yml`:
-
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `KIWIX_URL` | Kiwix container URL | `http://kiwix:8080` |
@@ -159,7 +155,8 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `FORECAST_LATITUDE` | Forecast location latitude | `35.1894` |
 | `FORECAST_LONGITUDE` | Forecast location longitude | `-114.0530` |
 | `FORECAST_LOCATION_NAME` | Human-readable location name | `Kingman, Arizona` |
-| `OLLAMA_URL` | Ollama API endpoint for intelligent routing | `http://192.168.3.162:11434` |
+| `FORECAST_TIMEZONE` | Timezone for forecast times | `America/Phoenix` |
+| `OLLAMA_URL` | Ollama API endpoint for intelligent routing | _(blank — disables LLM routing)_ |
 | `OLLAMA_MODEL` | Model to use for source and book selection | `qwen3:8b` |
 
 ### FreshRSS API setup
