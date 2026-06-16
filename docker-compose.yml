@@ -15,6 +15,10 @@ services:
       FRESHRSS_MAX_ARTICLES: "10"
       # SearXNG
       SEARXNG_URL: "http://searxng:8080"
+      # Uptime Kuma
+      UPTIME_KUMA_URL: "http://:3001"
+      UPTIME_KUMA_USERNAME: ""
+      UPTIME_KUMA_PASSWORD: ""
       # Ollama (for LLM-assisted Kiwix book selection)
       OLLAMA_URL: "http://:11434"
       OLLAMA_MODEL: "qwen3:8b"
