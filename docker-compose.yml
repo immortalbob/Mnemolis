@@ -15,6 +15,9 @@ services:
       FRESHRSS_MAX_ARTICLES: "10"
       # SearXNG
       SEARXNG_URL: "http://searxng:8080"
+      # Ollama (for LLM-assisted Kiwix book selection)
+      OLLAMA_URL: "http://ollama:11434"
+      OLLAMA_MODEL: "qwen3:8b"
       # Open-Meteo
       FORECAST_LATITUDE: "35.1894"
       FORECAST_LONGITUDE: "-114.0530"

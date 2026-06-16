@@ -99,6 +99,21 @@ Also generate a unique `secret_key` in `searxng/settings.yml`:
 openssl rand -hex 32
 ```
 
+### Kiwix LLM-assisted book routing
+MiniSearch uses Ollama to automatically select the best ZIM book for a given query. The book list is built dynamically from your Kiwix catalog at startup — no hardcoded list, no rebuild needed when you add new ZIMs.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OLLAMA_URL` | Ollama API endpoint | `http://192.168.3.162:11434` |
+| `OLLAMA_MODEL` | Model to use for book selection | `qwen3:8b` |
+
+Set these to your Ollama instance and preferred model. If left blank, MiniSearch falls back to Wikipedia for all Kiwix queries.
+
+To force a catalog refresh after adding new ZIMs (without restarting the container):
+```bash
+curl -X POST http://your-host:8888/catalog/refresh
+```
+
 ## REST API
 
 ### `POST /search`
