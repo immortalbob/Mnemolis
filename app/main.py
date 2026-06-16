@@ -36,8 +36,10 @@ class SearchResponse(BaseModel):
 @app.on_event("startup")
 async def startup():
     import asyncio
+    from app.router import _load_cache
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, get_books)
+    await loop.run_in_executor(None, _load_cache)
 
 
 @app.get("/health")
@@ -89,8 +91,10 @@ def cache_stats():
 @app.post("/cache/clear")
 def cache_clear():
     """Clear all cached results."""
+    from app.router import _save_cache
     count = len(_cache)
     _cache.clear()
+    _save_cache()
     return {"status": "cleared", "entries_removed": count}
 
 

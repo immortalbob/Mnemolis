@@ -1,10 +1,14 @@
 import time
+import json
 import logging
+import os
 import requests
 from app.sources import kiwix, forecast, freshrss, searxng
 from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
+
+CACHE_FILE = "/app/data/cache.json"
 
 INTENT_MAP = {
     "forecast": [
@@ -56,6 +60,38 @@ CACHE_TTL = {
 # In-memory cache: key -> (result, timestamp)
 _cache: dict[str, tuple[str, float]] = {}
 
+
+def _load_cache() -> None:
+    """Load cache from disk on startup."""
+    global _cache
+    try:
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, "r") as f:
+                raw = json.load(f)
+            now = time.time()
+            # Filter out expired entries on load
+            loaded = {}
+            for key, (result, timestamp) in raw.items():
+                source = key.split(":")[0]
+                ttl = CACHE_TTL.get(source, 3600)
+                if now - timestamp < ttl:
+                    loaded[key] = (result, timestamp)
+            _cache = loaded
+            _LOGGER.info("Loaded %d cache entries from disk", len(_cache))
+    except Exception as e:
+        _LOGGER.warning("Could not load cache from disk: %s", e)
+        _cache = {}
+
+
+def _save_cache() -> None:
+    """Persist cache to disk."""
+    try:
+        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+        with open(CACHE_FILE, "w") as f:
+            json.dump(_cache, f)
+    except Exception as e:
+        _LOGGER.warning("Could not save cache to disk: %s", e)
+
 NO_RESULT_PHRASES = [
     "no results found",
     "no recent articles",
@@ -87,6 +123,7 @@ def _set_cached(source: str, query: str, result: str) -> None:
     key = _cache_key(source, query)
     _cache[key] = (result, time.time())
     _LOGGER.info("Cached result for source='%s' query='%s'", source, query[:50])
+    _save_cache()
 
 
 def _looks_empty(result: str) -> bool:
