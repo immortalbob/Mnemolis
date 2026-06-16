@@ -4,6 +4,78 @@ A unified local knowledge search API for self-hosted homelabs. MiniSearch runs a
 
 Exposes both a **REST API** and an **MCP server** so any client can connect to it.
 
+## Architecture
+
+### Voice Assistant Flow
+
+```text
+ESP32 Voice Assistant
+          │
+          ▼
+   Home Assistant
+          │
+          ▼
+ MiniSearch_Intents
+          │
+          ▼
+     MiniSearch
+          │
+          ├──────────────┐
+          │              │
+          ▼              ▼
+       Ollama      Source Providers
+          │        ├─ Kiwix
+          │        ├─ FreshRSS
+          │        ├─ SearXNG
+          │        ├─ Open-Meteo
+          │        └─ Uptime Kuma
+          │
+          ▼
+   Source Selection
+   Book Selection
+   Query Routing
+          │
+          ▼
+      Response
+          │
+          ▼
+ Home Assistant TTS
+          │
+          ▼
+      ESP32
+```
+
+### Multi-Client Architecture
+
+```text
+                Open WebUI
+                     │
+                REST API
+                     │
+
+Claude Desktop ──────┼────── MCP
+
+Cursor ──────────────┼────── MCP
+
+                     ▼
+
+               MiniSearch
+
+                     ▲
+
+                     │ REST API
+
+                     ▲
+
+          MiniSearch_Intents
+
+                     ▲
+
+                     │
+
+            Home Assistant
+```
+
 ## Integrations
 
 | Client | Protocol | How |
@@ -229,6 +301,14 @@ Popular ZIMs for a homelab stack:
 
 The new source is automatically available via both REST and MCP.
 
+## Running Tests
+
+```bash
+docker exec minisearch python3 -m pytest /app/tests/ -v
+```
+
+71 tests covering intent routing, cache logic, Kiwix scoring, search term cleaning, and FreshRSS article filtering.
+
 ## Project Structure
 
 ```
@@ -237,10 +317,15 @@ MiniSearch/
 ├── docker-compose.yml              # your config (not committed)
 ├── docker-compose.example.yml      # full stack example
 ├── requirements.txt
+├── pytest.ini
 ├── minisearch_tool.py              # Open WebUI bridge tool
 ├── README.md
 ├── searxng/
 │   └── settings.yml               # SearXNG config with JSON enabled
+├── tests/
+│   ├── test_router.py              # intent detection, cache, fallback logic
+│   ├── test_kiwix.py               # scoring and search term cleaning
+│   └── test_freshrss.py            # general query detection, article scoring
 └── app/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog endpoints
     ├── mcp_server.py               # MCP SSE server
