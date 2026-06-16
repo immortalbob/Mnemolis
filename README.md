@@ -4,6 +4,76 @@ A unified local knowledge search API for self-hosted homelabs. MiniSearch runs a
 
 Exposes both a **REST API** and an **MCP server** so any client can connect to it.
 
+## Architecture
+
+### Voice Assistant Flow
+
+```text
+ESP32 Voice Assistant
+          │
+          ▼
+   Home Assistant
+          │
+          ▼
+ MiniSearch_Intents
+          │
+          ▼
+     MiniSearch
+          │
+          ├──────────────┐
+          │              │
+          ▼              ▼
+       Ollama      Source Providers
+          │        ├─ Kiwix
+          │        ├─ FreshRSS
+          │        ├─ SearXNG
+          │        └─ Open-Meteo
+          │
+          ▼
+   Source Selection
+   Book Selection
+   Query Routing
+          │
+          ▼
+      Response
+          │
+          ▼
+ Home Assistant TTS
+          │
+          ▼
+      ESP32
+
+````
+### Multi-Client Architecture
+
+```text
+                Open WebUI
+                     │
+                REST API
+                     │
+
+Claude Desktop ──────┼────── MCP
+
+Cursor ──────────────┼────── MCP
+
+                     ▼
+
+               MiniSearch
+
+                     ▲
+
+                     │ REST API
+
+                     ▲
+
+          MiniSearch_Intents
+
+                     ▲
+
+                     │
+
+            Home Assistant
+```
 ## Integrations
 
 | Client | Protocol | How |
