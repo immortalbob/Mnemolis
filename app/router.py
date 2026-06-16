@@ -78,7 +78,8 @@ NO_RESULT_PHRASES = [
 # In-memory cache: key -> (result, timestamp)
 _cache: dict[str, tuple[str, float]] = {}
 _cache_dirty_count: int = 0
-_CACHE_SAVE_INTERVAL: int = 5  # save to disk every N writes
+_CACHE_SAVE_INTERVAL: int = 5   # save to disk every N writes
+_CACHE_MAX_SIZE: int = 500       # max entries before evicting oldest
 
 
 # ---------------------------------------------------------------------------
@@ -102,9 +103,22 @@ def _get_cached(source: str, query: str) -> str | None:
     return None
 
 
+def _evict_oldest() -> None:
+    """Remove the oldest cache entry."""
+    if not _cache:
+        return
+    oldest_key = min(_cache, key=lambda k: _cache[k][1])
+    del _cache[oldest_key]
+    _LOGGER.debug("Evicted oldest cache entry: %s", oldest_key)
+
+
 def _set_cached(source: str, query: str, result: str) -> None:
     global _cache_dirty_count
     key = _cache_key(source, query)
+    # Evict oldest if at capacity (and this is a new entry)
+    if key not in _cache and len(_cache) >= _CACHE_MAX_SIZE:
+        _evict_oldest()
+        _LOGGER.info("Cache at max size (%d), evicted oldest entry", _CACHE_MAX_SIZE)
     _cache[key] = (result, time.time())
     _cache_dirty_count += 1
     _LOGGER.info("Cached result for source='%s' query='%s'", source, query[:50])
@@ -136,18 +150,49 @@ def load_cache() -> None:
     """Load cache from disk on startup."""
     global _cache
     try:
-        if os.path.exists(CACHE_FILE):
-            with open(CACHE_FILE, "r") as f:
-                raw = json.load(f)
-            now = time.time()
-            loaded = {}
-            for key, (result, timestamp) in raw.items():
+        if not os.path.exists(CACHE_FILE):
+            _LOGGER.info("No cache file found at %s, starting fresh", CACHE_FILE)
+            return
+        with open(CACHE_FILE, "r") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            _LOGGER.warning("Cache file malformed (not a dict), starting fresh")
+            _cache = {}
+            return
+        now = time.time()
+        loaded = {}
+        skipped = 0
+        for key, value in raw.items():
+            try:
+                # Validate structure: must be [result_str, timestamp_float]
+                if not isinstance(value, list) or len(value) != 2:
+                    skipped += 1
+                    continue
+                result, timestamp = value
+                if not isinstance(result, str) or not isinstance(timestamp, (int, float)):
+                    skipped += 1
+                    continue
                 source = key.split(":")[0]
                 ttl = CACHE_TTL.get(source, 3600)
                 if now - timestamp < ttl:
-                    loaded[key] = (result, timestamp)
-            _cache = loaded
-            _LOGGER.info("Loaded %d cache entries from disk", len(_cache))
+                    loaded[key] = (result, float(timestamp))
+            except Exception:
+                skipped += 1
+                continue
+        _cache = loaded
+        if skipped:
+            _LOGGER.warning("Skipped %d malformed cache entries on load", skipped)
+        _LOGGER.info("Loaded %d cache entries from disk", len(_cache))
+    except json.JSONDecodeError as e:
+        _LOGGER.warning("Cache file corrupted (JSON error: %s), starting fresh", e)
+        _cache = {}
+        # Rename corrupted file for inspection
+        try:
+            corrupt_path = CACHE_FILE + ".corrupt"
+            os.rename(CACHE_FILE, corrupt_path)
+            _LOGGER.info("Moved corrupted cache to %s", corrupt_path)
+        except Exception:
+            pass
     except Exception as e:
         _LOGGER.warning("Could not load cache from disk: %s", e)
         _cache = {}
