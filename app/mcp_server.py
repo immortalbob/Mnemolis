@@ -79,7 +79,7 @@ def create_sse_app() -> Starlette:
 
     async def handle_sse(request: Request):
         async with sse.connect_sse(
-            request.scope, request.receive, request._send
+            request.scope, request.receive, request._send  # _send is private but required by SseServerTransport
         ) as streams:
             await server.run(
                 streams[0],
