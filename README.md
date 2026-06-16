@@ -48,18 +48,6 @@ cp docker-compose.example.yml docker-compose.yml
 docker compose up -d
 ```
 
-### What's not in the full stack
-The example compose intentionally excludes Home Assistant and Ollama — these are typically long-running services with their own existing setup and shouldn't be managed by MiniSearch's compose file.
-
-If you're running Ollama or Home Assistant in Docker and want them reachable by MiniSearch, make sure they're also connected to `ai-net`:
-
-```bash
-docker network connect ai-net ollama
-docker network connect ai-net homeassistant
-```
-
-Or add `ai-net` to their existing compose files under `networks:`. Container name resolution only works between containers on the same network — if MiniSearch can't reach Ollama by hostname, check network membership first.
-
 ### MiniSearch only
 
 If you already have Kiwix, FreshRSS, and SearXNG running:
@@ -109,21 +97,6 @@ Also generate a unique `secret_key` in `searxng/settings.yml`:
 
 ```bash
 openssl rand -hex 32
-```
-
-### Kiwix LLM-assisted book routing
-MiniSearch uses Ollama to automatically select the best ZIM book for a given query. The book list is built dynamically from your Kiwix catalog at startup — no hardcoded list, no rebuild needed when you add new ZIMs.
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OLLAMA_URL` | Ollama API endpoint | `http://192.168.3.162:11434` |
-| `OLLAMA_MODEL` | Model to use for book selection | `qwen3:8b` |
-
-Set these to your Ollama instance and preferred model. If left blank, MiniSearch falls back to Wikipedia for all Kiwix queries.
-
-To force a catalog refresh after adding new ZIMs (without restarting the container):
-```bash
-curl -X POST http://your-host:8888/catalog/refresh
 ```
 
 ## REST API

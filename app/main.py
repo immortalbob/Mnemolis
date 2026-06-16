@@ -1,14 +1,18 @@
+import logging
 from fastapi import FastAPI
 from pydantic import BaseModel
+from typing import Optional
 
-from app.router import route, SOURCE_MAP
+from app.router import route, SOURCE_MAP, detect_intent
 from app.mcp_server import mcp_app
 from app.sources.kiwix import get_books, refresh_catalog
+
+_LOGGER = logging.getLogger(__name__)
 
 app = FastAPI(
     title="MiniSearch",
     description="Unified local knowledge search API. Routes queries to Kiwix, Open-Meteo, FreshRSS, or SearXNG.",
-    version="2.1.0",
+    version="2.2.0",
 )
 
 # Mount MCP SSE server at /mcp
@@ -24,6 +28,8 @@ class SearchResponse(BaseModel):
     query: str
     source_used: str
     result: str
+    success: bool
+    error: Optional[str] = None
 
 
 @app.on_event("startup")
@@ -61,11 +67,21 @@ def catalog_refresh():
 
 @app.post("/search", response_model=SearchResponse)
 def search(request: SearchRequest):
-    from app.router import detect_intent
     resolved_source = request.source if request.source != "auto" else detect_intent(request.query)
-    result = route(request.query, request.source)
-    return SearchResponse(
-        query=request.query,
-        source_used=resolved_source,
-        result=result,
-    )
+    try:
+        result = route(request.query, request.source)
+        return SearchResponse(
+            query=request.query,
+            source_used=resolved_source,
+            result=result,
+            success=True,
+        )
+    except Exception as e:
+        _LOGGER.error("Search failed for query '%s': %s", request.query, e)
+        return SearchResponse(
+            query=request.query,
+            source_used=resolved_source,
+            result="",
+            success=False,
+            error=str(e),
+        )
