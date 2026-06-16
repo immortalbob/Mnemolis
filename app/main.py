@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="MiniSearch",
     description="Unified local knowledge search API. Routes queries to Kiwix, Open-Meteo, FreshRSS, or SearXNG.",
-    version="2.6.0",
+    version="2.7.0",
     lifespan=lifespan,
 )
 
