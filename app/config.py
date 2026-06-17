@@ -28,10 +28,11 @@ class Settings(BaseSettings):
     uptime_kuma_username: str = ""
     uptime_kuma_password: str = ""
 
-    # Ollama — for LLM-assisted Kiwix book and source selection
-    # Leave blank to disable LLM routing and fall back to keyword matching + Wikipedia
-    ollama_url: str = ""
-    ollama_model: str = "qwen3:8b"
+    # LLM backend — for intelligent source and Kiwix book selection
+    # Leave LLM_URL blank to disable LLM routing and fall back to keyword matching + Wikipedia
+    llm_url: str = ""
+    llm_model: str = "qwen3:8b"
+    llm_api_type: str = "ollama"  # "ollama" (native) or "openai" (OpenAI-compatible)
 
 
 settings = Settings()

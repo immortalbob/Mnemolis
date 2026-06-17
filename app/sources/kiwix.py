@@ -7,8 +7,8 @@ from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
 
-# Lazy import to avoid circular imports
-def _get_book_routing(query: str):
+# Lazy imports to avoid circular imports
+def _get_routing_fns():
     from app.router import _get_routing, _set_routing
     return _get_routing, _set_routing
 
@@ -103,7 +103,7 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> l
         return []
 
     # Check routing cache
-    get_routing, set_routing = _get_book_routing(query)
+    get_routing, set_routing = _get_routing_fns()
     cache_key = f"books:{query}"
     cached = get_routing(cache_key)
     if cached:
@@ -114,6 +114,20 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> l
         if valid:
             _LOGGER.info("Routing cache hit for book selection: '%s' -> %s", query[:50], valid)
             return valid
+
+    from app.llm import complete, is_configured
+
+    if not is_configured():
+        book_names_list = [b["name"] for b in books]
+        for name in book_names_list:
+            if "wikipedia" in name:
+                result = [name]
+                set_routing(cache_key, ",".join(result))
+                return result
+        result = [book_names_list[0]] if book_names_list else []
+        if result:
+            set_routing(cache_key, ",".join(result))
+        return result
 
     book_list = "\n".join(
         f"- {b['name']}: {b['title']} — {b['summary'][:100]}"
@@ -130,52 +144,30 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> l
         f"Best book names (comma-separated, most relevant first):"
     )
 
-    try:
-        resp = requests.post(
-            f"{settings.ollama_url}/api/generate",
-            json={
-                "model": settings.ollama_model,
-                "prompt": prompt,
-                "stream": False,
-                "think": False,
-                "options": {"temperature": 0, "num_predict": 150},
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        # Handle thinking models (qwen3 etc) that return empty response with thinking field
-        raw = data.get("response", "").strip()
-        if not raw:
-            thinking = data.get("thinking", "")
-            lines = [l.strip() for l in thinking.splitlines() if l.strip()]
-            raw = lines[-1] if lines else ""
+    raw = complete(prompt, max_tokens=150) or ""
 
-        book_names = {b["name"] for b in books}
-        chosen = []
+    book_names = {b["name"] for b in books}
+    chosen = []
 
-        for candidate in raw.split(","):
-            candidate = candidate.strip().strip(".")
-            if candidate in book_names:
-                chosen.append(candidate)
-            else:
-                # Fuzzy match
-                for name in book_names:
-                    if candidate in name or name in candidate:
-                        if name not in chosen:
-                            chosen.append(name)
-                        break
+    for candidate in raw.split(","):
+        candidate = candidate.strip().strip(".")
+        if candidate in book_names:
+            chosen.append(candidate)
+        else:
+            for name in book_names:
+                if candidate in name or name in candidate:
+                    if name not in chosen:
+                        chosen.append(name)
+                    break
 
-        chosen = chosen[:max_books]
-        if chosen:
-            _LOGGER.info("LLM selected books: %s", chosen)
-            set_routing(cache_key, ",".join(chosen))
-            return chosen
+    chosen = chosen[:max_books]
+    if chosen:
+        _LOGGER.info("LLM selected books: %s", chosen)
+        set_routing(cache_key, ",".join(chosen))
+        return chosen
 
+    if raw:
         _LOGGER.warning("LLM returned no valid books from '%s', falling back", raw)
-
-    except Exception as e:
-        _LOGGER.warning("LLM book selection failed: %s", e)
 
     # Fallback — Wikipedia first
     book_names_list = [b["name"] for b in books]
@@ -323,7 +315,7 @@ def search(query: str) -> str:
     if not books:
         return "No books available in Kiwix catalog."
 
-    if settings.ollama_url and settings.ollama_model:
+    if settings.llm_url and settings.llm_model:
         selected_books = _pick_books_with_llm(query, books, max_books=2)
     else:
         # Fallback — Wikipedia first

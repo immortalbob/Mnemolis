@@ -2,7 +2,6 @@ import time
 import json
 import logging
 import os
-import requests
 from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma
 from app.config import settings
 
@@ -117,7 +116,7 @@ def load_routing_cache() -> None:
         with open(ROUTING_CACHE_FILE, "r") as f:
             raw = json.load(f)
         if not isinstance(raw, dict):
-            _routing_cache = {}
+            _routing_cache.clear()
             return
         now = time.time()
         loaded = {}
@@ -132,14 +131,15 @@ def load_routing_cache() -> None:
                     loaded[key] = (decision, float(timestamp))
             except Exception:
                 continue
-        _routing_cache = loaded
+        _routing_cache.clear()
+        _routing_cache.update(loaded)
         _LOGGER.info("Loaded %d routing cache entries from disk", len(_routing_cache))
     except json.JSONDecodeError as e:
         _LOGGER.warning("Routing cache corrupted: %s, starting fresh", e)
-        _routing_cache = {}
+        _routing_cache.clear()
     except Exception as e:
         _LOGGER.warning("Could not load routing cache: %s", e)
-        _routing_cache = {}
+        _routing_cache.clear()
 
 
 def get_routing_cache_stats() -> list[dict]:
@@ -160,9 +160,8 @@ def get_routing_cache_stats() -> list[dict]:
 
 def clear_routing_cache() -> int:
     """Clear all routing cache entries. Returns count removed."""
-    global _routing_cache
     count = len(_routing_cache)
-    _routing_cache = {}
+    _routing_cache.clear()
     _save_routing_cache()
     return count
 
@@ -356,14 +355,16 @@ def _keyword_detect(query: str) -> str | None:
 
 
 def _llm_detect(query: str) -> str:
-    """Ask Ollama to pick the best source for the query. Falls back to kiwix.
-    Checks routing cache first to avoid redundant Ollama calls."""
+    """Ask LLM to pick the best source for the query. Falls back to kiwix.
+    Checks routing cache first to avoid redundant LLM calls."""
+    from app.llm import complete, is_configured
+
     # Check routing cache first
     cached = _get_routing(f"source:{query}")
     if cached:
         return cached
 
-    if not settings.ollama_url or not settings.ollama_model:
+    if not is_configured():
         return "kiwix"
 
     source_list = "\n".join(
@@ -380,36 +381,15 @@ def _llm_detect(query: str) -> str:
         f"Best source name:"
     )
 
-    try:
-        resp = requests.post(
-            f"{settings.ollama_url}/api/generate",
-            json={
-                "model": settings.ollama_model,
-                "prompt": prompt,
-                "stream": False,
-                "think": False,
-                "options": {"temperature": 0, "num_predict": 20},
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        raw = data.get("response", "").strip()
-        if not raw:
-            thinking = data.get("thinking", "")
-            lines = [l.strip() for l in thinking.splitlines() if l.strip()]
-            raw = lines[-1] if lines else ""
-        chosen = raw.strip(".").strip().lower()
+    chosen = (complete(prompt, max_tokens=20) or "").lower()
 
-        if chosen in SOURCE_MAP:
-            _LOGGER.info("LLM intent: '%s' -> %s", query[:50], chosen)
-            _set_routing(f"source:{query}", chosen)
-            return chosen
+    if chosen in SOURCE_MAP:
+        _LOGGER.info("LLM intent: '%s' -> %s", query[:50], chosen)
+        _set_routing(f"source:{query}", chosen)
+        return chosen
 
+    if chosen:
         _LOGGER.warning("LLM returned unknown source '%s', falling back to kiwix", chosen)
-
-    except Exception as e:
-        _LOGGER.warning("LLM source detection failed: %s", e)
 
     _set_routing(f"source:{query}", "kiwix")
     return "kiwix"

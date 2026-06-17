@@ -4,7 +4,25 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
-## [2.8.0]
+## [2.9.0]
+
+### Added
+- `app/llm.py` — unified LLM client supporting both Ollama native API and OpenAI-compatible API (llama-server, LM Studio, etc.)
+- `LLM_API_TYPE` config var — set to `"ollama"` (default) or `"openai"` to switch backends
+- Routing cache tests — 28 new tests covering all routing cache operations including corruption handling
+- Source guards — FreshRSS and SearXNG return clean error messages when not configured
+
+### Changed
+- `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_API_TYPE` renamed to `LLM_URL`, `LLM_MODEL`, `LLM_API_TYPE` — better reflects support for any compatible backend
+- All LLM calls in `router.py` and `kiwix.py` now route through `llm.py` helper
+- `clear_routing_cache` and `load_routing_cache` fixed to use `.clear()` and `.update()` instead of reassignment — prevents stale reference issues
+
+### Fixed
+- Routing cache `clear()` and `load()` used dict reassignment instead of mutation, causing external references to see stale data
+
+---
+
+## [2.8.0] — Upcoming
 
 ### Added
 - Routing cache — source and Kiwix book selection decisions are cached for 1 hour, persisted to disk, eliminating redundant Ollama calls for repeated queries
@@ -103,7 +121,7 @@ All notable changes to MiniSearch are documented here.
 - LLM-assisted Kiwix book selection via Ollama
 - `POST /catalog/refresh` — force catalog re-scan without restart
 - `GET /catalog` — list loaded books
-- `OLLAMA_URL`, `OLLAMA_MODEL` config vars
+- `LLM_URL`, `LLM_MODEL` config vars
 - `FORECAST_TIMEZONE` config var
 - Structured search response — `success`, `cached`, `error` fields
 - Source fallback chain — kiwix falls back to web on empty results

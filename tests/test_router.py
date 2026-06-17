@@ -94,16 +94,16 @@ class TestDetectIntent:
         assert self.detect("latest news") == "news"
         assert self.detect("is anything down") == "uptime"
 
-    def test_no_keyword_falls_back_to_kiwix_when_ollama_disabled(self):
-        # With OLLAMA_URL blank (default in test env), should return kiwix
+    def test_no_keyword_falls_back_to_kiwix_when_llm_disabled(self):
+        # With LLM_URL blank (default in test env), should return kiwix
         from app.config import settings
-        original = settings.ollama_url
-        settings.ollama_url = ""
+        original = settings.llm_url
+        settings.llm_url = ""
         try:
             result = self.detect("what is the capital of France")
             assert result == "kiwix"
         finally:
-            settings.ollama_url = original
+            settings.llm_url = original
 
 
 # ---------------------------------------------------------------------------

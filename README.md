@@ -23,7 +23,7 @@ ESP32 Voice Assistant
           ├──────────────┐
           │              │
           ▼              ▼
-       Ollama      Source Providers
+      LLM Backend   Source Providers
           │        ├─ Kiwix
           │        ├─ FreshRSS
           │        ├─ SearXNG
@@ -122,7 +122,7 @@ docker compose up -d
 ```
 
 ### What's not in the full stack
-The example compose intentionally excludes Home Assistant, Ollama, and Uptime Kuma — these are typically long-running services with their own existing setup.
+The example compose intentionally excludes Home Assistant, your LLM backend, and Uptime Kuma — these are typically long-running services with their own existing setup.
 
 If you're running any of these in Docker and want them reachable by MiniSearch, connect them to `ai-net`:
 
@@ -164,8 +164,9 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `UPTIME_KUMA_URL` | Uptime Kuma URL | _(blank — disables uptime source)_ |
 | `UPTIME_KUMA_USERNAME` | Uptime Kuma username | |
 | `UPTIME_KUMA_PASSWORD` | Uptime Kuma password | |
-| `OLLAMA_URL` | Ollama API endpoint for intelligent routing | _(blank — disables LLM routing)_ |
-| `OLLAMA_MODEL` | Model to use for source and book selection | `qwen3:8b` |
+| `LLM_URL` | LLM backend URL for intelligent routing | _(blank — disables LLM routing)_ |
+| `LLM_MODEL` | Model to use for source and book selection | `qwen3:8b` |
+| `LLM_API_TYPE` | API format: `ollama` or `openai` | `ollama` |
 
 ### FreshRSS API setup
 1. Enable API access: **Administration → Authentication → Allow API access**
@@ -188,11 +189,17 @@ Also generate a unique `secret_key` in `searxng/settings.yml`:
 openssl rand -hex 32
 ```
 
-### Kiwix LLM-assisted routing
-MiniSearch uses Ollama in two ways for Kiwix queries:
+### LLM-assisted routing
+MiniSearch uses a local LLM backend in two ways:
 
-1. **Source selection** — when `auto` is used and no keyword matches, Ollama picks the best source based on the query
-2. **Book selection** — once routed to Kiwix, Ollama picks the best 1-2 ZIM books from your catalog for the query
+1. **Source selection** — when `auto` is used and no keyword matches, the LLM picks the best source based on the query
+2. **Book selection** — once routed to Kiwix, the LLM picks the best 1-2 ZIM books from your catalog for the query
+
+Routing decisions are cached for 1 hour so repeated queries skip the LLM call entirely.
+
+**Supported backends** via `LLM_API_TYPE`:
+- `ollama` — Ollama native API (default). Works with any Ollama-served model.
+- `openai` — OpenAI-compatible API. Works with llama-server, LM Studio, and any OpenAI-compatible endpoint.
 
 The book list is built dynamically from your Kiwix catalog at startup — no hardcoded list, no rebuild needed when you add new ZIMs. To force a refresh after adding ZIMs:
 
@@ -200,7 +207,7 @@ The book list is built dynamically from your Kiwix catalog at startup — no har
 curl -X POST http://your-host:8888/catalog/refresh
 ```
 
-If `OLLAMA_URL` is left blank, MiniSearch falls back to keyword-based routing and Wikipedia for all Kiwix queries.
+If `LLM_URL` is left blank, MiniSearch falls back to keyword-based routing and Wikipedia for all Kiwix queries.
 
 ## REST API
 
@@ -230,22 +237,22 @@ Response:
 Returns the list of available sources.
 
 ### `GET /health`
-Returns status, number of Kiwix books loaded, and cache entry count.
+Returns status, number of Kiwix books loaded, and current result cache entry count.
 
 ### `GET /catalog`
-Lists all books currently loaded from the Kiwix catalog.
+Lists all books currently loaded from the Kiwix OPDS catalog.
 
 ### `POST /catalog/refresh`
 Forces a re-scan of the Kiwix catalog without restarting the container.
 
 ### `GET /cache`
-Shows all current cache entries with age and expiry time.
+Shows all current result cache entries with age and remaining TTL.
 
 ### `POST /cache/clear`
-Clears all cached results from memory and disk.
+Clears all result cache entries from memory and disk.
 
 ### `GET /cache/routing`
-Shows all current routing cache entries — source and Kiwix book selection decisions cached to avoid redundant Ollama calls.
+Shows all current routing cache entries — source and Kiwix book selection decisions cached to avoid redundant LLM calls.
 
 ### `POST /cache/routing/clear`
 Clears all routing cache entries from memory and disk.
@@ -261,6 +268,8 @@ MiniSearch caches results in memory and persists them to disk so the cache survi
 | `forecast` | 30 minutes |
 | `news` | 15 minutes |
 | `uptime` | 1 minute |
+
+Routing decisions (which source and Kiwix books to use) are cached separately for 1 hour.
 
 ## MCP
 
@@ -313,7 +322,7 @@ The new source is automatically available via both REST and MCP.
 docker exec minisearch python3 -m pytest /app/tests/ -v
 ```
 
-104 tests covering intent routing, cache logic, Kiwix scoring, search term cleaning, FreshRSS article filtering, and all source modules via mocking.
+126 tests covering intent routing, cache logic, routing cache, Kiwix scoring, search term cleaning, FreshRSS article filtering, and all source modules via mocking.
 
 ## Project Structure
 
@@ -331,6 +340,7 @@ MiniSearch/
 │   └── settings.yml               # SearXNG config with JSON enabled
 ├── tests/
 │   ├── test_router.py              # intent detection, cache, fallback logic
+│   ├── test_routing_cache.py       # routing cache logic
 │   ├── test_kiwix.py               # scoring and search term cleaning
 │   ├── test_freshrss.py            # general query detection, article scoring
 │   ├── test_freshrss_network.py    # FreshRSS network calls via mocking
@@ -341,6 +351,7 @@ MiniSearch/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog endpoints
     ├── mcp_server.py               # MCP SSE server
     ├── router.py                   # Intent detection, source routing, and caching
+    ├── llm.py                      # LLM client — Ollama native and OpenAI-compatible
     ├── config.py                   # Settings via environment variables
     └── sources/
         ├── kiwix.py                # Offline knowledge base — dynamic catalog + LLM routing
@@ -356,13 +367,8 @@ Local-first, privacy-preserving, subscription-free. MiniSearch is designed for h
 
 ## Roadmap
 
-- [ ] Additional source module for Home Assistant
-- [ ] Routing cache tests — cache exists, no tests for it yet
-- [ ] Version pinning across two repos
-- [ ] MiniSearch Intents: Timer tool — HA intent interception conflict unresolved
-- [ ] MiniSearch Intents: Compound unit conversion — 8B model limitation
-- [ ] General: Stress test LLM routing under load
-- [ ] General: Community source modules (Jellyfin, Paperless-ngx, etc.) — contributor territory
+- [ ] Additional source modules (Home Assistant, Jellyfin, etc.)
+- [ ] Source fusion — query multiple sources concurrently and merge results (v3.0)
 
 ## Contributing
 
