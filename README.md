@@ -1,6 +1,6 @@
 # MiniSearch
 
-A unified local knowledge search API for self-hosted homelabs. MiniSearch runs as a Docker container on your internal network and routes queries to the appropriate backend — offline knowledge, weather forecast, RSS news, live web search, or service monitoring — via a single endpoint.
+A unified local knowledge search API for self-hosted homelabs. MiniSearch runs as a Docker container on your internal network and routes queries to the appropriate backend — offline knowledge, weather forecast, RSS news, live web search, service monitoring, or multiple sources concurrently — via a single endpoint.
 
 Exposes both a **REST API** and an **MCP server** so any client can connect to it.
 
@@ -76,6 +76,29 @@ Cursor ──────────────┼────── MCP
             Home Assistant
 ```
 
+### Source Fusion
+
+```text
+         Query + source="fusion"
+                  │
+                  ▼
+       LLM picks 2-3 best sources
+       (or you specify explicitly)
+                  │
+         ┌────────┼────────┐
+         ▼        ▼        ▼
+       Kiwix     Web     News
+    (offline) (live)  (recent)
+         │        │        │
+         └────────┴────────┘
+                  │
+          Score & Merge Results
+                  │
+            Single Response
+```
+
+Fusion queries all specified sources concurrently, filters empty or failed results, and merges the remainder with source attribution headers. If only one source returns results, it is returned directly without headers.
+
 ## Integrations
 
 | Client | Protocol | How |
@@ -93,6 +116,7 @@ Cursor ──────────────┼────── MCP
 | `news` | [FreshRSS](https://freshrss.github.io/FreshRSS/) | Recent articles from your RSS feeds via GReader API |
 | `web` | [SearXNG](https://searxng.github.io/searxng/) | Live web search via your local SearXNG instance |
 | `uptime` | [Uptime Kuma](https://uptime.kuma.pet/) | Service monitor status — reports any down services |
+| `fusion` | — | Query multiple sources concurrently and merge results |
 | `auto` | — | MiniSearch detects intent and picks the best source |
 
 ## Requirements
@@ -190,18 +214,19 @@ openssl rand -hex 32
 ```
 
 ### LLM-assisted routing
-MiniSearch uses a local LLM backend in two ways:
+MiniSearch uses a local LLM backend in three ways:
 
 1. **Source selection** — when `auto` is used and no keyword matches, the LLM picks the best source based on the query
 2. **Book selection** — once routed to Kiwix, the LLM picks the best 1-2 ZIM books from your catalog for the query
+3. **Fusion source selection** — when `fusion` is used without specifying sources, the LLM picks the best 2-3 sources for the query
 
 Routing decisions are cached for 1 hour so repeated queries skip the LLM call entirely.
 
 **Supported backends** via `LLM_API_TYPE`:
-- `ollama` — Ollama native API (default). Works with any Ollama-served model.
-- `openai` — OpenAI-compatible API. Works with llama-server, LM Studio, and any OpenAI-compatible endpoint.
+- `ollama` — Ollama native API (default)
+- `openai` — OpenAI-compatible API (llama-server, LM Studio, etc.)
 
-The book list is built dynamically from your Kiwix catalog at startup — no hardcoded list, no rebuild needed when you add new ZIMs. To force a refresh after adding ZIMs:
+The book list is built dynamically from your Kiwix catalog at startup. To force a refresh after adding ZIMs:
 
 ```bash
 curl -X POST http://your-host:8888/catalog/refresh
@@ -213,10 +238,31 @@ If `LLM_URL` is left blank, MiniSearch falls back to keyword-based routing and W
 
 ### `POST /search`
 
+Single source:
+
 ```json
 {
   "query": "what is molybdenum",
   "source": "auto"
+}
+```
+
+Fusion — LLM picks sources automatically:
+
+```json
+{
+  "query": "what is happening with the space program lately",
+  "source": "fusion"
+}
+```
+
+Fusion — explicit source list:
+
+```json
+{
+  "query": "what is happening with the space program lately",
+  "source": "fusion",
+  "fusion_sources": ["kiwix", "web", "news"]
 }
 ```
 
@@ -265,11 +311,12 @@ MiniSearch caches results in memory and persists them to disk so the cache survi
 |--------|-----|
 | `kiwix` | 24 hours |
 | `web` | 1 hour |
+| `fusion` | 30 minutes |
 | `forecast` | 30 minutes |
 | `news` | 15 minutes |
 | `uptime` | 1 minute |
 
-Routing decisions (which source and Kiwix books to use) are cached separately for 1 hour.
+Routing decisions (which source, Kiwix books, and fusion source sets to use) are cached separately for 1 hour.
 
 ## MCP
 
@@ -293,7 +340,7 @@ Add this to your `claude_desktop_config.json`:
 
 SSE endpoint: `http://your-host-ip:8888/mcp/sse`
 
-The MCP server exposes a single `search` tool with the same interface as the REST API.
+The MCP server exposes a single `search` tool with the same interface as the REST API, including `fusion_sources` support.
 
 ## Kiwix ZIM files
 
@@ -314,7 +361,7 @@ Popular ZIMs for a homelab stack:
 3. Import and register it in `app/router.py` — add to `SOURCE_MAP`, `INTENT_MAP`, `SOURCE_DESCRIPTIONS`, and `CACHE_TTL`
 4. Rebuild: `docker compose up -d --build`
 
-The new source is automatically available via both REST and MCP.
+The new source is automatically available via both REST and MCP — and immediately fusable with any other source.
 
 ## Running Tests
 
@@ -322,7 +369,7 @@ The new source is automatically available via both REST and MCP.
 docker exec minisearch python3 -m pytest /app/tests/ -v
 ```
 
-126 tests covering intent routing, cache logic, routing cache, Kiwix scoring, search term cleaning, FreshRSS article filtering, and all source modules via mocking.
+143 tests covering intent routing, cache logic, routing cache, Kiwix scoring, search term cleaning, FreshRSS article filtering, all source modules via mocking, and fusion behavior.
 
 ## Project Structure
 
@@ -346,7 +393,8 @@ MiniSearch/
 │   ├── test_freshrss_network.py    # FreshRSS network calls via mocking
 │   ├── test_forecast.py            # forecast parsing and thresholds via mocking
 │   ├── test_searxng.py             # SearXNG search and guard via mocking
-│   └── test_uptime_kuma.py         # Uptime Kuma status parsing via mocking
+│   ├── test_uptime_kuma.py         # Uptime Kuma status parsing via mocking
+│   └── test_fusion.py              # fusion source merging and failure handling
 └── app/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog endpoints
     ├── mcp_server.py               # MCP SSE server
@@ -358,21 +406,17 @@ MiniSearch/
         ├── forecast.py             # Open-Meteo weather forecast
         ├── freshrss.py             # FreshRSS RSS reader
         ├── searxng.py              # SearXNG web search
-        └── uptime_kuma.py          # Uptime Kuma service monitoring
+        ├── uptime_kuma.py          # Uptime Kuma service monitoring
+        └── fusion.py               # Multi-source concurrent fusion
 ```
 
 ## Philosophy
 
 Local-first, privacy-preserving, subscription-free. MiniSearch is designed for homelabs where the data stays home. Open-Meteo is the only external call — everything else routes to services you control.
 
-## Roadmap
-
-- [ ] Additional source modules (Home Assistant, Jellyfin, etc.)
-- [ ] Source fusion — query multiple sources concurrently and merge results (v3.0)
-
 ## Contributing
 
-PRs welcome. New source modules are the easiest contribution — drop a file in `sources/`, register it in the router, done.
+PRs welcome. New source modules are the easiest contribution — drop a file in `sources/`, register it in the router, done. It is immediately available via REST, MCP, and fusion.
 
 ### Proposed modules
 
@@ -387,3 +431,8 @@ Looking for contributors interested in building out additional sources:
 - **Immich** — search local photo library by date, album, or description
 
 Each source only needs a single `search(query: str) -> str` function. See any existing file in `app/sources/` as a reference.
+
+## Part of the MiniNet stack
+
+- [MiniSearch Intents](https://github.com/immortalbob/minisearch_intents) — native Home Assistant LLM integration for MiniSearch
+- [MiniSense-T7S3](https://github.com/immortalbob/MiniSense-T7S3) — ESP32-S3 room sensor node with voice assistant and CO2 monitoring
