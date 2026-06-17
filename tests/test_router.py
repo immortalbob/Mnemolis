@@ -81,6 +81,127 @@ class TestKeywordDetect:
         assert self.detect("recent Python releases") is None
 
 
+class TestKeywordDetectMulti:
+    """Tests for multi-keyword detection that escalates to fusion."""
+
+    def setup_method(self):
+        from app.router import _keyword_detect
+        self.detect = _keyword_detect
+
+    def test_two_sources_returns_list(self):
+        result = self.detect("what is the weather and are my services up")
+        assert isinstance(result, list)
+        assert "forecast" in result
+        assert "uptime" in result
+
+    def test_weather_and_news_returns_list(self):
+        result = self.detect("what is the weather and latest news headlines")
+        assert isinstance(result, list)
+        assert "forecast" in result
+        assert "news" in result
+
+    def test_single_source_still_returns_string(self):
+        result = self.detect("what is the weather tomorrow")
+        assert isinstance(result, str)
+        assert result == "forecast"
+
+    def test_no_match_still_returns_none(self):
+        result = self.detect("what is molybdenum")
+        assert result is None
+
+    def test_list_has_no_duplicates(self):
+        result = self.detect("what is the weather and are my services up")
+        assert isinstance(result, list)
+        assert len(result) == len(set(result))
+
+    def test_three_sources_returns_list(self):
+        result = self.detect("weather forecast latest news and are my services up")
+        assert isinstance(result, list)
+        assert len(result) >= 2
+
+
+class TestNewUptimeTriggers:
+    """Regression tests for expanded uptime trigger list."""
+
+    def setup_method(self):
+        from app.router import _keyword_detect
+        self.detect = _keyword_detect
+
+    def test_my_services(self):
+        assert self.detect("check my services") == "uptime"
+
+    def test_services_up(self):
+        assert self.detect("are my services up") == "uptime"
+
+    def test_services_down(self):
+        assert self.detect("are any services down") == "uptime"
+
+    def test_anything_down(self):
+        assert self.detect("is anything down right now") == "uptime"
+
+    def test_everything_up(self):
+        assert self.detect("is everything up") == "uptime"
+
+    def test_everything_down(self):
+        assert self.detect("is everything down") == "uptime"
+
+    def test_network_down(self):
+        assert self.detect("is the network down") == "uptime"
+
+    def test_network_up(self):
+        assert self.detect("is the network up") == "uptime"
+
+    def test_whats_offline(self):
+        assert self.detect("what's offline right now") == "uptime"
+
+    def test_server_status(self):
+        assert self.detect("what is the server status") == "uptime"
+
+    def test_server_down(self):
+        assert self.detect("is the server down") == "uptime"
+
+    def test_check_services(self):
+        assert self.detect("check services for me") == "uptime"
+
+    def test_is_my_network(self):
+        assert self.detect("is my network ok") == "uptime"
+
+    def test_anything_offline(self):
+        assert self.detect("is anything offline right now") == "uptime"
+
+    def test_is_it_running(self):
+        assert self.detect("is it running on my network") == "uptime"
+
+    def test_is_it_up(self):
+        assert self.detect("is it up") == "uptime"
+
+    def test_are_they_up(self):
+        assert self.detect("are they up") == "uptime"
+
+
+class TestAutoFusionEscalation:
+    """Tests for auto routing escalating to fusion on multi-topic queries."""
+
+    def test_multi_topic_query_uses_fusion(self):
+        from app.router import route
+        from unittest.mock import patch
+        from app.sources import fusion
+
+        with patch.object(fusion, "search", return_value="Fused result.") as mock_fusion:
+            result = route("what is the weather and are my services up", "auto")
+        assert mock_fusion.called
+        assert result == "Fused result."
+
+    def test_single_topic_does_not_use_fusion(self):
+        from app.router import route
+        from unittest.mock import patch
+        from app.sources import fusion
+
+        with patch.object(fusion, "search") as mock_fusion:
+            route("what is the weather tomorrow", "auto")
+        assert not mock_fusion.called
+
+
 class TestDetectIntent:
     """Tests for detect_intent — full routing with LLM fallback disabled."""
 

@@ -29,6 +29,15 @@ INTENT_MAP = {
         "uptime", "is down", "what's down", "whats down",
         "any outages", "service status", "network status",
         "are all services", "is everything up", "what is offline",
+        "my services", "services up", "services down",
+        "anything down", "everything down", "everything up",
+        "network down", "network up",
+        "what's offline", "whats offline", "anything offline",
+        "any services", "check services",
+        "is my network", "is the network",
+        "server down", "server up", "server status",
+        "is it running", "is it up", "is it down",
+        "are they up", "are they down",
     ],
 }
 
@@ -343,29 +352,62 @@ def clear_cache() -> int:
 # Intent detection
 # ---------------------------------------------------------------------------
 
-def _keyword_detect(query: str) -> str | None:
-    """Fast keyword-based intent detection. Returns source name or None if no match."""
+def _keyword_detect(query: str) -> str | list[str] | None:
+    """Fast keyword-based intent detection.
+
+    Returns:
+    - A single source name if only one source matches
+    - A list of source names if multiple sources match (auto-escalates to fusion)
+    - None if no keywords match
+    """
     query_lower = query.lower()
+    matched = []
     for source, triggers in INTENT_MAP.items():
         for trigger in triggers:
             if trigger in query_lower:
-                _LOGGER.info(
-                    "Keyword intent: '%s' matched trigger '%s' -> %s",
-                    query[:50], trigger, source
-                )
-                return source
-    return None
+                if source not in matched:
+                    matched.append(source)
+                    _LOGGER.info(
+                        "Keyword intent: '%s' matched trigger '%s' -> %s",
+                        query[:50], trigger, source
+                    )
+                break  # one trigger per source is enough
+
+    if not matched:
+        return None
+    if len(matched) == 1:
+        return matched[0]
+
+    _LOGGER.info("Multi-keyword match for '%s' -> escalating to fusion: %s", query[:50], matched)
+    return matched
 
 
-def _llm_detect(query: str) -> str:
-    """Ask LLM to pick the best source for the query. Falls back to kiwix.
-    Checks routing cache first to avoid redundant LLM calls."""
+def _llm_detect(query: str) -> str | list[str]:
+    """Ask LLM to pick the best source(s) for the query.
+
+    Returns a single source name for focused queries, or a list of source names
+    for complex multi-topic queries that benefit from fusion.
+
+    The LLM decides in one call — if it returns a comma-separated list, the
+    caller will trigger fusion automatically.
+
+    Checks routing cache first to avoid redundant LLM calls.
+    Falls back to 'kiwix' if LLM is not configured or returns invalid sources.
+    """
     from app.llm import complete, is_configured
 
     # Check routing cache first
     cached = _get_routing(f"source:{query}")
     if cached:
-        return cached
+        # If cached value contains a comma it was a fusion decision
+        if "," in cached:
+            sources = [s.strip() for s in cached.split(",") if s.strip() in SOURCE_MAP and s.strip() != "fusion"]
+            if sources:
+                _LOGGER.info("Routing cache hit (fusion): '%s' -> %s", query[:50], sources)
+                return sources
+        elif cached in SOURCE_MAP:
+            _LOGGER.info("Routing cache hit: '%s' -> %s", query[:50], cached)
+            return cached
 
     if not is_configured():
         return "kiwix"
@@ -373,33 +415,53 @@ def _llm_detect(query: str) -> str:
     source_list = "\n".join(
         f"- {name}: {desc}"
         for name, desc in SOURCE_DESCRIPTIONS.items()
+        if name != "fusion"
     )
 
     prompt = (
         f"You are a search router. Given a user query and a list of available search sources, "
-        f"return ONLY the exact source name that best matches the query. "
-        f"No explanation, no punctuation, just the source name.\n\n"
+        f"return the best source or sources.\n\n"
+        f"Rules:\n"
+        f"- For a focused single-topic query: return ONLY one source name\n"
+        f"- For a complex or multi-topic query that needs multiple sources: return 2-3 source names separated by commas\n"
+        f"- No explanation, no punctuation except commas between source names\n\n"
         f"Query: {query}\n\n"
         f"Available sources:\n{source_list}\n\n"
-        f"Best source name:"
+        f"Best source name(s):"
     )
 
-    chosen = (complete(prompt, max_tokens=20) or "").lower()
+    raw = (complete(prompt, max_tokens=30) or "").lower().strip()
 
-    if chosen in SOURCE_MAP:
+    # Multi-source response — trigger fusion
+    if "," in raw:
+        sources = []
+        for candidate in raw.split(","):
+            candidate = candidate.strip().strip(".")
+            if candidate in SOURCE_MAP and candidate != "fusion" and candidate not in sources:
+                sources.append(candidate)
+        if len(sources) >= 2:
+            _LOGGER.info("LLM escalated to fusion: '%s' -> %s", query[:50], sources)
+            _set_routing(f"source:{query}", ",".join(sources))
+            return sources
+        _LOGGER.warning("LLM returned multi-source but too few valid: '%s'", raw)
+
+    # Single source response
+    chosen = raw.strip(".").strip()
+    if chosen in SOURCE_MAP and chosen != "fusion":
         _LOGGER.info("LLM intent: '%s' -> %s", query[:50], chosen)
         _set_routing(f"source:{query}", chosen)
         return chosen
 
-    if chosen:
-        _LOGGER.warning("LLM returned unknown source '%s', falling back to kiwix", chosen)
+    if raw:
+        _LOGGER.warning("LLM returned unknown source '%s', falling back to kiwix", raw)
 
     _set_routing(f"source:{query}", "kiwix")
     return "kiwix"
 
 
 def _llm_pick_fusion_sources(query: str) -> list[str]:
-    """Ask LLM to pick 2-3 best sources for a fusion query. Falls back to ["kiwix", "web"]."""
+    """Ask LLM to pick 2-3 best sources for an explicit fusion query.
+    Falls back to ["kiwix", "web"] if LLM is not configured."""
     from app.llm import complete, is_configured
 
     cache_key = f"fusion_sources:{query}"
@@ -447,8 +509,12 @@ def _llm_pick_fusion_sources(query: str) -> list[str]:
     return defaults
 
 
-def detect_intent(query: str) -> str:
-    """Detect intent using keyword matching first, LLM as fallback."""
+def detect_intent(query: str) -> str | list[str]:
+    """Detect intent using keyword matching first, LLM as fallback.
+
+    Returns a single source name for focused queries, or a list of source names
+    when the LLM determines fusion would give a better answer.
+    """
     source = _keyword_detect(query)
     if source:
         return source
@@ -462,7 +528,14 @@ def detect_intent(query: str) -> str:
 
 def route(query: str, source: str = "auto", fusion_sources: list[str] | None = None) -> str:
     if source == "auto":
-        source = detect_intent(query)
+        intent = detect_intent(query)
+        # LLM may escalate to fusion for multi-topic queries
+        if isinstance(intent, list):
+            _LOGGER.info("Auto-escalating to fusion for query: '%s' sources=%s", query[:50], intent)
+            fusion_sources = intent
+            source = "fusion"
+        else:
+            source = intent
     else:
         _LOGGER.info("Source explicitly set to '%s' for query: '%s'", source, query[:50])
 

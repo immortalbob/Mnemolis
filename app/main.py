@@ -134,11 +134,17 @@ def routing_cache_clear():
 
 @app.post("/search", response_model=SearchResponse)
 def search(request: SearchRequest):
-    resolved_source = (
-        request.source if request.source != "auto"
-        else detect_intent(request.query)
-    )
-    was_cached = check_cached(resolved_source, request.query)
+    if request.source == "auto":
+        intent = detect_intent(request.query)
+        if isinstance(intent, list):
+            resolved_source = "fusion"
+            was_cached = check_cached("fusion", f"fusion[{','.join(sorted(intent))}]:{request.query}")
+        else:
+            resolved_source = intent
+            was_cached = check_cached(resolved_source, request.query)
+    else:
+        resolved_source = request.source
+        was_cached = check_cached(resolved_source, request.query)
 
     try:
         result = route(request.query, request.source, request.fusion_sources)
