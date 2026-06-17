@@ -4,6 +4,25 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
+## [3.1.0]
+
+### Added
+- **Smart auto-fusion escalation** — `source="auto"` now escalates to fusion automatically when a query spans multiple topics. Keyword matching checks all sources before returning, and if multiple sources match, fusion is triggered with those sources — no LLM call needed.
+- **LLM fusion escalation** — when no keywords match, the LLM now decides in a single call whether to use one source or multiple. Returns comma-separated source names for complex queries, triggering fusion automatically.
+- **Kiwix suffix stemming** — `_stem()` function added to `kiwix.py`. Strips common suffixes (`-s`, `-es`, `-ies`, `-ing`, `-ed`) before scoring so "marsupials" correctly matches "Marsupial", "foxes" matches "Fox", etc. Word-level title and excerpt scoring now uses stemmed terms.
+- **Expanded uptime intent triggers** — 15 new trigger phrases added including "my services", "services up/down", "anything down", "everything up/down", "network down/up", "anything offline", "server status", "is it running", "is it up/down", "are they up/down"
+- **22 new tests** — `TestKeywordDetectMulti`, `TestNewUptimeTriggers`, `TestAutoFusionEscalation`, `TestStem`, and stemmed scoring tests
+
+### Changed
+- `_keyword_detect` now scans all sources before returning — single match returns string, multiple matches return list for fusion escalation
+- `_llm_detect` updated with smarter prompt — returns single source or comma-separated list in one call
+- `detect_intent` return type updated to `str | list[str]`
+- `route()` updated to handle list return from `detect_intent`
+
+**Total test count: 179**
+
+---
+
 ## [3.0.0]
 
 ### Added
