@@ -15,25 +15,21 @@ ESP32 Voice Assistant
    Home Assistant
           │
           ▼
- MiniSearch_Intents
+ MiniSearch Intents
           │
           ▼
      MiniSearch
           │
-          ├──────────────┐
-          │              │
-          ▼              ▼
-      LLM Backend   Source Providers
-          │        ├─ Kiwix
-          │        ├─ FreshRSS
-          │        ├─ SearXNG
-          │        ├─ Open-Meteo
-          │        └─ Uptime Kuma
-          │
-          ▼
-   Source Selection
-   Book Selection
-   Query Routing
+          ├────────────────────┐
+          │                    │
+          ▼                    ▼
+      LLM Backend         Source Providers
+          │               ├─ Kiwix
+          │               ├─ FreshRSS
+          ▼               ├─ SearXNG
+   Smart Routing          ├─ Open-Meteo
+   ├─ Single source       ├─ Uptime Kuma
+   └─ Auto-fusion    ────►└─ Home Assistant
           │
           ▼
       Response
@@ -48,53 +44,62 @@ ESP32 Voice Assistant
 ### Multi-Client Architecture
 
 ```text
-                Open WebUI
+   Open WebUI       Claude Desktop       Cursor
+       │                  │                │
+    REST API             MCP              MCP
+       │                  │                │
+       └──────────────────┴────────────────┘
+                          │
+                          ▼
+                     MiniSearch
+                          │
+                    Smart Routing
+               ┌──────────┴──────────┐
+               ▼                     ▼
+         Single Source          Auto-Fusion
+         (keyword or LLM)    (multi-keyword or LLM)
+               │                     │
+               └──────────┬──────────┘
+                          │
+                     ┌────┴────┐
+                     ▼         ▼
+              REST API      MCP/SSE
+                     │         │
+              MiniSearch   Any MCP
+               Intents      Client
                      │
-                REST API
+              Home Assistant
                      │
-
-Claude Desktop ──────┼────── MCP
-
-Cursor ──────────────┼────── MCP
-
-                     ▼
-
-               MiniSearch
-
-                     ▲
-
-                     │ REST API
-
-                     ▲
-
-          MiniSearch_Intents
-
-                     ▲
-
-                     │
-
-            Home Assistant
+              Voice Pipeline
 ```
 
 ### Source Fusion
 
 ```text
-         Query + source="fusion"
-                  │
-                  ▼
-       LLM picks 2-3 best sources
-       (or you specify explicitly)
-                  │
-         ┌────────┼────────┐
-         ▼        ▼        ▼
-       Kiwix     Web     News
-    (offline) (live)  (recent)
-         │        │        │
-         └────────┴────────┘
-                  │
-          Score & Merge Results
-                  │
-            Single Response
+   source="auto"                    source="fusion"
+        │                                 │
+        ▼                                 ▼
+ Keyword scan all sources      LLM picks 2-3 sources
+ Multiple match? → fuse        (or you specify explicitly)
+ Single match? → direct              │
+        │                            │
+        └────────────┬───────────────┘
+                     │
+         ┌───────────┼───────────┐
+         ▼           ▼           ▼
+       Kiwix        HA        Forecast
+      FreshRSS   SearXNG      Uptime
+    (any combination of available sources,
+         queried concurrently)
+         │           │           │
+         └───────────┴───────────┘
+                     │
+        Filter empty / failed results
+        Partial failure OK — best effort
+                     │
+      Merge with [SOURCE] attribution headers
+                     │
+               Single Response
 ```
 
 Fusion queries all specified sources concurrently, filters empty or failed results, and merges the remainder with source attribution headers. If only one source returns results, it is returned directly without headers.
