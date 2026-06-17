@@ -32,6 +32,16 @@ class TestUptimeKumaGuard:
 class TestUptimeKumaStatus:
     """Tests for monitor status parsing with mocked API."""
 
+    def setup_method(self):
+        from app.config import settings
+        settings.uptime_kuma_url = "http://uptime-kuma:3001"
+        settings.uptime_kuma_username = "testuser"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.uptime_kuma_url = ""
+        settings.uptime_kuma_username = ""
+
     def _mock_api(self, monitors: list, heartbeats: dict) -> MagicMock:
         mock_api = MagicMock()
         mock_api.__enter__ = MagicMock(return_value=mock_api)

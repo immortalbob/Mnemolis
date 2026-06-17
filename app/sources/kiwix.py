@@ -261,11 +261,31 @@ _STOP_WORDS = {
 }
 
 
+def _stem(word: str) -> str:
+    """Reduce a word to its approximate stem by stripping common suffixes.
+    Handles plural and verb forms — safe suffixes only, no semantic changes.
+    Examples: marsupials→marsupial, foxes→fox, batteries→battery,
+              computing→comput, computed→comput
+    """
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    if word.endswith("ing") and len(word) > 5:
+        return word[:-3]
+    if word.endswith("ed") and len(word) > 4:
+        return word[:-2]
+    if word.endswith("es") and len(word) > 3:
+        return word[:-2]
+    if word.endswith("s") and len(word) > 3:
+        return word[:-1]
+    return word
+
+
 def _score_result(result: dict, query: str, primary_book: str) -> int:
     """Score a search result by relevance to the query.
 
     Scoring breakdown:
     - Exact title match (case-insensitive): +20
+    - Stemmed title match (plural/suffix variations): +15
     - Title starts with query (after stop word removal): +10
     - Each query word in title (stop words removed): +5 each
     - Each query word in excerpt (stop words removed, normalized): +1 each
@@ -289,16 +309,24 @@ def _score_result(result: dict, query: str, primary_book: str) -> int:
     if query_lower == title_lower:
         score += 20
 
+    # Stemmed match — catches plural/suffix variations
+    # e.g. "marsupials" query matches "Marsupial" title
+    elif _stem(query_lower) == _stem(title_lower):
+        score += 15
+
     # Title starts with a meaningful query term (stop words already removed from query_words)
     if any(title_lower.startswith(w) for w in query_words if len(w) > 3):
         score += 10
 
-    # Word-level title hits (stop words already removed)
-    title_hits = len(query_words & title_words)
+    # Word-level title hits with stemming — catches plural word matches
+    stemmed_query_words = {_stem(w) for w in query_words}
+    stemmed_title_words = {_stem(w) for w in title_words}
+    title_hits = len(stemmed_query_words & stemmed_title_words)
     score += title_hits * 5
 
     # Word-level excerpt hits — normalize by excerpt length to avoid bias
-    excerpt_hits = len(query_words & excerpt_words)
+    stemmed_excerpt_words = {_stem(w) for w in excerpt_words}
+    excerpt_hits = len(stemmed_query_words & stemmed_excerpt_words)
     excerpt_len = max(len(excerpt_words), 1)
     score += int((excerpt_hits / excerpt_len) * 10)
 

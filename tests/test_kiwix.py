@@ -9,6 +9,42 @@ import pytest
 # Stop word filtering / search term cleaning
 # ---------------------------------------------------------------------------
 
+class TestStem:
+    """Tests for the _stem suffix-stripping function."""
+
+    def setup_method(self):
+        from app.sources.kiwix import _stem
+        self.stem = _stem
+
+    def test_strips_plural_s(self):
+        assert self.stem("marsupials") == "marsupial"
+
+    def test_strips_es(self):
+        assert self.stem("foxes") == "fox"
+
+    def test_strips_ies(self):
+        assert self.stem("batteries") == "battery"
+
+    def test_strips_ing(self):
+        assert self.stem("computing") == "comput"
+
+    def test_strips_ed(self):
+        assert self.stem("computed") == "comput"
+
+    def test_preserves_short_words(self):
+        # Words too short to strip safely
+        assert self.stem("as") == "as"
+        assert self.stem("is") == "is"
+
+    def test_no_suffix_unchanged(self):
+        assert self.stem("nitrogen") == "nitrogen"
+
+    def test_same_stem_for_singular_plural(self):
+        assert self.stem("marsupial") == self.stem("marsupials")
+        assert self.stem("fox") == self.stem("foxes")
+        assert self.stem("battery") == self.stem("batteries")
+
+
 class TestSearchTermCleaning:
     """Tests for stop word stripping before Kiwix search."""
 
@@ -117,3 +153,28 @@ class TestScoreResult:
         query = "molybdenum"
         primary = "wikipedia_en_all_maxi_2026-02"
         assert self.score(with_excerpt, query, primary) > self.score(no_excerpt, query, primary)
+
+    def test_stemmed_title_match_scores_high(self):
+        # "marsupials" query should match "Marsupial" title via stemming
+        stemmed = self._result("Marsupial")
+        unstemmed = self._result("Marsupials")
+        query = "marsupials"
+        primary = "wikipedia_en_all_maxi_2026-02"
+        # Both should score well — stemmed match (+15) vs exact match (+20)
+        assert self.score(stemmed, query, primary) >= 15
+        assert self.score(unstemmed, query, primary) >= 20
+
+    def test_stemmed_scores_higher_than_unrelated(self):
+        # Stemmed match should beat a completely unrelated article
+        marsupial = self._result("Marsupial")
+        unrelated = self._result("Ancient Roman Architecture")
+        query = "marsupials"
+        primary = "wikipedia_en_all_maxi_2026-02"
+        assert self.score(marsupial, query, primary) > self.score(unrelated, query, primary)
+
+    def test_plural_query_matches_singular_title(self):
+        # Plural query word should match singular title word via stemming
+        result = self._result("Battery Chemistry", excerpt="batteries store energy")
+        query = "batteries"
+        primary = "wikipedia_en_all_maxi_2026-02"
+        assert self.score(result, query, primary) > 0
