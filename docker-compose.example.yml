@@ -30,6 +30,9 @@ services:
       FORECAST_LATITUDE: "35.1894"    # your latitude
       FORECAST_LONGITUDE: "-114.0530" # your longitude
       FORECAST_LOCATION_NAME: "Kingman, Arizona"
+      # Home Assistant
+      HA_URL: ""
+      HA_TOKEN: ""
       # Uptime Kuma
       UPTIME_KUMA_URL: ""              # e.g. http://minikuma.local:3001
       UPTIME_KUMA_USERNAME: ""         # your Uptime Kuma username

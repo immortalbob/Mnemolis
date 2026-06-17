@@ -116,6 +116,7 @@ Fusion queries all specified sources concurrently, filters empty or failed resul
 | `news` | [FreshRSS](https://freshrss.github.io/FreshRSS/) | Recent articles from your RSS feeds via GReader API |
 | `web` | [SearXNG](https://searxng.github.io/searxng/) | Live web search via your local SearXNG instance |
 | `uptime` | [Uptime Kuma](https://uptime.kuma.pet/) | Service monitor status — reports any down services |
+| `ha` | [Home Assistant](https://www.home-assistant.io/) | Entity state summaries — lights, locks, sensors, motion, batteries, power |
 | `fusion` | — | Query multiple sources concurrently and merge results |
 | `auto` | — | MiniSearch detects intent and picks the best source |
 
@@ -188,6 +189,8 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `UPTIME_KUMA_URL` | Uptime Kuma URL | _(blank — disables uptime source)_ |
 | `UPTIME_KUMA_USERNAME` | Uptime Kuma username | |
 | `UPTIME_KUMA_PASSWORD` | Uptime Kuma password | |
+| `HA_URL` | Home Assistant URL | _(blank — disables HA source)_ |
+| `HA_TOKEN` | Home Assistant long-lived access token | |
 | `LLM_URL` | LLM backend URL for intelligent routing | _(blank — disables LLM routing)_ |
 | `LLM_MODEL` | Model to use for source and book selection | `qwen3:8b` |
 | `LLM_API_TYPE` | API format: `ollama` or `openai` | `ollama` |
@@ -235,6 +238,24 @@ curl -X POST http://your-host:8888/catalog/refresh
 ```
 
 If `LLM_URL` is left blank, MiniSearch falls back to keyword-based routing and Wikipedia for all Kiwix queries.
+
+### Home Assistant setup
+Generate a long-lived access token in Home Assistant:
+1. Go to your **Profile** (click your username in the sidebar)
+2. Scroll to **Long-lived access tokens**
+3. Click **Create Token**, give it a name, copy the token
+4. Set `HA_URL` to your HA instance URL (e.g. `http://192.168.3.6:8123`)
+5. Set `HA_TOKEN` to the generated token
+
+The `ha` source handles analytical queries that go beyond HA's built-in single-entity intent handling:
+- **"house status summary"** — lights, locks, sensors, motion, batteries
+- **"indoor air quality"** — CO2, temperature, humidity from indoor sensors
+- **"security status"** — locks, doors, recent motion with time-ago
+- **"battery status"** — all device battery levels
+- **"outdoor conditions"** — weather station sensors
+- **"how much power am I using"** — current and historical consumption
+
+The `ha` source also participates in fusion — "house status and what's the weather" automatically fuses `ha` + `forecast`.
 
 ## REST API
 
@@ -371,7 +392,7 @@ The new source is automatically available via both REST and MCP — and immediat
 docker exec minisearch python3 -m pytest /app/tests/ -v
 ```
 
-179 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, search term cleaning, FreshRSS article filtering, all source modules via mocking, and fusion behavior.
+202 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion behavior, and Home Assistant entity filtering.
 
 ## Project Structure
 
@@ -396,7 +417,8 @@ MiniSearch/
 │   ├── test_forecast.py            # forecast parsing and thresholds via mocking
 │   ├── test_searxng.py             # SearXNG search and guard via mocking
 │   ├── test_uptime_kuma.py         # Uptime Kuma status parsing via mocking
-│   └── test_fusion.py              # fusion source merging and failure handling
+│   ├── test_fusion.py              # fusion source merging and failure handling
+│   └── test_home_assistant.py      # HA entity filtering, exclusions, formatting
 └── app/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog endpoints
     ├── mcp_server.py               # MCP SSE server
@@ -409,6 +431,7 @@ MiniSearch/
         ├── freshrss.py             # FreshRSS RSS reader
         ├── searxng.py              # SearXNG web search
         ├── uptime_kuma.py          # Uptime Kuma service monitoring
+        ├── home_assistant.py       # Home Assistant entity state summaries
         └── fusion.py               # Multi-source concurrent fusion
 ```
 

@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     uptime_kuma_username: str = ""
     uptime_kuma_password: str = ""
 
+    # Home Assistant
+    ha_url: str = ""
+    ha_token: str = ""
+
     # LLM backend — for intelligent source and Kiwix book selection
     # Leave LLM_URL blank to disable LLM routing and fall back to keyword matching + Wikipedia
     llm_url: str = ""

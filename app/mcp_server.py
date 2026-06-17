@@ -43,7 +43,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "source": {
                         "type": "string",
-                        "enum": ["auto", "kiwix", "forecast", "news", "web", "uptime", "fusion"],
+                        "enum": ["auto", "kiwix", "forecast", "news", "web", "uptime", "ha", "fusion"],
                         "default": "auto",
                         "description": "The source to query. Use 'auto' to let MiniSearch decide."
                     },

@@ -15,6 +15,9 @@ services:
       FRESHRSS_MAX_ARTICLES: "10"
       # SearXNG
       SEARXNG_URL: "http://searxng:8080"
+      # Home Assistant
+      HA_URL: ""
+      HA_TOKEN: ""
       # Uptime Kuma
       UPTIME_KUMA_URL: ""
       UPTIME_KUMA_USERNAME: ""

@@ -2,7 +2,7 @@ import time
 import json
 import logging
 import os
-from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma, fusion
+from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma, fusion, home_assistant
 from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
@@ -24,6 +24,17 @@ INTENT_MAP = {
         "search the web", "google", "look it up online",
         "current events", "web search", "find online",
         "who won", "search online",
+    ],
+    "ha": [
+        "which lights are on", "lights on", "lights off", "lights status",
+        "house status", "home status", "house summary",
+        "are the doors locked", "door locked", "doors locked",
+        "indoor air", "air quality", "indoor sensors",
+        "how much power", "power consumption", "energy usage",
+        "battery status", "battery levels", "low battery",
+        "any motion", "recent motion", "motion detected",
+        "security status", "house secure",
+        "outdoor conditions", "outside conditions",
     ],
     "uptime": [
         "uptime", "is down", "what's down", "whats down",
@@ -47,6 +58,7 @@ SOURCE_MAP = {
     "news": freshrss.search,
     "web": searxng.search,
     "uptime": uptime_kuma.search,
+    "ha": home_assistant.search,
     "fusion": None,  # handled specially in route() — accepts fusion_sources list
 }
 
@@ -56,6 +68,7 @@ SOURCE_DESCRIPTIONS = {
     "news": "Recent RSS news articles from the user's feeds. Use for current events, headlines, or recent news.",
     "web": "Live web search via SearXNG. Use for current events, recent information, or anything that may have changed recently.",
     "uptime": "Uptime Kuma monitor status. Use when asked about service status, what is down, or network health.",
+    "ha": "Home Assistant entity states. Use for house status summaries, which lights are on, door and lock status, battery levels, indoor sensors, motion events, or power consumption.",
     "fusion": "Multi-source fusion — queries multiple sources concurrently and merges results. Use for complex queries that benefit from combining offline knowledge, live web, and recent news.",
 }
 
@@ -72,6 +85,7 @@ CACHE_TTL = {
     "news": 900,      # 15 minutes
     "web": 3600,      # 1 hour
     "uptime": 60,     # 1 minute — status changes fast
+    "ha": 30,         # 30 seconds — entity states change frequently
     "fusion": 1800,   # 30 minutes — blend of sources, use middle TTL
 }
 

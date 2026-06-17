@@ -62,20 +62,44 @@ class TestFreshRSSAuth:
 
     def test_auth_failure_returns_error(self):
         from app.sources import freshrss
-        with patch("app.sources.freshrss.requests.post", return_value=_mock_auth_response(success=False)):
-            result = freshrss.search("news")
-        assert "error" in result.lower() or "could not authenticate" in result.lower()
+        from app.config import settings
+        settings.freshrss_url = "http://freshrss"
+        settings.freshrss_user = "testuser"
+        try:
+            with patch("app.sources.freshrss.requests.post", return_value=_mock_auth_response(success=False)):
+                result = freshrss.search("news")
+            assert "error" in result.lower() or "could not authenticate" in result.lower()
+        finally:
+            settings.freshrss_url = ""
+            settings.freshrss_user = ""
 
     def test_connection_error_returns_error(self):
         from app.sources import freshrss
+        from app.config import settings
         import requests
-        with patch("app.sources.freshrss.requests.post", side_effect=requests.exceptions.ConnectionError("refused")):
-            result = freshrss.search("news")
-        assert "error" in result.lower()
+        settings.freshrss_url = "http://freshrss"
+        settings.freshrss_user = "testuser"
+        try:
+            with patch("app.sources.freshrss.requests.post", side_effect=requests.exceptions.ConnectionError("refused")):
+                result = freshrss.search("news")
+            assert "error" in result.lower()
+        finally:
+            settings.freshrss_url = ""
+            settings.freshrss_user = ""
 
 
 class TestFreshRSSArticles:
     """Tests for article fetching with mocked responses."""
+
+    def setup_method(self):
+        from app.config import settings
+        settings.freshrss_url = "http://freshrss"
+        settings.freshrss_user = "testuser"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.freshrss_url = ""
+        settings.freshrss_user = ""
 
     def test_empty_feed_returns_no_articles_message(self):
         from app.sources import freshrss

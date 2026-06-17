@@ -4,6 +4,32 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
+## [3.2.0]
+
+### Added
+- **Home Assistant source module** — `source="ha"` queries HA entity states for analytical summaries that go beyond HA's built-in single-entity intent handling
+- `app/sources/home_assistant.py` — keyword-based entity filtering by domain and device class, position-aware phrase matching (longer phrases take priority), deduplication, readable grouped output with time-ago motion events and rounded numeric values
+- `HA_URL` and `HA_TOKEN` config vars
+- `ha` added to `SOURCE_MAP`, `SOURCE_DESCRIPTIONS`, `CACHE_TTL` (30 second TTL), `INTENT_MAP`, MCP tool schema
+- 37 new tests in `tests/test_home_assistant.py` covering guards, exclusions, light/lock/environmental/battery/motion queries, and value formatting
+
+### What the HA source handles
+Queries HA can't answer natively with its built-in intents:
+- **House/security summaries** — "house status", "security status", "are the doors locked"
+- **Environmental** — "indoor air quality", "room temperature", "CO2 levels"
+- **Outdoor conditions** — "outdoor conditions" (weather station sensors)
+- **Battery status** — "battery status", "which devices have low battery"
+- **Motion history** — "any recent motion", "security status" with time-ago formatting
+- **Power consumption** — "how much power am I using"
+- **Auto-fusion** — "house status and what's the weather" automatically fuses `ha` + `forecast`
+
+### Changed
+- Version bumped to 3.2.0
+
+**Total test count: 202**
+
+---
+
 ## [3.1.0]
 
 ### Added
