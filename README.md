@@ -44,34 +44,31 @@ ESP32 Voice Assistant
 ### Multi-Client Architecture
 
 ```text
-   Open WebUI       Claude Desktop       Cursor
-       │                  │                │
-    REST API             MCP              MCP
-       │                  │                │
-       └──────────────────┴────────────────┘
-                          │
-                          ▼
-                     MiniSearch
-                          │
-                    Smart Routing
-               ┌──────────┴──────────┐
-               ▼                     ▼
-         Single Source          Auto-Fusion
-         (keyword or LLM)    (multi-keyword or LLM)
-               │                     │
-               └──────────┬──────────┘
-                          │
-                     ┌────┴────┐
-                     ▼         ▼
-              REST API      MCP/SSE
-                     │         │
-              MiniSearch   Any MCP
-               Intents      Client
-                     │
-              Home Assistant
-                     │
-              Voice Pipeline
-```
+   Open WebUI    Claude Desktop    Cursor    Home Assistant
+       │                │             │     (MiniSearch Intents)
+    REST API            MCP          MCP          REST API
+       │                │             │               │
+       └────────────────┴─────────────┴───────────────┘
+                                │
+                                ▼
+                           MiniSearch
+                                │
+                          Smart Routing
+                   ┌────────────┴────────────┐
+                   ▼                         ▼
+             Single Source             Auto-Fusion
+             (keyword or LLM)      (multi-keyword or LLM)
+                   │                         │
+                   └────────────┬────────────┘
+                                │
+                           ┌────┴────┐
+                           ▼         ▼
+                    REST API       MCP/SSE
+                           │         │
+               Home Assistant    Any MCP
+             (MiniSearch Intents)   Client
+                           │
+                    Voice Pipeline
 
 ### Source Fusion
 
