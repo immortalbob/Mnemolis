@@ -69,7 +69,7 @@ ESP32 Voice Assistant
              (MiniSearch Intents)   Client
                            │
                     Voice Pipeline
-
+```
 ### Source Fusion
 
 ```text
