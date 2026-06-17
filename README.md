@@ -387,8 +387,3 @@ Looking for contributors interested in building out additional sources:
 - **Immich** — search local photo library by date, album, or description
 
 Each source only needs a single `search(query: str) -> str` function. See any existing file in `app/sources/` as a reference.
-
-## Part of the MiniNet stack
-
-- [MiniSearch Intents](https://github.com/immortalbob/minisearch_intents) — native Home Assistant LLM integration for MiniSearch
-- [MiniSense-T7S3](https://github.com/immortalbob/MiniSense-T7S3) — ESP32-S3 room sensor node with voice assistant and CO2 monitoring

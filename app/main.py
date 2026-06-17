@@ -37,8 +37,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MiniSearch",
-    description="Unified local knowledge search API. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, or Uptime Kuma.",
-    version="2.9.0",
+    description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -48,6 +48,7 @@ app.mount("/mcp", mcp_app)
 class SearchRequest(BaseModel):
     query: str
     source: str = "auto"
+    fusion_sources: list[str] | None = None  # only used when source="fusion"
 
 
 class SearchResponse(BaseModel):
@@ -140,7 +141,7 @@ def search(request: SearchRequest):
     was_cached = check_cached(resolved_source, request.query)
 
     try:
-        result = route(request.query, request.source)
+        result = route(request.query, request.source, request.fusion_sources)
         return SearchResponse(
             query=request.query,
             source_used=resolved_source,

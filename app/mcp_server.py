@@ -29,10 +29,10 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Search across local and remote knowledge sources via MiniSearch. "
                 "Automatically selects the best source based on the query. "
-                "Sources: 'auto' (default), 'kiwix' (offline knowledge — Wikipedia, "
-                "Stack Exchange, iFixit, FreeCodeCamp, DevDocs), 'forecast' (3-day "
-                "weather forecast), 'news' (recent RSS articles), 'web' (live web search), "
-                "'uptime' (Uptime Kuma service status)."
+                "Sources: 'auto' (default), 'kiwix' (offline knowledge), 'forecast' (weather), "
+                "'news' (RSS articles), 'web' (live search), 'uptime' (service status), "
+                "'fusion' (query multiple sources concurrently — LLM picks best 2-3 sources, "
+                "or specify with fusion_sources)."
             ),
             inputSchema={
                 "type": "object",
@@ -43,9 +43,14 @@ async def list_tools() -> list[Tool]:
                     },
                     "source": {
                         "type": "string",
-                        "enum": ["auto", "kiwix", "forecast", "news", "web", "uptime"],
+                        "enum": ["auto", "kiwix", "forecast", "news", "web", "uptime", "fusion"],
                         "default": "auto",
                         "description": "The source to query. Use 'auto' to let MiniSearch decide."
+                    },
+                    "fusion_sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of sources to fuse. Only used when source='fusion'. If omitted, LLM picks the best 2-3 sources."
                     }
                 },
                 "required": ["query"]
@@ -62,12 +67,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     query = arguments.get("query", "")
     source = arguments.get("source", "auto")
+    fusion_sources = arguments.get("fusion_sources", None)
 
     if not query:
         return [TextContent(type="text", text="Error: query is required.")]
 
     try:
-        result = await asyncio.to_thread(route, query, source)
+        result = await asyncio.to_thread(route, query, source, fusion_sources)
         return [TextContent(type="text", text=result)]
     except Exception as e:
         _LOGGER.error("MiniSearch MCP error: %s", e)

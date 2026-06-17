@@ -2,7 +2,7 @@ import time
 import json
 import logging
 import os
-from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma
+from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma, fusion
 from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ SOURCE_MAP = {
     "news": freshrss.search,
     "web": searxng.search,
     "uptime": uptime_kuma.search,
+    "fusion": None,  # handled specially in route() — accepts fusion_sources list
 }
 
 SOURCE_DESCRIPTIONS = {
@@ -46,6 +47,7 @@ SOURCE_DESCRIPTIONS = {
     "news": "Recent RSS news articles from the user's feeds. Use for current events, headlines, or recent news.",
     "web": "Live web search via SearXNG. Use for current events, recent information, or anything that may have changed recently.",
     "uptime": "Uptime Kuma monitor status. Use when asked about service status, what is down, or network health.",
+    "fusion": "Multi-source fusion — queries multiple sources concurrently and merges results. Use for complex queries that benefit from combining offline knowledge, live web, and recent news.",
 }
 
 # Fallback chain — if a source returns no results, try these in order
@@ -61,6 +63,7 @@ CACHE_TTL = {
     "news": 900,      # 15 minutes
     "web": 3600,      # 1 hour
     "uptime": 60,     # 1 minute — status changes fast
+    "fusion": 1800,   # 30 minutes — blend of sources, use middle TTL
 }
 
 # ---------------------------------------------------------------------------
@@ -395,6 +398,55 @@ def _llm_detect(query: str) -> str:
     return "kiwix"
 
 
+def _llm_pick_fusion_sources(query: str) -> list[str]:
+    """Ask LLM to pick 2-3 best sources for a fusion query. Falls back to ["kiwix", "web"]."""
+    from app.llm import complete, is_configured
+
+    cache_key = f"fusion_sources:{query}"
+    cached = _get_routing(cache_key)
+    if cached:
+        sources = [s.strip() for s in cached.split(",") if s.strip() in SOURCE_MAP and s.strip() != "fusion"]
+        if sources:
+            _LOGGER.info("Routing cache hit for fusion sources: '%s' -> %s", query[:50], sources)
+            return sources
+
+    if not is_configured():
+        return ["kiwix", "web"]
+
+    source_list = "\n".join(
+        f"- {name}: {desc}"
+        for name, desc in SOURCE_DESCRIPTIONS.items()
+        if name != "fusion"
+    )
+
+    prompt = (
+        f"You are a search router. Given a user query, pick 2 or 3 sources that together "
+        f"would give the most complete answer. Return ONLY the source names separated by commas. "
+        f"No explanation, no punctuation other than commas. Pick 2 sources for focused queries, "
+        f"3 for complex or multi-topic queries.\n\n"
+        f"Query: {query}\n\n"
+        f"Available sources:\n{source_list}\n\n"
+        f"Best source names (comma-separated):"
+    )
+
+    raw = (complete(prompt, max_tokens=30) or "").lower()
+    chosen = []
+    for candidate in raw.split(","):
+        candidate = candidate.strip().strip(".")
+        if candidate in SOURCE_MAP and candidate != "fusion" and candidate not in chosen:
+            chosen.append(candidate)
+
+    if len(chosen) >= 2:
+        _LOGGER.info("LLM fusion sources for '%s': %s", query[:50], chosen)
+        _set_routing(cache_key, ",".join(chosen))
+        return chosen[:3]
+
+    _LOGGER.warning("LLM returned invalid fusion sources '%s', using defaults", raw)
+    defaults = ["kiwix", "web"]
+    _set_routing(cache_key, ",".join(defaults))
+    return defaults
+
+
 def detect_intent(query: str) -> str:
     """Detect intent using keyword matching first, LLM as fallback."""
     source = _keyword_detect(query)
@@ -408,11 +460,26 @@ def detect_intent(query: str) -> str:
 # Routing
 # ---------------------------------------------------------------------------
 
-def route(query: str, source: str = "auto") -> str:
+def route(query: str, source: str = "auto", fusion_sources: list[str] | None = None) -> str:
     if source == "auto":
         source = detect_intent(query)
     else:
         _LOGGER.info("Source explicitly set to '%s' for query: '%s'", source, query[:50])
+
+    # Handle fusion — LLM picks sources if none specified
+    if source == "fusion":
+        if not fusion_sources:
+            fusion_sources = _llm_pick_fusion_sources(query)
+        # Build a stable cache key from sorted sources
+        fusion_key = ",".join(sorted(fusion_sources))
+        cache_key_query = f"fusion[{fusion_key}]:{query}"
+        cached = _get_cached("fusion", cache_key_query)
+        if cached:
+            return cached
+        result = fusion.search(query, fusion_sources)
+        if not _looks_empty(result):
+            _set_cached("fusion", cache_key_query, result)
+        return result
 
     handler = SOURCE_MAP.get(source)
     if not handler:

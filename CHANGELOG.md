@@ -4,6 +4,27 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
+## [3.0.0]
+
+### Added
+- **Source fusion** — `source="fusion"` queries multiple sources concurrently using `ThreadPoolExecutor`, merges results with source attribution headers, handles partial failures gracefully
+- **`app/sources/fusion.py`** — new fusion source module. Validates sources, deduplicates, caps at 4, times out at 15 seconds per source, filters empty/failed results, returns single source directly without headers when only one succeeds
+- **LLM fusion source selection** — when `fusion` is used without specifying sources, the LLM picks the best 2-3 sources for the query. Decision cached in routing cache for 1 hour.
+- **`fusion_sources` parameter** — optional `list[str]` field on `POST /search` and MCP tool schema. Explicitly specifies which sources to fuse.
+- **Fusion cache key** — stable cache key from sorted source list ensures same sources in any order share a cache entry
+- **28 new fusion tests** — `tests/test_fusion.py` covering merging, headers, single source passthrough, validation, deduplication, max cap, partial failure, all failure, empty result filtering, and cache behavior
+- **Fusion diagram** in README illustrating concurrent source querying and merge
+
+### Changed
+- Version bumped to 3.0.0
+- FastAPI description updated to mention fusion
+- `fusion` added to `SOURCE_MAP`, `SOURCE_DESCRIPTIONS`, `CACHE_TTL` (30 min TTL)
+- `route()` signature updated to accept `fusion_sources: list[str] | None`
+- MCP tool schema updated with `fusion` in source enum and `fusion_sources` array parameter
+- Dead import (`from app.config import settings`) removed from `fusion.py`
+
+---
+
 ## [2.9.0]
 
 ### Added
