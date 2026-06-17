@@ -343,6 +343,7 @@ MiniSearch caches results in memory and persists them to disk so the cache survi
 | `forecast` | 30 minutes |
 | `news` | 15 minutes |
 | `uptime` | 1 minute |
+| `ha` | 30 seconds |
 
 Routing decisions (which source, Kiwix books, and fusion source sets to use) are cached separately for 1 hour.
 
@@ -442,11 +443,11 @@ MiniSearch/
 
 ## Philosophy
 
-Local-first, privacy-preserving, subscription-free. MiniSearch is designed for homelabs where the data stays home. Open-Meteo is the only external call — everything else routes to services you control.
+Local-first, privacy-preserving, subscription-free. MiniSearch is designed for homelabs where the data stays home. Open-Meteo is the only external network call — every other source (Kiwix, FreshRSS, SearXNG, Uptime Kuma, Home Assistant) runs on your own infrastructure.
 
 ## Contributing
 
-PRs welcome. New source modules are the easiest contribution — drop a file in `sources/`, register it in the router, done. It is immediately available via REST, MCP, and fusion.
+PRs welcome. New source modules are the easiest contribution — drop a file in `sources/`, register it in the router, done. The new source is immediately available via REST, MCP, and fusion with no additional work.
 
 ### Proposed modules
 
