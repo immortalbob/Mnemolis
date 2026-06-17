@@ -64,7 +64,7 @@ CACHE_TTL = {
 }
 
 # ---------------------------------------------------------------------------
-# Routing cache — stores source and book selection decisions to skip Ollama calls
+# Routing cache — stores source and book selection decisions to skip LLM calls
 # ---------------------------------------------------------------------------
 
 ROUTING_CACHE_FILE = "/app/data/routing_cache.json"
@@ -396,7 +396,7 @@ def _llm_detect(query: str) -> str:
 
 
 def detect_intent(query: str) -> str:
-    """Detect intent using keyword matching first, Ollama as fallback."""
+    """Detect intent using keyword matching first, LLM as fallback."""
     source = _keyword_detect(query)
     if source:
         return source
