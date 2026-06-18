@@ -223,10 +223,10 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `FRESHRSS_API_PASSWORD` | FreshRSS API password | |
 | `FRESHRSS_MAX_ARTICLES` | Max articles to fetch | `10` |
 | `SEARXNG_URL` | SearXNG container URL | `http://searxng:8080` |
-| `FORECAST_LATITUDE` | Forecast location latitude | `35.1894` |
-| `FORECAST_LONGITUDE` | Forecast location longitude | `-114.0530` |
-| `FORECAST_LOCATION_NAME` | Human-readable location name | `Kingman, Arizona` |
-| `FORECAST_TIMEZONE` | Timezone for forecast times | `America/Phoenix` |
+| `FORECAST_LATITUDE` | Forecast location latitude | _(blank)_ |
+| `FORECAST_LONGITUDE` | Forecast location longitude | _(blank)_ |
+| `FORECAST_LOCATION_NAME` | Human-readable location name | _(blank)_ |
+| `FORECAST_TIMEZONE` | Timezone for forecast times | `UTC` |
 | `UPTIME_KUMA_URL` | Uptime Kuma URL | _(blank — disables uptime source)_ |
 | `UPTIME_KUMA_USERNAME` | Uptime Kuma username | |
 | `UPTIME_KUMA_PASSWORD` | Uptime Kuma password | |
@@ -285,7 +285,7 @@ Generate a long-lived access token in Home Assistant:
 1. Go to your **Profile** (click your username in the sidebar)
 2. Scroll to **Long-lived access tokens**
 3. Click **Create Token**, give it a name, copy the token
-4. Set `HA_URL` to your HA instance URL (e.g. `http://192.168.3.6:8123`)
+4. Set `HA_URL` to your HA instance URL (e.g. `http://192.168.1.100:8123`)
 5. Set `HA_TOKEN` to the generated token
 
 The `ha` source handles analytical queries that go beyond HA's built-in single-entity intent handling:
@@ -520,3 +520,7 @@ Each source only needs a single `search(query: str) -> str` function. See any ex
 
 - [Mnemolis Intents](https://github.com/immortalbob/mnemolis_intents) — native Home Assistant LLM integration for Mnemolis
 - [Mnemovox-T7S3](https://github.com/immortalbob/Mnemovox-T7S3) — ESP32-S3 voice satellite with CO2, temperature, and humidity sensing
+
+## License
+
+MIT — see [LICENSE](LICENSE)

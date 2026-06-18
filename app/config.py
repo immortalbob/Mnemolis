@@ -18,10 +18,10 @@ class Settings(BaseSettings):
     searxng_url: str = "http://searxng:8080"
 
     # Open-Meteo
-    forecast_latitude: float = 35.1894
-    forecast_longitude: float = -114.0530
-    forecast_location_name: str = "Kingman, Arizona"
-    forecast_timezone: str = "America/Phoenix"
+    forecast_latitude: float = 0.0
+    forecast_longitude: float = 0.0
+    forecast_location_name: str = ""
+    forecast_timezone: str = "UTC"
 
     # Uptime Kuma
     uptime_kuma_url: str = ""

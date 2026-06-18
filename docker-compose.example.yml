@@ -27,9 +27,9 @@ services:
       FRESHRSS_API_PASSWORD: ""       # your FreshRSS API password (Profile → API password)
       FRESHRSS_MAX_ARTICLES: "10"
       SEARXNG_URL: "http://searxng:8080"
-      FORECAST_LATITUDE: "35.1894"    # your latitude
-      FORECAST_LONGITUDE: "-114.0530" # your longitude
-      FORECAST_LOCATION_NAME: "Kingman, Arizona"
+      FORECAST_LATITUDE: ""           # your latitude (e.g. 40.7128)
+      FORECAST_LONGITUDE: ""          # your longitude (e.g. -74.0060)
+      FORECAST_LOCATION_NAME: ""      # e.g. "New York, NY"
       # Home Assistant
       HA_URL: ""
       HA_TOKEN: ""
@@ -37,7 +37,7 @@ services:
       UPTIME_KUMA_URL: ""              # e.g. http://minikuma.local:3001
       UPTIME_KUMA_USERNAME: ""         # your Uptime Kuma username
       UPTIME_KUMA_PASSWORD: ""         # your Uptime Kuma password
-      FORECAST_TIMEZONE: "America/Phoenix"
+      FORECAST_TIMEZONE: ""           # e.g. America/New_York — see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
     networks:
       - mnemo-net
     depends_on:
@@ -78,7 +78,7 @@ services:
     ports:
       - "8082:80"
     environment:
-      TZ: America/Phoenix   # your timezone
+      TZ: ""                # your timezone e.g. America/New_York
       CRON_MIN: "*/15"      # feed refresh interval
     volumes:
       - freshrss_data:/var/www/FreshRSS/data

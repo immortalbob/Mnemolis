@@ -3,7 +3,7 @@ Mnemolis Load Testing — Locust
 Tests realistic query patterns across all sources under concurrent load.
 
 Run:
-    locust -f tests/locustfile.py --host http://192.168.3.5:8888
+    locust -f tests/locustfile.py --host http://your-host:8888
 
 Then open http://localhost:8089 and configure:
     - Users: 10
