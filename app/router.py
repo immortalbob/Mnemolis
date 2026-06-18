@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma, fusion, home_assistant
+from app.snapshots import get_changes, format_changes
 from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,6 +37,14 @@ INTENT_MAP = {
         "security status", "house secure",
         "outdoor conditions", "outside conditions",
     ],
+    "changes": [
+        "what changed", "any changes", "whats new", "what's new",
+        "any new outages", "new outages", "any outages today",
+        "weather change", "forecast change",
+        "new articles", "new news", "new headlines",
+        "anything different", "what happened today",
+        "since last time", "changes today",
+    ],
     "uptime": [
         "uptime", "is down", "what's down", "whats down",
         "any outages", "service status", "network status",
@@ -52,6 +61,23 @@ INTENT_MAP = {
     ],
 }
 
+def _search_changes(query: str) -> str:
+    """Search changes source — returns detected changes from snapshots."""
+    hours = 24
+    q = query.lower()
+    if "today" in q or "24" in q:
+        hours = 24
+    elif "hour" in q:
+        import re
+        m = re.search(r"(\d+)\s*hour", q)
+        if m:
+            hours = int(m.group(1))
+    elif "week" in q:
+        hours = 168
+    detected = get_changes(since_hours=hours)
+    return format_changes(detected, since_hours=hours)
+
+
 SOURCE_MAP = {
     "kiwix": kiwix.search,
     "forecast": forecast.search,
@@ -59,6 +85,7 @@ SOURCE_MAP = {
     "web": searxng.search,
     "uptime": uptime_kuma.search,
     "ha": home_assistant.search,
+    "changes": _search_changes,
     "fusion": None,  # handled specially in route() — accepts fusion_sources list
 }
 
@@ -69,6 +96,7 @@ SOURCE_DESCRIPTIONS = {
     "web": "Live web search via SearXNG. Use for current events, recent information, or anything that may have changed recently.",
     "uptime": "Uptime Kuma monitor status. Use when asked about service status, what is down, or network health.",
     "ha": "Home Assistant entity states. Use for house status summaries, which lights are on, door and lock status, battery levels, indoor sensors, motion events, or power consumption.",
+    "changes": "Snapshot diff engine. Use when asked what changed, any new outages, weather changes, or new news since a given time.",
     "fusion": "Multi-source fusion — queries multiple sources concurrently and merges results. Use for complex queries that benefit from combining offline knowledge, live web, and recent news.",
 }
 
@@ -84,9 +112,10 @@ CACHE_TTL = {
     "forecast": 1800, # 30 minutes
     "news": 900,      # 15 minutes
     "web": 3600,      # 1 hour
-    "uptime": 60,     # 1 minute — status changes fast
-    "ha": 30,         # 30 seconds — entity states change frequently
-    "fusion": 1800,   # 30 minutes — blend of sources, use middle TTL
+    "uptime": 60,     # 1 minute
+    "ha": 30,         # 30 seconds
+    "changes": 120,   # 2 minutes — changes are near-real-time
+    "fusion": 1800,   # 30 minutes
 }
 
 # ---------------------------------------------------------------------------

@@ -158,6 +158,7 @@ Decomposition only applies to `source="auto"`. Explicit source requests (`source
 | `web` | [SearXNG](https://searxng.github.io/searxng/) | Live web search via your local SearXNG instance |
 | `uptime` | [Uptime Kuma](https://uptime.kuma.pet/) | Service monitor status — reports any down services |
 | `ha` | [Home Assistant](https://www.home-assistant.io/) | Entity state summaries — lights, locks, sensors, motion, batteries, power |
+| `changes` | Snapshot Engine | Detected changes since last snapshot — outages, weather shifts, new headlines |
 | `fusion` | — | Query multiple sources concurrently and merge results |
 | `auto` | — | Mnemolis detects intent and picks the best source |
 
@@ -367,6 +368,12 @@ Shows all current routing cache entries — source and Kiwix book selection deci
 ### `POST /cache/routing/clear`
 Clears all routing cache entries from memory and disk.
 
+### `GET /changes`
+Returns meaningful changes detected across snapshot sources within the last N hours. Optional `?hours=N` parameter (default 24). Detects service outages and recoveries, forecast temperature shifts ≥5°, precipitation changes, and new news headlines.
+
+### `POST /snapshots/trigger`
+Manually trigger all snapshot jobs immediately.
+
 ### `GET /logs`
 Returns recent query log entries — timestamp, query, source used, cached flag, success, and latency in milliseconds. Optional `?limit=N` parameter (default 50).
 
@@ -452,7 +459,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-331 tests covering FastAPI endpoints, intent routing, query decomposition, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting, uptime heartbeat parsing, fusion validation, LLM fusion source selection, all source modules via mocking, and Home Assistant entity filtering.
+354 tests covering FastAPI endpoints, intent routing, query decomposition, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting, uptime heartbeat parsing, fusion validation, LLM fusion source selection, snapshot diff engines, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 
@@ -481,9 +488,11 @@ Mnemolis/
 │   ├── test_fusion.py              # fusion merging, truncation, deduplication, same-source merging
 │   ├── test_home_assistant.py      # HA entity filtering, exclusions, formatting
 │   ├── test_main.py                # FastAPI endpoint tests
+│   ├── test_snapshots.py            # snapshot diff engine tests
 │   └── locustfile.py               # Locust load testing suite
 └── app/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog endpoints
+    ├── snapshots.py                # Snapshot engine — scheduler, diff logic, change detection
     ├── mcp_server.py               # MCP SSE server
     ├── router.py                   # Intent detection, source routing, and caching
     ├── llm.py                      # LLM client — Ollama native and OpenAI-compatible

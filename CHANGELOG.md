@@ -4,6 +4,37 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
+## [3.6.0]
+
+### Added
+- **Snapshot Engine** — `app/snapshots.py` — periodic background snapshots of Uptime Kuma, Open-Meteo, and FreshRSS stored to SQLite at `/app/data/snapshots.db`
+- **APScheduler** — background scheduler starts on container startup, takes snapshots every 2 minutes (uptime), 30 minutes (forecast), 60 minutes (news)
+- **Diff engine** — detects meaningful changes between consecutive snapshots:
+  - `_diff_uptime()` — service outages and recoveries
+  - `_diff_forecast()` — high/low temp changes ≥5°, precipitation appearing or disappearing
+  - `_diff_news()` — new article headlines, capped at 5 per diff, deduplication across walk
+- **`GET /changes?hours=N`** — returns detected changes across all snapshot sources within the last N hours (default 24)
+- **`POST /snapshots/trigger`** — manually trigger all snapshot jobs immediately
+- **`source="changes"`** — routes "what changed today", "any new outages", "what happened today" etc. to the snapshot diff engine automatically via keyword detection
+- **Immediate startup snapshots** — all three sources snapshot on container startup so `/changes` has data immediately
+- **`apscheduler`** added to `requirements.txt`
+- **`tests/test_snapshots.py`** — 30 new tests across 5 classes covering `_diff_uptime`, `_diff_forecast`, `_diff_news`, and `format_changes`
+
+### Changed
+- `INTENT_MAP` — `changes` source added with 14 trigger keywords
+- `SOURCE_MAP` — `changes` source registered
+- `SOURCE_DESCRIPTIONS` — `changes` described for LLM routing
+- `CACHE_TTL` — `changes` cached for 2 minutes
+- Version bumped to 3.6.0
+
+### Known limitations (Phase 1)
+- HA entity-level snapshots not yet implemented — "what changed in the house" is Phase 2
+- Snapshot diffs are text-based — no semantic understanding of magnitude beyond threshold rules
+
+**Total test count: 354**
+
+---
+
 ## [3.5.3]
 
 ### Added

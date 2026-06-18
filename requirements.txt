@@ -7,3 +7,4 @@ pydantic-settings
 mcp[cli]
 uptime-kuma-api
 pytest
+apscheduler

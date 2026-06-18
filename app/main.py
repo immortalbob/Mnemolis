@@ -6,6 +6,7 @@ import requests
 from contextlib import asynccontextmanager
 from typing import Optional
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -24,6 +25,14 @@ from app.router import (
 )
 from app.mcp_server import mcp_app
 from app.sources.kiwix import get_books, refresh_catalog
+from app.snapshots import (
+    init_snapshot_db,
+    snapshot_uptime,
+    snapshot_forecast,
+    snapshot_news,
+    get_changes,
+    format_changes,
+)
 from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,19 +82,37 @@ def _log_query(query: str, source_requested: str, source_used: str, cached: bool
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load Kiwix catalog and cache on startup."""
+    """Load Kiwix catalog, cache, and start snapshot scheduler on startup."""
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, get_books)
     await loop.run_in_executor(None, load_cache)
     await loop.run_in_executor(None, load_routing_cache)
     await loop.run_in_executor(None, _init_log_db)
+    await loop.run_in_executor(None, init_snapshot_db)
+
+    # Start snapshot scheduler
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(snapshot_uptime, "interval", minutes=2, id="snapshot_uptime")
+    scheduler.add_job(snapshot_forecast, "interval", minutes=30, id="snapshot_forecast")
+    scheduler.add_job(snapshot_news, "interval", minutes=60, id="snapshot_news")
+    scheduler.start()
+    _LOGGER.info("Snapshot scheduler started")
+
+    # Take immediate snapshots on startup so /changes has data right away
+    await loop.run_in_executor(None, snapshot_uptime)
+    await loop.run_in_executor(None, snapshot_forecast)
+    await loop.run_in_executor(None, snapshot_news)
+
     yield
+
+    scheduler.shutdown()
+    _LOGGER.info("Snapshot scheduler stopped")
 
 
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.5.3",
+    version="3.6.0",
     lifespan=lifespan,
 )
 
@@ -358,6 +385,52 @@ def query_logs(limit: int = 50):
 
 
 @app.post("/logs/clear")
+def logs_clear():
+    """Clear all query log entries."""
+    try:
+        con = sqlite3.connect(_LOG_DB)
+        cur = con.execute("DELETE FROM query_log")
+        count = cur.rowcount
+        con.commit()
+        con.close()
+        return {"status": "cleared", "entries_removed": count}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/changes")
+def changes(hours: int = 24):
+    """
+    Return meaningful changes detected across all snapshot sources
+    within the last N hours (default 24).
+
+    Detects:
+    - Service outages and recoveries (Uptime Kuma)
+    - Meaningful weather forecast changes (Open-Meteo)
+    - New news articles (FreshRSS)
+    """
+    detected = get_changes(since_hours=hours)
+    formatted = format_changes(detected, since_hours=hours)
+    return {
+        "since_hours": hours,
+        "changes_detected": sum(len(v) for v in detected.values()),
+        "sources_with_changes": list(detected.keys()),
+        "result": formatted,
+    }
+
+
+@app.post("/snapshots/trigger")
+def trigger_snapshots():
+    """Manually trigger all snapshot jobs immediately."""
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [
+            executor.submit(snapshot_uptime),
+            executor.submit(snapshot_forecast),
+            executor.submit(snapshot_news),
+        ]
+        concurrent.futures.wait(futures)
+    return {"status": "ok", "snapshots_triggered": ["uptime", "forecast", "news"]}
 def logs_clear():
     """Clear all query log entries."""
     try:
