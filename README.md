@@ -1,6 +1,6 @@
-# MiniSearch
+# Mnemolis
 
-A unified local knowledge search API for self-hosted homelabs. MiniSearch runs as a Docker container on your internal network and routes queries to the appropriate backend — offline knowledge, weather forecast, RSS news, live web search, service monitoring, or multiple sources concurrently — via a single endpoint.
+A unified local knowledge search API for self-hosted homelabs. Mnemolis runs as a Docker container on your internal network and routes queries to the appropriate backend — offline knowledge, weather forecast, RSS news, live web search, service monitoring, or multiple sources concurrently — via a single endpoint.
 
 Exposes both a **REST API** and an **MCP server** so any client can connect to it.
 
@@ -70,6 +70,7 @@ ESP32 Voice Assistant
                            │
                     Voice Pipeline
 ```
+
 ### Source Fusion
 
 ```text
@@ -105,7 +106,7 @@ Fusion queries all specified sources concurrently, filters empty or failed resul
 
 | Client | Protocol | How |
 |--------|----------|-----|
-| [Open WebUI](minisearch_tool.py) | REST | Lightweight tool that POSTs to `/search` |
+| [Open WebUI](mnemolis_tool.py) | REST | Lightweight tool that POSTs to `/search` |
 | [MiniSearch Intents](https://github.com/immortalbob/minisearch_intents) | REST | Native HA LLM API integration |
 | Any MCP client (Claude Desktop, Cursor, etc.) | MCP/SSE | Connect to `http://your-host:8888/mcp/sse` |
 
@@ -120,12 +121,12 @@ Fusion queries all specified sources concurrently, filters empty or failed resul
 | `uptime` | [Uptime Kuma](https://uptime.kuma.pet/) | Service monitor status — reports any down services |
 | `ha` | [Home Assistant](https://www.home-assistant.io/) | Entity state summaries — lights, locks, sensors, motion, batteries, power |
 | `fusion` | — | Query multiple sources concurrently and merge results |
-| `auto` | — | MiniSearch detects intent and picks the best source |
+| `auto` | — | Mnemolis detects intent and picks the best source |
 
 ## Requirements
 
 - Docker + Docker Compose
-- A Docker network for container communication (default: `ai-net`)
+- A Docker network for container communication (default: `mnemo-net`)
 - One or more of the supported backends running and reachable on the same network
 
 ## Quick Start
@@ -135,11 +136,11 @@ Fusion queries all specified sources concurrently, filters empty or failed resul
 The repo includes an example compose file and SearXNG config to get all services running together:
 
 ```bash
-git clone https://github.com/immortalbob/MiniSearch
-cd MiniSearch
+git clone https://github.com/immortalbob/Mnemolis
+cd Mnemolis
 
 # Create the shared network if it doesn't exist
-docker network create ai-net
+docker network create mnemo-net
 
 # Copy and edit the example compose file
 cp docker-compose.example.yml docker-compose.yml
@@ -151,20 +152,20 @@ docker compose up -d
 ### What's not in the full stack
 The example compose intentionally excludes Home Assistant, your LLM backend, and Uptime Kuma — these are typically long-running services with their own existing setup.
 
-If you're running any of these in Docker and want them reachable by MiniSearch, connect them to `ai-net`:
+If you're running any of these in Docker and want them reachable by Mnemolis, connect them to `mnemo-net`:
 
 ```bash
-docker network connect ai-net ollama
-docker network connect ai-net homeassistant
+docker network connect mnemo-net ollama
+docker network connect mnemo-net homeassistant
 ```
 
-### MiniSearch only
+### Mnemolis only
 
 If you already have the backends running:
 
 ```bash
-git clone https://github.com/immortalbob/MiniSearch
-cd MiniSearch
+git clone https://github.com/immortalbob/Mnemolis
+cd Mnemolis
 # Edit docker-compose.yml with your settings
 docker compose up -d
 ```
@@ -203,7 +204,7 @@ All settings are passed as environment variables in `docker-compose.yml`:
 3. Use that password for `FRESHRSS_API_PASSWORD` (it's separate from your login password)
 
 ### SearXNG JSON format
-MiniSearch queries SearXNG's JSON API. The included `searxng/settings.yml` already has this enabled. If you're using an existing SearXNG instance, make sure `json` is in your formats list:
+Mnemolis queries SearXNG's JSON API. The included `searxng/settings.yml` already has this enabled. If you're using an existing SearXNG instance, make sure `json` is in your formats list:
 
 ```yaml
 search:
@@ -219,7 +220,7 @@ openssl rand -hex 32
 ```
 
 ### LLM-assisted routing
-MiniSearch uses a local LLM backend in three ways:
+Mnemolis uses a local LLM backend in three ways:
 
 1. **Source selection** — when `auto` is used and no keyword matches, the LLM picks the best source based on the query. For complex multi-topic queries it returns multiple sources, triggering fusion automatically.
 2. **Book selection** — once routed to Kiwix, the LLM picks the best 1-2 ZIM books from your catalog for the query
@@ -239,7 +240,7 @@ The book list is built dynamically from your Kiwix catalog at startup. To force 
 curl -X POST http://your-host:8888/catalog/refresh
 ```
 
-If `LLM_URL` is left blank, MiniSearch falls back to keyword-based routing and Wikipedia for all Kiwix queries.
+If `LLM_URL` is left blank, Mnemolis falls back to keyword-based routing and Wikipedia for all Kiwix queries.
 
 ### Home Assistant setup
 Generate a long-lived access token in Home Assistant:
@@ -330,7 +331,7 @@ Clears all routing cache entries from memory and disk.
 
 ## Caching
 
-MiniSearch caches results in memory and persists them to disk so the cache survives container restarts. TTLs are set per source:
+Mnemolis caches results in memory and persists them to disk so the cache survives container restarts. TTLs are set per source:
 
 | Source | TTL |
 |--------|-----|
@@ -346,7 +347,7 @@ Routing decisions (which source, Kiwix books, and fusion source sets to use) are
 
 ## MCP
 
-MiniSearch exposes an MCP server via SSE at `/mcp/sse` on the same port as the REST API.
+Mnemolis exposes an MCP server via SSE at `/mcp/sse` on the same port as the REST API.
 
 ### Connecting Claude Desktop
 
@@ -355,7 +356,7 @@ Add this to your `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "minisearch": {
+    "mnemolis": {
       "url": "http://your-host-ip:8888/mcp/sse"
     }
   }
@@ -392,7 +393,7 @@ The new source is automatically available via both REST and MCP — and immediat
 ## Running Tests
 
 ```bash
-docker exec minisearch python3 -m pytest /app/tests/ -v
+docker exec mnemolis python3 -m pytest /app/tests/ -v
 ```
 
 202 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion behavior, and Home Assistant entity filtering.
@@ -400,14 +401,14 @@ docker exec minisearch python3 -m pytest /app/tests/ -v
 ## Project Structure
 
 ```
-MiniSearch/
+Mnemolis/
 ├── Dockerfile
 ├── docker-compose.yml              # your config (not committed)
 ├── docker-compose.example.yml      # full stack example
 ├── requirements.txt
 ├── pytest.ini
 ├── CHANGELOG.md
-├── minisearch_tool.py              # Open WebUI bridge tool
+├── mnemolis_tool.py              # Open WebUI bridge tool
 ├── README.md
 ├── searxng/
 │   └── settings.yml               # SearXNG config with JSON enabled
@@ -440,7 +441,7 @@ MiniSearch/
 
 ## Philosophy
 
-Local-first, privacy-preserving, subscription-free. MiniSearch is designed for homelabs where the data stays home. Open-Meteo is the only external network call — every other source (Kiwix, FreshRSS, SearXNG, Uptime Kuma, Home Assistant) runs on your own infrastructure.
+Local-first, privacy-preserving, subscription-free. Mnemolis is designed for homelabs where the data stays home. Open-Meteo is the only external network call — every other source (Kiwix, FreshRSS, SearXNG, Uptime Kuma, Home Assistant) runs on your own infrastructure.
 
 ## Contributing
 

@@ -202,5 +202,5 @@ Queries HA can't answer natively with its built-in intents:
 - Sources: Kiwix, FreshRSS, Open-Meteo, SearXNG
 - `auto` intent routing via keyword matching
 - `GET /health`, `GET /sources`
-- Open WebUI bridge tool (`minisearch_tool.py`)
-- Docker Compose with `ai-net` network
+- Open WebUI bridge tool (`mnemolis_tool.py`)
+- Docker Compose with `mnemo-net` network

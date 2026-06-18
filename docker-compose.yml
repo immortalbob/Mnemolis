@@ -1,7 +1,7 @@
 services:
-  minisearch:
+  mnemolis:
     build: .
-    container_name: minisearch
+    container_name: mnemolis
     restart: unless-stopped
     ports:
       - "8888:8000"   # REST API + MCP SSE (mounted at /mcp/sse)
@@ -34,11 +34,11 @@ services:
     volumes:
       - minisearch_data:/app/data
     networks:
-      - ai-net
+      - mnemo-net
 
 volumes:
   minisearch_data:
 
 networks:
-  ai-net:
+  mnemo-net:
     external: true

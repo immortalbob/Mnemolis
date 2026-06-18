@@ -1,5 +1,5 @@
 """
-MiniSearch Home Assistant Source
+Mnemolis Home Assistant Source
 Queries Home Assistant entity states for analytical and summary queries
 that go beyond HA's built-in single-entity intent handling.
 

@@ -1,5 +1,5 @@
 """
-MiniSearch MCP Server
+Mnemolis MCP Server
 Exposes MiniSearch as an MCP tool server via SSE transport.
 Mounted at /mcp by the FastAPI app in main.py.
 """
@@ -17,7 +17,7 @@ from app.router import route, SOURCE_MAP
 
 _LOGGER = logging.getLogger(__name__)
 
-server = Server("minisearch")
+server = Server("mnemolis")
 
 
 @server.list_tools()
@@ -27,7 +27,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="search",
             description=(
-                "Search across local and remote knowledge sources via MiniSearch. "
+                "Search across local and remote knowledge sources via Mnemolis. "
                 "Automatically selects the best source based on the query. "
                 "Sources: 'auto' (default), 'kiwix' (offline knowledge), 'forecast' (weather), "
                 "'news' (RSS articles), 'web' (live search), 'uptime' (service status), "
@@ -45,7 +45,7 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "enum": ["auto", "kiwix", "forecast", "news", "web", "uptime", "ha", "fusion"],
                         "default": "auto",
-                        "description": "The source to query. Use 'auto' to let MiniSearch decide."
+                        "description": "The source to query. Use 'auto' to let Mnemolis decide."
                     },
                     "fusion_sources": {
                         "type": "array",
@@ -76,7 +76,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await asyncio.to_thread(route, query, source, fusion_sources)
         return [TextContent(type="text", text=result)]
     except Exception as e:
-        _LOGGER.error("MiniSearch MCP error: %s", e)
+        _LOGGER.error("Mnemolis MCP error: %s", e)
         return [TextContent(type="text", text=f"Error: {e}")]
 
 

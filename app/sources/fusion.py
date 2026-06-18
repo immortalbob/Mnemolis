@@ -1,5 +1,5 @@
 """
-MiniSearch Fusion Source
+Mnemolis Fusion Source
 Queries multiple sources concurrently and merges results.
 """
 import logging

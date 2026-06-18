@@ -1,22 +1,22 @@
-# MiniSearch Full Stack — Example Docker Compose
-# This file shows all services that MiniSearch can connect to, running together on ai-net.
+# Mnemolis Full Stack — Example Docker Compose
+# This file shows all services that Mnemolis can connect to, running together on mnemo-net.
 # Copy to docker-compose.yml and fill in your credentials before running.
 #
 # Usage:
-#   docker network create ai-net
+#   docker network create mnemo-net
 #   docker compose up -d
 
 services:
 
   # ---------------------------------------------------------------------------
-  # MiniSearch — unified search API
+  # Mnemolis — unified knowledge broker
   # REST API: http://your-host:8888
   # MCP SSE:  http://your-host:8888/mcp/sse
   # API docs: http://your-host:8888/docs
   # ---------------------------------------------------------------------------
-  minisearch:
+  mnemolis:
     build: .
-    container_name: minisearch
+    container_name: mnemolis
     restart: unless-stopped
     ports:
       - "8888:8000"
@@ -39,7 +39,7 @@ services:
       UPTIME_KUMA_PASSWORD: ""         # your Uptime Kuma password
       FORECAST_TIMEZONE: "America/Phoenix"
     networks:
-      - ai-net
+      - mnemo-net
     depends_on:
       - kiwix
       - freshrss
@@ -61,7 +61,7 @@ services:
       - ./data/kiwix:/data   # place your .zim files here
     command: /data
     networks:
-      - ai-net
+      - mnemo-net
 
   # ---------------------------------------------------------------------------
   # FreshRSS — self-hosted RSS reader
@@ -84,7 +84,7 @@ services:
       - freshrss_data:/var/www/FreshRSS/data
       - freshrss_extensions:/var/www/FreshRSS/extensions
     networks:
-      - ai-net
+      - mnemo-net
 
   # ---------------------------------------------------------------------------
   # SearXNG — self-hosted web search
@@ -100,7 +100,7 @@ services:
     volumes:
       - ./searxng:/etc/searxng   # must contain settings.yml
     networks:
-      - ai-net
+      - mnemo-net
 
   # ---------------------------------------------------------------------------
   # Note: Open-Meteo (weather forecast) is an external API — no container needed.
@@ -112,5 +112,5 @@ volumes:
   freshrss_extensions:
 
 networks:
-  ai-net:
+  mnemo-net:
     external: true
