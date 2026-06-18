@@ -411,7 +411,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-215 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion behavior, and Home Assistant entity filtering.
+230 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion behavior, and Home Assistant entity filtering.
 
 ## Project Structure
 
@@ -424,7 +424,7 @@ Mnemolis/
 ├── pytest.ini
 ├── CHANGELOG.md
 ├── BENCHMARKS.md
-├── mnemolis_tool.py              # Open WebUI bridge tool
+├── mnemolis_tool.py                # Open WebUI bridge tool
 ├── README.md
 ├── searxng/
 │   └── settings.yml               # SearXNG config with JSON enabled
