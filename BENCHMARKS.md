@@ -57,9 +57,7 @@ Fusion results now effectively free — concurrent sources returning cached resu
 
 ---
 
-### 20 Users — Hot Cache
-
-Fully warm routing cache. All repeated queries bypassing LLM entirely.
+### 20 Users — Hot Cache (v3.4.5)
 
 | Endpoint | Median | p95 | p99 | Failures |
 |----------|--------|-----|-----|----------|
@@ -80,30 +78,55 @@ Fully warm routing cache. All repeated queries bypassing LLM entirely.
 
 ---
 
+### 20 Users — Hot Cache (v3.5.0)
+
+Re-benchmarked after query decomposition and smart fusion improvements.
+
+| Endpoint | Median | p95 | p99 | Failures |
+|----------|--------|-----|-----|----------|
+| `/health` | 730ms | 830ms | 830ms | 0% |
+| `/search [kiwix]` | 15ms | 21ms | 22ms | 0% |
+| `/search [forecast]` | 15ms | 17ms | 18ms | 0% |
+| `/search [news]` | 15ms | 20ms | 24ms | 0% |
+| `/search [uptime]` | 15ms | 17ms | 18ms | 0% |
+| `/search [ha]` | 16ms | 83ms | 83ms | 0% |
+| `/search [auto]` | 15ms | 23ms | 1000ms | 0% |
+| `/search [fusion_explicit]` | 14ms | 19ms | 22ms | 0% |
+| `/search [fusion_auto]` | 15ms | 22ms | 22ms | 0% |
+| `/search [fusion_triple]` | 15ms | 17ms | 17ms | 0% |
+| `/search [cache_hit]` | 16ms | 25ms | 25ms | 0% |
+| **Aggregated** | **15ms** | **36ms** | **780ms** | **0%** |
+
+**428 requests. 0 failures. p95 improved from 41ms → 36ms. p99 improved from 1000ms → 780ms.**
+
+Query decomposition and smart fusion truncation did not add meaningful overhead — p95 and p99 both improved, likely due to reduced payload sizes from result truncation.
+
+---
+
 ## Summary
 
 | Scenario | Median | p95 | Notes |
 |----------|--------|-----|-------|
-| Cache hit (any source) | 15ms | 18ms | Routing + result cache both warm |
+| Cache hit (any source) | 15ms | 25ms | Routing + result cache both warm |
 | Cold LLM routing call | ~1000ms | ~6400ms | First time seeing a query |
-| Kiwix warm | 15ms | 18ms | LLM book selection cached |
+| Kiwix warm | 15ms | 21ms | LLM book selection cached |
 | Fusion 2-source warm | 14ms | 19ms | Concurrent sources, both cached |
-| Fusion 3-source warm | 14ms | 17ms | No overhead over 2-source when cached |
-| HA entity query | 34ms | 41ms | Live HA API call, no result cache |
-| Uptime cold | ~1000ms | ~1100ms | Socket.IO connect overhead |
-| 20 concurrent users | 15ms | 41ms | 0% failure rate |
+| Fusion 3-source warm | 15ms | 17ms | No overhead over 2-source when cached |
+| HA entity query | 16ms | 83ms | Live HA API call, 30s result cache |
+| Uptime warm | 15ms | 17ms | Socket.IO result cached |
+| 20 concurrent users (v3.5.0) | 15ms | 36ms | 0% failure rate |
 
 ## Key findings
 
 **The routing cache is the performance multiplier.** Cold queries that call Ollama for routing decisions take 1-6 seconds. Warm queries return in 15ms regardless of source complexity. After a few minutes of real usage the cache is warm and the system operates at sub-20ms for nearly all queries.
 
-**Fusion does not add meaningful latency when cached.** A 3-source fusion query with a warm cache returns in 14ms — the same as a single source. Concurrent execution means fusion is essentially free once the routing decision is cached.
+**Fusion does not add meaningful latency when cached.** A 3-source fusion query with a warm cache returns in 15ms — the same as a single source. Concurrent execution means fusion is essentially free once the routing decision is cached.
 
-**HA is the only always-live source.** Home Assistant entity queries bypass the result cache (30 second TTL) and always make a live API call. 34ms median is fast enough for voice assistant use.
+**Query decomposition has no measurable overhead.** Splitting "what is the weather and are my services up" into two independent queries and merging the results adds no latency compared to single-source routing at warm cache. p95 improved from 41ms to 36ms after decomposition was added.
 
-**Uptime Kuma has consistent Socket.IO overhead.** ~1000ms for cold connects, but the result is cached for 60 seconds so real-world impact is minimal.
+**Result truncation improves p99.** Smart fusion now caps each source at 1500 characters before merging. p99 improved from 1000ms to 780ms, likely due to smaller response payloads.
 
-**Zero failures at 20 concurrent users.** The system does not drop requests under homelab load.
+**Zero failures at 20 concurrent users across all versions.** The system does not drop requests under homelab load.
 
 ## Hardware context
 

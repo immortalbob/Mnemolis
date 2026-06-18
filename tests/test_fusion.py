@@ -210,3 +210,110 @@ class TestFusionCacheKey:
             result2 = route("test query", "fusion", ["kiwix", "web"])
             assert result2 == "Fused result."
             assert mock_search.call_count == 1  # still 1 — cached
+
+
+class TestFusionTruncate:
+    """Tests for _truncate result trimming."""
+
+    def setup_method(self):
+        from app.sources.fusion import _truncate
+        self.truncate = _truncate
+
+    def test_short_result_not_truncated(self):
+        result = "Short result."
+        assert self.truncate(result) == result
+
+    def test_long_result_truncated(self):
+        result = "x" * 2000
+        truncated = self.truncate(result)
+        assert len(truncated) < 2000
+
+    def test_truncation_appends_ellipsis(self):
+        result = "word " * 400  # ~2000 chars
+        truncated = self.truncate(result)
+        assert truncated.endswith("…")
+
+    def test_truncation_cuts_at_newline(self):
+        result = "line one\n" * 200
+        truncated = self.truncate(result)
+        # Should not cut mid-line
+        assert not truncated.rstrip("…\n").endswith("line on")
+
+    def test_custom_max_chars(self):
+        result = "x" * 500
+        truncated = self.truncate(result, max_chars=100)
+        assert len(truncated) <= 105  # small buffer for ellipsis
+
+
+class TestFusionDeduplicate:
+    """Tests for _deduplicate overlap detection."""
+
+    def setup_method(self):
+        from app.sources.fusion import _deduplicate
+        self.deduplicate = _deduplicate
+
+    def test_single_source_unchanged(self):
+        results = {"kiwix": "Some encyclopedic content about nitrogen chemistry."}
+        assert self.deduplicate(results) == results
+
+    def test_different_content_both_kept(self):
+        results = {
+            "forecast": "Today will be sunny with a high of 95 degrees and low humidity.",
+            "uptime": "All 15 monitored services are currently up and responding normally.",
+        }
+        deduped = self.deduplicate(results)
+        assert "forecast" in deduped
+        assert "uptime" in deduped
+
+    def test_duplicate_content_one_dropped(self):
+        shared = " ".join([f"This is sentence number {i} about the topic at hand." for i in range(10)])
+        results = {
+            "kiwix": shared,
+            "web": shared,
+        }
+        deduped = self.deduplicate(results)
+        assert len(deduped) == 1
+
+    def test_empty_sources_not_compared(self):
+        results = {
+            "forecast": "Today will be sunny.",
+            "news": "",
+        }
+        # Empty news shouldn't cause issues
+        deduped = self.deduplicate(results)
+        assert "forecast" in deduped
+
+
+class TestFusionMergeSameSource:
+    """Tests for _merge_same_source consecutive merging."""
+
+    def setup_method(self):
+        from app.sources.fusion import _merge_same_source
+        self.merge = _merge_same_source
+
+    def test_same_source_merged(self):
+        parts = [("ha", "Indoor sensors result."), ("ha", "Door locks result.")]
+        merged = self.merge(parts)
+        assert len(merged) == 1
+        assert merged[0][0] == "ha"
+        assert "Indoor" in merged[0][1]
+        assert "Door" in merged[0][1]
+
+    def test_different_sources_not_merged(self):
+        parts = [("forecast", "Sunny today."), ("uptime", "All services up.")]
+        merged = self.merge(parts)
+        assert len(merged) == 2
+
+    def test_mixed_sources_partial_merge(self):
+        parts = [("ha", "Sensors."), ("ha", "Locks."), ("forecast", "Sunny.")]
+        merged = self.merge(parts)
+        assert len(merged) == 2
+        assert merged[0][0] == "ha"
+        assert merged[1][0] == "forecast"
+
+    def test_empty_parts(self):
+        assert self.merge([]) == []
+
+    def test_single_part_unchanged(self):
+        parts = [("kiwix", "Some content.")]
+        assert self.merge(parts) == parts

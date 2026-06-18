@@ -540,7 +540,121 @@ def detect_intent(query: str) -> str | list[str]:
 # Routing
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# Query decomposition — conjunction splitting
+# ---------------------------------------------------------------------------
+
+# Conjunctions that signal independent sub-queries
+_CONJUNCTIONS = [" and ", " also ", " plus ", " as well as ", " in addition "]
+
+# Phrases that look like conjunctions but shouldn't split
+# e.g. "Python and Rust", "Phoenix and Kingman", "cats and dogs"
+_NOSPLIT_PATTERNS = [
+    "compare", "difference between", "vs", "versus",
+    "both", "either", "neither", "between",
+]
+
+
+def _decompose(query: str) -> list[str]:
+    """Split a query into independent sub-queries on conjunction words.
+
+    Returns a list with the original query if no meaningful split is found,
+    or a list of 2+ sub-queries if the query contains independent intents.
+
+    Avoids splitting on conjunctions that are part of a comparison or
+    single-concept query.
+    """
+    q = query.strip()
+    q_lower = q.lower()
+
+    # Don't split comparison queries
+    if any(p in q_lower for p in _NOSPLIT_PATTERNS):
+        return [q]
+
+    # Try each conjunction in order of specificity (longest first)
+    for conj in sorted(_CONJUNCTIONS, key=len, reverse=True):
+        if conj in q_lower:
+            # Find all split points
+            parts = []
+            remaining = q
+            remaining_lower = remaining.lower()
+            while conj in remaining_lower:
+                idx = remaining_lower.index(conj)
+                part = remaining[:idx].strip()
+                if part:
+                    parts.append(part)
+                remaining = remaining[idx + len(conj):]
+                remaining_lower = remaining.lower()
+            if remaining.strip():
+                parts.append(remaining.strip())
+
+            # Only split if all parts are meaningful — must be >3 chars
+            # AND contain at least one verb/question word to be a standalone intent
+            _INTENT_WORDS = {
+                "what", "whats", "how", "is", "are", "check", "show",
+                "tell", "get", "any", "which", "status", "give", "do",
+                # Source trigger nouns — valid standalone sub-queries
+                "weather", "forecast", "news", "headlines", "services",
+                "uptime", "lights", "doors", "locks", "battery", "batteries",
+                "temperature", "humidity", "motion", "sensors", "indoor",
+                "outdoor", "outside", "power", "consumption", "security",
+            }
+            meaningful = [
+                p for p in parts
+                if len(p) > 3 and any(w in p.lower().split() for w in _INTENT_WORDS)
+            ]
+            if len(meaningful) >= 2:
+                _LOGGER.info("Decomposed query into %d parts: %s", len(meaningful), meaningful)
+                return meaningful
+
+    return [q]
+
+
 def route(query: str, source: str = "auto", fusion_sources: list[str] | None = None) -> str:
+    # Query decomposition — only for auto routing
+    if source == "auto":
+        sub_queries = _decompose(query)
+        if len(sub_queries) > 1:
+            _LOGGER.info("Routing %d decomposed sub-queries for: '%s'", len(sub_queries), query[:50])
+            parts = []  # list of (source, result) tuples
+            for sub_q in sub_queries:
+                intent = detect_intent(sub_q)
+                if isinstance(intent, list):
+                    sub_source = "fusion"
+                    sub_result = fusion.search(sub_q, intent)
+                else:
+                    sub_source = intent
+                    handler = SOURCE_MAP.get(sub_source)
+                    cached = _get_cached(sub_source, sub_q)
+                    if cached:
+                        sub_result = cached
+                    elif handler:
+                        sub_result = handler(sub_q)
+                        if not _looks_empty(sub_result):
+                            _set_cached(sub_source, sub_q, sub_result)
+                    else:
+                        sub_result = ""
+                if not _looks_empty(sub_result):
+                    parts.append((sub_source, sub_result))
+
+            if parts:
+                # Merge consecutive same-source results to avoid duplicate headers
+                merged = []
+                current_source, current_result = parts[0]
+                for source, result in parts[1:]:
+                    if source == current_source:
+                        current_result = current_result.rstrip() + "\n\n" + result.lstrip()
+                    else:
+                        merged.append((current_source, current_result))
+                        current_source, current_result = source, result
+                merged.append((current_source, current_result))
+
+                return "\n\n---\n\n".join(
+                    f"[{source.upper()}]\n{result}" for source, result in merged
+                )
+            # All sub-queries returned empty — fall through to single query routing
+
     if source == "auto":
         intent = detect_intent(query)
         # LLM may escalate to fusion for multi-topic queries

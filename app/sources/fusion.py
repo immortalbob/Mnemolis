@@ -13,6 +13,9 @@ FUSION_TIMEOUT = 15  # seconds
 # Maximum number of sources allowed in a single fusion query
 FUSION_MAX_SOURCES = 4
 
+# Maximum characters per source result before truncation
+FUSION_MAX_CHARS_PER_SOURCE = 1500
+
 
 def _looks_empty(result: str) -> bool:
     """Check if a result is empty or an error."""
@@ -25,6 +28,74 @@ def _looks_empty(result: str) -> bool:
         "not configured", "could not connect", "error:",
     ]
     return any(phrase in result_lower for phrase in empty_phrases)
+
+
+def _truncate(result: str, max_chars: int = FUSION_MAX_CHARS_PER_SOURCE) -> str:
+    """Truncate a result to max_chars, preserving whole lines."""
+    if len(result) <= max_chars:
+        return result
+    truncated = result[:max_chars]
+    # Cut at last newline to avoid mid-line truncation
+    last_newline = truncated.rfind("\n")
+    if last_newline > max_chars // 2:
+        truncated = truncated[:last_newline]
+    return truncated.rstrip() + "\n…"
+
+
+def _deduplicate(results: dict[str, str]) -> dict[str, str]:
+    """Remove sources whose content is substantially contained in another source's result.
+    
+    Checks sentence-level overlap — if 60%+ of a source's sentences already
+    appear in a longer result, drop it as redundant.
+    """
+    if len(results) <= 1:
+        return results
+
+    def sentences(text: str) -> set[str]:
+        return {
+            s.strip().lower() for s in text.replace("\n", ". ").split(".")
+            if len(s.strip()) > 20
+        }
+
+    sources = list(results.keys())
+    keep = set(sources)
+
+    for i, s1 in enumerate(sources):
+        if s1 not in keep:
+            continue
+        for s2 in sources[i+1:]:
+            if s2 not in keep:
+                continue
+            sents1 = sentences(results[s1])
+            sents2 = sentences(results[s2])
+            if not sents1 or not sents2:
+                continue
+            # Check if s2 is mostly contained in s1
+            overlap = len(sents1 & sents2)
+            if overlap / len(sents2) >= 0.6:
+                _LOGGER.info("Fusion: dropping '%s' as redundant with '%s'", s2, s1)
+                keep.discard(s2)
+            elif overlap / len(sents1) >= 0.6:
+                _LOGGER.info("Fusion: dropping '%s' as redundant with '%s'", s1, s2)
+                keep.discard(s1)
+
+    return {s: r for s, r in results.items() if s in keep}
+
+
+def _merge_same_source(parts: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Merge consecutive results from the same source into one block."""
+    if not parts:
+        return parts
+    merged = []
+    current_source, current_result = parts[0]
+    for source, result in parts[1:]:
+        if source == current_source:
+            current_result = current_result.rstrip() + "\n\n" + result.lstrip()
+        else:
+            merged.append((current_source, current_result))
+            current_source, current_result = source, result
+    merged.append((current_source, current_result))
+    return merged
 
 
 def search(query: str, sources: list[str] | None = None) -> str:
@@ -106,13 +177,28 @@ def search(query: str, sources: list[str] | None = None) -> str:
         _LOGGER.info("Fusion: only '%s' returned results, returning directly", source)
         return result
 
-    # Multiple sources — merge with attribution headers
-    parts = []
-    for source, result in successful.items():
-        parts.append(f"[{source.upper()}]\n{result}")
+    # Deduplicate — drop sources whose content is mostly covered by another
+    successful = _deduplicate(successful)
+
+    if len(successful) == 1:
+        source, result = next(iter(successful.items()))
+        return result
+
+    # Truncate verbose results before merging
+    truncated = {s: _truncate(r) for s, r in successful.items()}
+
+    # Build parts list preserving source order
+    parts = [(s, truncated[s]) for s in valid if s in truncated]
+
+    # Merge consecutive same-source results (fixes duplicate [HA] from decomposition)
+    parts = _merge_same_source(parts)
+
+    merged = "\n\n---\n\n".join(
+        f"[{source.upper()}]\n{result}" for source, result in parts
+    )
 
     _LOGGER.info(
         "Fusion: merged %d sources for query '%s'",
-        len(successful), query[:50]
+        len(parts), query[:50]
     )
-    return "\n\n---\n\n".join(parts)
+    return merged

@@ -102,6 +102,44 @@ ESP32 Voice Assistant
 
 Fusion queries all specified sources concurrently, filters empty or failed results, and merges the remainder with source attribution headers. If only one source returns results, it is returned directly without headers.
 
+### Query Decomposition
+
+```text
+   source="auto"
+        │
+        ▼
+ Conjunction scan
+ "and", "also", "plus", "as well as"
+        │
+        ▼
+ Nosplit check
+ "compare", "vs", "between", etc.
+        │
+   ┌────┴────┐
+   ▼         ▼
+Single    Multiple
+intent    intents
+   │         │
+   │    ┌────┴────────────┐
+   │    ▼                 ▼
+   │  Sub-query 1    Sub-query 2
+   │    │                 │
+   │  Route            Route
+   │  independently    independently
+   │    │                 │
+   │    └────────┬────────┘
+   │             │
+   │    Same source? → Merge headers
+   │    Different?  → Keep separate
+   │             │
+   └─────────────┤
+                 ▼
+          Single Response
+     with [SOURCE] attribution
+```
+
+Decomposition only applies to `source="auto"`. Explicit source requests (`source="kiwix"`) skip decomposition entirely. Consecutive results from the same source are merged under a single header — "indoor air quality and are the doors locked" returns one `[HA]` block, not two.
+
 ## Integrations
 
 | Client | Protocol | How |
@@ -411,7 +449,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-230 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion behavior, and Home Assistant entity filtering.
+257 tests covering intent routing, query decomposition, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion truncation/deduplication/merging, and Home Assistant entity filtering.
 
 ## Project Structure
 
@@ -437,7 +475,7 @@ Mnemolis/
 │   ├── test_forecast.py            # forecast parsing and thresholds via mocking
 │   ├── test_searxng.py             # SearXNG search and guard via mocking
 │   ├── test_uptime_kuma.py         # Uptime Kuma status parsing via mocking
-│   ├── test_fusion.py              # fusion source merging and failure handling
+│   ├── test_fusion.py              # fusion merging, truncation, deduplication, same-source merging
 │   ├── test_home_assistant.py      # HA entity filtering, exclusions, formatting
 │   └── locustfile.py               # Locust load testing suite
 └── app/
@@ -478,7 +516,7 @@ Looking for contributors interested in building out additional sources:
 
 Each source only needs a single `search(query: str) -> str` function. See any existing file in `app/sources/` as a reference.
 
-## Part of the Mnemo-Net stack
+## Part of the MiniNet stack
 
 - [Mnemolis Intents](https://github.com/immortalbob/mnemolis_intents) — native Home Assistant LLM integration for Mnemolis
-- [Mnemovox-T7S3](https://github.com/immortalbob/Mnemovox-T7S3) — ESP32-S3 room sensor node with voice assistant and CO2 monitoring
+- [Mnemovox-T7S3](https://github.com/immortalbob/Mnemovox-T7S3) — ESP32-S3 voice satellite with CO2, temperature, and humidity sensing

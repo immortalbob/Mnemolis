@@ -182,15 +182,37 @@ class TestNewUptimeTriggers:
 class TestAutoFusionEscalation:
     """Tests for auto routing escalating to fusion on multi-topic queries."""
 
-    def test_multi_topic_query_uses_fusion(self):
-        from app.router import route
+    def test_multi_topic_query_decomposes(self):
+        from app.router import route, _decompose
         from unittest.mock import patch
-        from app.sources import fusion
+        from app.sources import forecast, uptime_kuma
 
-        with patch.object(fusion, "search", return_value="Fused result.") as mock_fusion:
-            result = route("what is the weather and are my services up", "auto")
-        assert mock_fusion.called
-        assert result == "Fused result."
+        # Multi-topic query should decompose into sub-queries rather than fuse
+        parts = _decompose("what is the weather and are my services up")
+        assert len(parts) == 2
+        assert any("weather" in p for p in parts)
+        assert any("services" in p for p in parts)
+
+    def test_multi_topic_query_routes_independently(self):
+        from app.router import route, clear_cache, clear_routing_cache
+        import app.router as router_module
+        from unittest.mock import patch, MagicMock
+
+        clear_cache()
+        mock_forecast = MagicMock(return_value="Sunny today.")
+        mock_uptime = MagicMock(return_value="All services up.")
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["forecast"] = mock_forecast
+        router_module.SOURCE_MAP["uptime"] = mock_uptime
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router._keyword_detect", return_value=None), \
+                 patch("app.router._llm_detect", side_effect=["forecast", "uptime"]):
+                result = route("what is the weather and are my services up", "auto")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert mock_forecast.called
+        assert mock_uptime.called
 
     def test_single_topic_does_not_use_fusion(self):
         from app.router import route
@@ -200,6 +222,70 @@ class TestAutoFusionEscalation:
         with patch.object(fusion, "search") as mock_fusion:
             route("what is the weather tomorrow", "auto")
         assert not mock_fusion.called
+
+
+class TestDecompose:
+    """Tests for _decompose conjunction splitting."""
+
+    def setup_method(self):
+        from app.router import _decompose
+        self.decompose = _decompose
+
+    def test_weather_and_services_splits(self):
+        parts = self.decompose("what is the weather and are my services up")
+        assert len(parts) == 2
+
+    def test_single_query_not_split(self):
+        assert self.decompose("what is molybdenum") == ["what is molybdenum"]
+
+    def test_compare_not_split(self):
+        assert len(self.decompose("compare Python and Rust")) == 1
+
+    def test_location_not_split(self):
+        assert len(self.decompose("weather in Phoenix and Kingman")) == 1
+
+    def test_country_names_not_split(self):
+        assert len(self.decompose("what is happening with Iran and Israel")) == 1
+
+    def test_also_conjunction(self):
+        parts = self.decompose("check services also what is the forecast")
+        assert len(parts) == 2
+
+    def test_triple_split(self):
+        parts = self.decompose("house status and weather and are services up")
+        assert len(parts) == 3
+
+    def test_indoor_air_and_doors(self):
+        parts = self.decompose("indoor air quality and are the doors locked")
+        assert len(parts) == 2
+
+    def test_summarize_not_split(self):
+        assert len(self.decompose("summarize news about Iran and Israel")) == 1
+
+    def test_temperature_and_lights(self):
+        parts = self.decompose("what is the temperature and are the lights on")
+        assert len(parts) == 2
+
+    def test_battery_and_security(self):
+        parts = self.decompose("battery status and security status")
+        assert len(parts) == 2
+
+    def test_explicit_source_not_decomposed(self):
+        from app.router import route, clear_cache
+        import app.router as router_module
+        from unittest.mock import patch, MagicMock
+
+        clear_cache()
+        mock_kiwix = MagicMock(return_value="Kiwix result.")
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["kiwix"] = mock_kiwix
+        try:
+            with patch("app.router._get_cached", return_value=None):
+                result = route("what is the weather and are my services up", "kiwix")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert mock_kiwix.called
+        assert result == "Kiwix result."
 
 
 class TestDetectIntent:
