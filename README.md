@@ -15,7 +15,7 @@ ESP32 Voice Assistant
    Home Assistant
           │
           ▼
- MiniSearch Intents
+ Mnemolis Intents
           │
           ▼
      Mnemolis
@@ -45,7 +45,7 @@ ESP32 Voice Assistant
 
 ```text
    Open WebUI    Claude Desktop    Cursor    Home Assistant
-       │                │             │     (MiniSearch Intents)
+       │                │             │     (Mnemolis Intents)
     REST API            MCP          MCP          REST API
        │                │             │               │
        └────────────────┴─────────────┴───────────────┘
@@ -66,7 +66,7 @@ ESP32 Voice Assistant
                     REST API       MCP/SSE
                            │         │
                Home Assistant    Any MCP
-             (MiniSearch Intents)   Client
+             (Mnemolis Intents)   Client
                            │
                     Voice Pipeline
 ```
@@ -107,7 +107,7 @@ Fusion queries all specified sources concurrently, filters empty or failed resul
 | Client | Protocol | How |
 |--------|----------|-----|
 | [Open WebUI](mnemolis_tool.py) | REST | Lightweight tool that POSTs to `/search` |
-| [MiniSearch Intents](https://github.com/immortalbob/minisearch_intents) | REST | Native HA LLM API integration |
+| [Mnemolis Intents](https://github.com/immortalbob/Mnemolis-Intents) | REST | Native HA LLM API integration |
 | Any MCP client (Claude Desktop, Cursor, etc.) | MCP/SSE | Connect to `http://your-host:8888/mcp/sse` |
 
 ## Sources
@@ -309,7 +309,7 @@ Response:
 Returns the list of available sources.
 
 ### `GET /health`
-Returns status, number of Kiwix books loaded, and current result cache entry count.
+Returns status, number of Kiwix books loaded, cache entry count, and connectivity status for every configured source.
 
 ### `GET /catalog`
 Lists all books currently loaded from the Kiwix OPDS catalog.
@@ -328,6 +328,12 @@ Shows all current routing cache entries — source and Kiwix book selection deci
 
 ### `POST /cache/routing/clear`
 Clears all routing cache entries from memory and disk.
+
+### `GET /logs`
+Returns recent query log entries — timestamp, query, source used, cached flag, success, and latency in milliseconds. Optional `?limit=N` parameter (default 50).
+
+### `POST /logs/clear`
+Clears all query log entries.
 
 ## Caching
 
@@ -396,7 +402,7 @@ The new source is automatically available via both REST and MCP — and immediat
 docker exec mnemolis python3 -m pytest /app/tests/ -v
 ```
 
-202 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion behavior, and Home Assistant entity filtering.
+215 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion behavior, and Home Assistant entity filtering.
 
 ## Project Structure
 
@@ -463,5 +469,5 @@ Each source only needs a single `search(query: str) -> str` function. See any ex
 
 ## Part of the MiniNet stack
 
-- [MiniSearch Intents](https://github.com/immortalbob/minisearch_intents) — native Home Assistant LLM integration for Mnemolis
+- [Mnemolis Intents](https://github.com/immortalbob/Mnemolis-Intents) — native Home Assistant LLM integration for Mnemolis
 - [MiniSense-T7S3](https://github.com/immortalbob/MiniSense-T7S3) — ESP32-S3 room sensor node with voice assistant and CO2 monitoring
