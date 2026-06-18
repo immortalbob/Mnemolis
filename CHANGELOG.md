@@ -4,6 +4,19 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
+## [3.5.1]
+
+### Changed
+- **Public readiness scrub** — removed personal location data from example files
+- `docker-compose.example.yml` — forecast coordinates, location name, and timezone blanked with placeholder comments
+- `app/config.py` — default coordinates set to `0.0`, location name blank, timezone defaulting to `UTC`
+- `tests/locustfile.py` — personal IP replaced with `your-host`
+- `README.md` — forecast defaults shown as blank, example HA IP neutralized
+- **`LICENSE`** added — MIT license
+- README updated with license section
+
+---
+
 ## [3.5.0]
 
 ### Added
@@ -167,7 +180,7 @@ Queries HA can't answer natively with its built-in intents:
 
 ---
 
-## [2.8.0] — Upcoming
+## [2.8.0]
 
 ### Added
 - Routing cache — source and Kiwix book selection decisions are cached for 1 hour, persisted to disk, eliminating redundant Ollama calls for repeated queries
