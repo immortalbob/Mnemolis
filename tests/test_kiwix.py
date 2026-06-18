@@ -9,6 +9,41 @@ import pytest
 # Stop word filtering / search term cleaning
 # ---------------------------------------------------------------------------
 
+class TestDefinitionalQuery:
+    """Tests for _is_definitional_query intent detection."""
+
+    def setup_method(self):
+        from app.sources.kiwix import _is_definitional_query
+        self.detect = _is_definitional_query
+
+    def test_what_are_is_definitional(self):
+        assert self.detect("what are capacitors") is True
+
+    def test_what_is_is_definitional(self):
+        assert self.detect("what is nitrogen") is True
+
+    def test_tell_me_about_is_definitional(self):
+        assert self.detect("tell me about volcanoes") is True
+
+    def test_how_does_is_definitional(self):
+        assert self.detect("how does photosynthesis work") is True
+
+    def test_explain_is_definitional(self):
+        assert self.detect("explain quantum mechanics") is True
+
+    def test_history_of_is_definitional(self):
+        assert self.detect("history of the Roman Empire") is True
+
+    def test_bare_noun_not_definitional(self):
+        assert self.detect("marsupials") is False
+
+    def test_specific_technical_not_definitional(self):
+        assert self.detect("capacitor power factor correction AC circuit") is False
+
+    def test_specific_problem_not_definitional(self):
+        assert self.detect("multiple resistors in series heat dissipation") is False
+
+
 class TestStem:
     """Tests for the _stem suffix-stripping function."""
 
@@ -127,11 +162,11 @@ class TestScoreResult:
     def test_stop_words_dont_inflate_score(self):
         # After stop word removal "what is it" has no meaningful words
         # title "What Is The" has no meaningful words either
-        # so only primary book bonus (2) should apply
+        # Wikipedia definitional bonus (+8) + primary book bonus (+2) = 10 max
         result = self._result("What Is The")
         query = "what is it"
         primary = "wikipedia_en_all_maxi_2026-02"
-        assert self.score(result, query, primary) <= 2
+        assert self.score(result, query, primary) <= 10
 
     def test_multi_word_query_scores_better_with_more_hits(self):
         full_match = self._result("Nginx Reverse Proxy Configuration")
@@ -141,11 +176,11 @@ class TestScoreResult:
         assert self.score(full_match, query, primary) > self.score(partial_match, query, primary)
 
     def test_zero_score_for_completely_unrelated(self):
-        # Primary book bonus (+2) applies even to unrelated results so minimum is 2
+        # Wikipedia non-definitional bonus (+3) + primary book bonus (+2) = 5 max for unrelated
         result = self._result("Ancient Roman Architecture", excerpt="columns and arches")
         query = "molybdenum"
         primary = "wikipedia_en_all_maxi_2026-02"
-        assert self.score(result, query, primary) <= 2
+        assert self.score(result, query, primary) <= 5
 
     def test_excerpt_contributes_to_score(self):
         no_excerpt = self._result("Chemistry overview", excerpt="")
@@ -178,3 +213,38 @@ class TestScoreResult:
         query = "batteries"
         primary = "wikipedia_en_all_maxi_2026-02"
         assert self.score(result, query, primary) > 0
+
+    def test_wikipedia_bonus_for_definitional_query(self):
+        # Wikipedia article should score higher than non-Wikipedia for definitional query
+        wiki_result = self._result("Capacitor", book="wikipedia_en_all_maxi_2026-02")
+        se_result = self._result("Capacitor", book="electronics.stackexchange.com_en_all_2026-02")
+        query = "what are capacitors"
+        primary = "wikipedia_en_all_maxi_2026-02"
+        assert self.score(wiki_result, query, primary) > self.score(se_result, query, primary)
+
+    def test_list_article_penalized(self):
+        # "Lists of volcanoes" should score lower than "Volcano"
+        list_result = self._result("Lists of volcanoes")
+        main_result = self._result("Volcano")
+        query = "tell me about volcanoes"
+        primary = "wikipedia_en_all_maxi_2026-02"
+        assert self.score(main_result, query, primary) > self.score(list_result, query, primary)
+
+    def test_index_article_penalized(self):
+        list_result = self._result("List of capacitor types")
+        main_result = self._result("Capacitor")
+        query = "what are capacitors"
+        primary = "wikipedia_en_all_maxi_2026-02"
+        assert self.score(main_result, query, primary) > self.score(list_result, query, primary)
+
+    def test_wikipedia_bonus_larger_for_definitional_query(self):
+        # Wikipedia gets +8 for definitional, +3 for specific
+        # Use identical titles to isolate the Wikipedia bonus alone
+        wiki_result = self._result("Zymurgy", book="wikipedia_en_all_maxi_2026-02")
+        se_result = self._result("Zymurgy", book="electronics.stackexchange.com_en_all_2026-02")
+        query_def = "what is zymurgy"
+        primary = "wikipedia_en_all_maxi_2026-02"
+        # Wikipedia should beat Stack Exchange for definitional queries
+        wiki_def = self.score(wiki_result, query_def, primary)
+        se_def = self.score(se_result, query_def, primary)
+        assert wiki_def > se_def

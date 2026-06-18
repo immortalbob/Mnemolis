@@ -129,6 +129,13 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> l
             set_routing(cache_key, ",".join(result))
         return result
 
+    is_definitional = _is_definitional_query(query)
+    intent_hint = (
+        "This is a definitional or overview query — prefer encyclopedic sources like Wikipedia over Q&A threads."
+        if is_definitional else
+        "This is a specific or technical query — Stack Exchange and technical references may be appropriate."
+    )
+
     book_list = "\n".join(
         f"- {b['name']}: {b['title']} — {b['summary'][:100]}"
         for b in books
@@ -140,6 +147,7 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> l
         f"ranked by relevance, as a comma-separated list. "
         f"Return ONLY the exact book names separated by commas. No explanation, no punctuation other than commas.\n\n"
         f"Query: {query}\n\n"
+        f"Intent: {intent_hint}\n\n"
         f"Available books:\n{book_list}\n\n"
         f"Best book names (comma-separated, most relevant first):"
     )
@@ -280,6 +288,21 @@ def _stem(word: str) -> str:
     return word
 
 
+def _is_definitional_query(query: str) -> bool:
+    """Return True if the query is asking for a definition or overview.
+    These queries benefit from encyclopedic sources like Wikipedia over Q&A threads.
+    """
+    q = query.lower().strip()
+    definitional_patterns = [
+        "what is", "what are", "what was", "what were",
+        "tell me about", "explain", "describe", "define",
+        "how does", "how do", "how did",
+        "who is", "who was", "who were",
+        "history of", "overview of", "introduction to",
+    ]
+    return any(q.startswith(p) or p in q for p in definitional_patterns)
+
+
 def _score_result(result: dict, query: str, primary_book: str) -> int:
     """Score a search result by relevance to the query.
 
@@ -289,15 +312,16 @@ def _score_result(result: dict, query: str, primary_book: str) -> int:
     - Title starts with query (after stop word removal): +10
     - Each query word in title (stop words removed): +5 each
     - Each query word in excerpt (stop words removed, normalized): +1 each
+    - Wikipedia bonus: +8 for definitional queries, +3 for all others
     - Primary book bonus: +2
+    - List/index article penalty: -10 for titles starting with "List of", "Lists of", "Index of", etc.
     """
     query_lower = query.lower().strip()
     title_lower = result["title"].lower().strip()
     excerpt_lower = result["excerpt"].lower()
+    book = result.get("book", "")
 
     # Strip stop words from query for word-level scoring
-    # If all words are stop words, leave query_words empty — don't fall back
-    # to full query as that would let stop words inflate scores
     query_words = set(query_lower.split()) - _STOP_WORDS
 
     title_words = set(title_lower.split()) - _STOP_WORDS
@@ -310,15 +334,18 @@ def _score_result(result: dict, query: str, primary_book: str) -> int:
         score += 20
 
     # Stemmed match — catches plural/suffix variations
-    # e.g. "marsupials" query matches "Marsupial" title
+    # Check full query AND individual meaningful query words against title stem
+    # e.g. "what are galaxies" → "galaxies" → stems to "galaxy" → matches "Galaxy" title
     elif _stem(query_lower) == _stem(title_lower):
         score += 15
+    elif any(_stem(w) == _stem(title_lower) for w in query_words if len(w) > 3):
+        score += 15
 
-    # Title starts with a meaningful query term (stop words already removed from query_words)
+    # Title starts with a meaningful query term
     if any(title_lower.startswith(w) for w in query_words if len(w) > 3):
         score += 10
 
-    # Word-level title hits with stemming — catches plural word matches
+    # Word-level title hits with stemming
     stemmed_query_words = {_stem(w) for w in query_words}
     stemmed_title_words = {_stem(w) for w in title_words}
     title_hits = len(stemmed_query_words & stemmed_title_words)
@@ -330,8 +357,14 @@ def _score_result(result: dict, query: str, primary_book: str) -> int:
     excerpt_len = max(len(excerpt_words), 1)
     score += int((excerpt_hits / excerpt_len) * 10)
 
+    # Penalize list and index articles — these are navigation pages not content
+    list_prefixes = ("list of", "lists of", "index of", "outline of", "category:")
+    if any(title_lower.startswith(p) for p in list_prefixes):
+        score -= 10
+        score += 8 if _is_definitional_query(query) else 3
+
     # Primary book bonus
-    if result["book"] == primary_book:
+    if book == primary_book:
         score += 2
 
     return score

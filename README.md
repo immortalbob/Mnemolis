@@ -309,7 +309,7 @@ Response:
 Returns the list of available sources.
 
 ### `GET /health`
-Returns status, number of Kiwix books loaded, and current result cache entry count.
+Returns status, number of Kiwix books loaded, cache entry count, and connectivity status for every configured source.
 
 ### `GET /catalog`
 Lists all books currently loaded from the Kiwix OPDS catalog.
@@ -328,6 +328,12 @@ Shows all current routing cache entries — source and Kiwix book selection deci
 
 ### `POST /cache/routing/clear`
 Clears all routing cache entries from memory and disk.
+
+### `GET /logs`
+Returns recent query log entries — timestamp, query, source used, cached flag, success, and latency in milliseconds. Optional `?limit=N` parameter (default 50).
+
+### `POST /logs/clear`
+Clears all query log entries.
 
 ## Caching
 
@@ -396,7 +402,7 @@ The new source is automatically available via both REST and MCP — and immediat
 docker exec mnemolis python3 -m pytest /app/tests/ -v
 ```
 
-202 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion behavior, and Home Assistant entity filtering.
+215 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion behavior, and Home Assistant entity filtering.
 
 ## Project Structure
 
