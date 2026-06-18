@@ -402,6 +402,15 @@ The new source is automatically available via both REST and MCP — and immediat
 docker exec mnemolis python3 -m pytest /app/tests/ -v
 ```
 
+For load testing:
+
+```bash
+pip install locust
+locust -f tests/locustfile.py --host http://your-host:8888
+```
+
+See `BENCHMARKS.md` for documented results.
+
 215 tests covering intent routing, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion behavior, and Home Assistant entity filtering.
 
 ## Project Structure
@@ -414,6 +423,7 @@ Mnemolis/
 ├── requirements.txt
 ├── pytest.ini
 ├── CHANGELOG.md
+├── BENCHMARKS.md
 ├── mnemolis_tool.py              # Open WebUI bridge tool
 ├── README.md
 ├── searxng/
@@ -428,7 +438,8 @@ Mnemolis/
 │   ├── test_searxng.py             # SearXNG search and guard via mocking
 │   ├── test_uptime_kuma.py         # Uptime Kuma status parsing via mocking
 │   ├── test_fusion.py              # fusion source merging and failure handling
-│   └── test_home_assistant.py      # HA entity filtering, exclusions, formatting
+│   ├── test_home_assistant.py      # HA entity filtering, exclusions, formatting
+│   └── locustfile.py               # Locust load testing suite
 └── app/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog endpoints
     ├── mcp_server.py               # MCP SSE server
