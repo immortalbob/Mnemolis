@@ -18,7 +18,7 @@ ESP32 Voice Assistant
  MiniSearch Intents
           │
           ▼
-     MiniSearch
+     Mnemolis
           │
           ├────────────────────┐
           │                    │
@@ -51,7 +51,7 @@ ESP32 Voice Assistant
        └────────────────┴─────────────┴───────────────┘
                                 │
                                 ▼
-                           MiniSearch
+                           Mnemolis
                                 │
                           Smart Routing
                    ┌────────────┴────────────┐
@@ -463,5 +463,5 @@ Each source only needs a single `search(query: str) -> str` function. See any ex
 
 ## Part of the MiniNet stack
 
-- [MiniSearch Intents](https://github.com/immortalbob/minisearch_intents) — native Home Assistant LLM integration for MiniSearch
+- [MiniSearch Intents](https://github.com/immortalbob/minisearch_intents) — native Home Assistant LLM integration for Mnemolis
 - [MiniSense-T7S3](https://github.com/immortalbob/MiniSense-T7S3) — ESP32-S3 room sensor node with voice assistant and CO2 monitoring
