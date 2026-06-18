@@ -107,7 +107,7 @@ Fusion queries all specified sources concurrently, filters empty or failed resul
 | Client | Protocol | How |
 |--------|----------|-----|
 | [Open WebUI](mnemolis_tool.py) | REST | Lightweight tool that POSTs to `/search` |
-| [Mnemolis Intents](https://github.com/immortalbob/Mnemolis-Intents) | REST | Native HA LLM API integration |
+| [Mnemolis Intents](https://github.com/immortalbob/mnemolis_intents) | REST | Native HA LLM API integration |
 | Any MCP client (Claude Desktop, Cursor, etc.) | MCP/SSE | Connect to `http://your-host:8888/mcp/sse` |
 
 ## Sources
@@ -469,5 +469,5 @@ Each source only needs a single `search(query: str) -> str` function. See any ex
 
 ## Part of the MiniNet stack
 
-- [Mnemolis Intents](https://github.com/immortalbob/Mnemolis-Intents) — native Home Assistant LLM integration for Mnemolis
+- [Mnemolis Intents](https://github.com/immortalbob/mnemolis_intents) — native Home Assistant LLM integration for Mnemolis
 - [MiniSense-T7S3](https://github.com/immortalbob/MiniSense-T7S3) — ESP32-S3 room sensor node with voice assistant and CO2 monitoring
