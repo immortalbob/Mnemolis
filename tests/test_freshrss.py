@@ -104,3 +104,72 @@ class TestScoreArticle:
     def test_empty_query_words_scores_zero(self):
         score = self.score("Any Title", "any summary", set())
         assert score == 0
+
+
+class TestGetToken:
+    """Tests for _get_token FreshRSS authentication."""
+
+    def test_returns_token_on_success(self):
+        from app.sources import freshrss
+        from app.config import settings
+        from unittest.mock import patch, MagicMock
+        settings.freshrss_url = "http://freshrss"
+        settings.freshrss_user = "admin"
+        settings.freshrss_api_password = "password"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "SID=abc\nLSID=def\nAuth=mytoken123\n"
+        with patch("app.sources.freshrss.requests.post", return_value=mock_resp):
+            token = freshrss._get_token()
+        assert token == "mytoken123"
+        settings.freshrss_url = ""
+        settings.freshrss_user = ""
+        settings.freshrss_api_password = ""
+
+    def test_returns_none_on_auth_failure(self):
+        from app.sources import freshrss
+        from app.config import settings
+        from unittest.mock import patch, MagicMock
+        settings.freshrss_url = "http://freshrss"
+        settings.freshrss_user = "admin"
+        settings.freshrss_api_password = "wrong"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        with patch("app.sources.freshrss.requests.post", return_value=mock_resp):
+            token = freshrss._get_token()
+        assert token is None
+        settings.freshrss_url = ""
+        settings.freshrss_user = ""
+        settings.freshrss_api_password = ""
+
+    def test_returns_none_on_connection_error(self):
+        from app.sources import freshrss
+        from app.config import settings
+        import requests as req
+        from unittest.mock import patch
+        settings.freshrss_url = "http://freshrss"
+        settings.freshrss_user = "admin"
+        settings.freshrss_api_password = "password"
+        with patch("app.sources.freshrss.requests.post", side_effect=req.exceptions.ConnectionError()):
+            token = freshrss._get_token()
+        assert token is None
+        settings.freshrss_url = ""
+        settings.freshrss_user = ""
+        settings.freshrss_api_password = ""
+
+    def test_returns_none_when_auth_missing_from_response(self):
+        from app.sources import freshrss
+        from app.config import settings
+        from unittest.mock import patch, MagicMock
+        settings.freshrss_url = "http://freshrss"
+        settings.freshrss_user = "admin"
+        settings.freshrss_api_password = "password"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "SID=abc\nLSID=def\n"  # no Auth= line
+        with patch("app.sources.freshrss.requests.post", return_value=mock_resp):
+            token = freshrss._get_token()
+        assert token is None
+        settings.freshrss_url = ""
+        settings.freshrss_user = ""
+        settings.freshrss_api_password = ""

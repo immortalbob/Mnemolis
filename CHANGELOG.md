@@ -4,6 +4,24 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
+## [3.5.3]
+
+### Added
+- **Missing tests across all source modules** — comprehensive coverage audit followed by additions to six test files:
+  - `test_forecast.py` — `TestDegreesToCardinal` (6 tests), `TestFmtTime` (4 tests)
+  - `test_uptime_kuma.py` — `TestGetStatusFromHeartbeats` (6 tests)
+  - `test_fusion.py` — `TestLooksEmpty` (8 tests)
+  - `test_home_assistant.py` — `TestHAHelperFunctions` (9 tests), `TestBuildFilter` (5 tests)
+  - `test_freshrss.py` — `TestGetToken` (4 tests)
+  - `test_router.py` — `TestLlmPickFusionSources` (5 tests)
+
+### Changed
+- Version bumped to 3.5.3
+
+**Total test count: 331**
+
+---
+
 ## [3.5.2]
 
 ### Added

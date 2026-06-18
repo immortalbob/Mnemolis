@@ -317,3 +317,35 @@ class TestFusionMergeSameSource:
     def test_single_part_unchanged(self):
         parts = [("kiwix", "Some content.")]
         assert self.merge(parts) == parts
+
+
+class TestLooksEmpty:
+    """Tests for _looks_empty result validation."""
+
+    def setup_method(self):
+        from app.sources.fusion import _looks_empty
+        self.check = _looks_empty
+
+    def test_empty_string_is_empty(self):
+        assert self.check("") is True
+
+    def test_none_is_empty(self):
+        assert self.check(None) is True
+
+    def test_no_results_found_is_empty(self):
+        assert self.check("No results found for your query.") is True
+
+    def test_could_not_connect_is_empty(self):
+        assert self.check("Could not connect to Home Assistant.") is True
+
+    def test_not_configured_is_empty(self):
+        assert self.check("Home Assistant is not configured.") is True
+
+    def test_valid_result_not_empty(self):
+        assert self.check("# Nitrogen\nNitrogen is a chemical element.") is False
+
+    def test_forecast_result_not_empty(self):
+        assert self.check("Today will be sunny with a high of 95.") is False
+
+    def test_error_prefix_is_empty(self):
+        assert self.check("Error: connection refused") is True

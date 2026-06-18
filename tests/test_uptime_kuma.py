@@ -131,3 +131,33 @@ class TestUptimeKumaStatus:
             result = uptime_kuma.search("status")
         assert "3" in result  # 3 of 4 up
         assert "4" in result
+
+
+class TestGetStatusFromHeartbeats:
+    """Tests for _get_status_from_heartbeats heartbeat parsing."""
+
+    def setup_method(self):
+        from app.sources.uptime_kuma import _get_status_from_heartbeats
+        self.get_status = _get_status_from_heartbeats
+
+    def test_returns_last_status(self):
+        heartbeats = {1: [{"status": 0}, {"status": 1}]}
+        assert self.get_status(heartbeats, 1) == 1
+
+    def test_missing_monitor_returns_3(self):
+        assert self.get_status({}, 99) == 3
+
+    def test_empty_list_returns_3(self):
+        assert self.get_status({1: []}, 1) == 3
+
+    def test_missing_status_key_returns_3(self):
+        heartbeats = {1: [{"no_status_key": True}]}
+        assert self.get_status(heartbeats, 1) == 3
+
+    def test_down_status(self):
+        heartbeats = {1: [{"status": 0}]}
+        assert self.get_status(heartbeats, 1) == 0
+
+    def test_non_list_heartbeat_returns_3(self):
+        heartbeats = {1: "not a list"}
+        assert self.get_status(heartbeats, 1) == 3

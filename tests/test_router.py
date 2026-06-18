@@ -415,3 +415,53 @@ class TestLooksEmpty:
 
     def test_case_insensitive(self):
         assert self.check("NO RESULTS FOUND in kiwix") is True
+
+
+class TestLlmPickFusionSources:
+    """Tests for _llm_pick_fusion_sources LLM fusion source selection."""
+
+    def test_returns_default_when_llm_not_configured(self):
+        from app.router import _llm_pick_fusion_sources
+        from unittest.mock import patch
+        with patch("app.llm.is_configured", return_value=False):
+            result = _llm_pick_fusion_sources("what is the weather")
+        assert result == ["kiwix", "web"]
+
+    def test_returns_llm_sources_when_valid(self):
+        from app.router import _llm_pick_fusion_sources, clear_routing_cache
+        from unittest.mock import patch
+        clear_routing_cache()
+        with patch("app.llm.is_configured", return_value=True):
+            with patch("app.llm.complete", return_value="forecast, uptime"):
+                with patch("app.router._get_routing", return_value=None):
+                    result = _llm_pick_fusion_sources("whats the weather and services up")
+        assert "forecast" in result
+        assert "uptime" in result
+
+    def test_falls_back_to_default_on_invalid_llm_response(self):
+        from app.router import _llm_pick_fusion_sources, clear_routing_cache
+        from unittest.mock import patch
+        clear_routing_cache()
+        with patch("app.llm.is_configured", return_value=True):
+            with patch("app.llm.complete", return_value="invalid_source, another_bad"):
+                with patch("app.router._get_routing", return_value=None):
+                    result = _llm_pick_fusion_sources("some query xyz")
+        assert result == ["kiwix", "web"]
+
+    def test_caps_at_three_sources(self):
+        from app.router import _llm_pick_fusion_sources, clear_routing_cache
+        from unittest.mock import patch
+        clear_routing_cache()
+        with patch("app.llm.is_configured", return_value=True):
+            with patch("app.llm.complete", return_value="forecast, uptime, news, kiwix"):
+                with patch("app.router._get_routing", return_value=None):
+                    result = _llm_pick_fusion_sources("complex query abc")
+        assert len(result) <= 3
+
+    def test_uses_routing_cache_when_available(self):
+        from app.router import _llm_pick_fusion_sources
+        from unittest.mock import patch
+        with patch("app.router._get_routing", return_value="forecast,uptime"):
+            result = _llm_pick_fusion_sources("cached query")
+        assert "forecast" in result
+        assert "uptime" in result

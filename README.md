@@ -452,7 +452,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-284 tests covering FastAPI endpoints, intent routing, query decomposition, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion truncation/deduplication/merging, and Home Assistant entity filtering.
+331 tests covering FastAPI endpoints, intent routing, query decomposition, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting, uptime heartbeat parsing, fusion validation, LLM fusion source selection, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 

@@ -420,3 +420,82 @@ class TestValueFormatting:
     def test_non_numeric_passthrough(self):
         from app.sources.home_assistant import _format_value
         assert _format_value("locked", "") == "locked"
+
+
+class TestHAHelperFunctions:
+    """Tests for HA helper functions — friendly name, unit, exclusion."""
+
+    def test_friendly_name_from_attributes(self):
+        from app.sources.home_assistant import _friendly_name
+        entity = {"entity_id": "light.bedroom", "attributes": {"friendly_name": "Bedroom Light"}}
+        assert _friendly_name(entity) == "Bedroom Light"
+
+    def test_friendly_name_falls_back_to_entity_id(self):
+        from app.sources.home_assistant import _friendly_name
+        entity = {"entity_id": "light.bedroom", "attributes": {}}
+        assert _friendly_name(entity) == "light.bedroom"
+
+    def test_unit_from_attributes(self):
+        from app.sources.home_assistant import _unit
+        entity = {"entity_id": "sensor.temp", "attributes": {"unit_of_measurement": "°F"}}
+        assert _unit(entity) == "°F"
+
+    def test_unit_empty_when_missing(self):
+        from app.sources.home_assistant import _unit
+        entity = {"entity_id": "lock.door", "attributes": {}}
+        assert _unit(entity) == ""
+
+    def test_excluded_when_unavailable(self):
+        from app.sources.home_assistant import _is_excluded
+        entity = {"entity_id": "sensor.temp", "state": "unavailable", "attributes": {}}
+        assert _is_excluded(entity) is True
+
+    def test_excluded_when_unknown(self):
+        from app.sources.home_assistant import _is_excluded
+        entity = {"entity_id": "sensor.temp", "state": "unknown", "attributes": {}}
+        assert _is_excluded(entity) is True
+
+    def test_excluded_tv_segment(self):
+        from app.sources.home_assistant import _is_excluded
+        entity = {"entity_id": "light.tv_backlight_segment_1", "state": "on", "attributes": {}}
+        assert _is_excluded(entity) is True
+
+    def test_excluded_doorbell_ding(self):
+        from app.sources.home_assistant import _is_excluded
+        entity = {"entity_id": "binary_sensor.front_door_ding", "state": "off", "attributes": {}}
+        assert _is_excluded(entity) is True
+
+    def test_not_excluded_normal_entity(self):
+        from app.sources.home_assistant import _is_excluded
+        entity = {"entity_id": "light.bedroom", "state": "on", "attributes": {}}
+        assert _is_excluded(entity) is False
+
+
+class TestBuildFilter:
+    """Tests for _build_filter query keyword matching."""
+
+    def test_lights_query_returns_light_domain(self):
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("which lights are on")
+        assert "light" in f["domains"]
+
+    def test_battery_query_returns_battery_device_class(self):
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("battery status")
+        assert "battery" in f["device_classes"]
+
+    def test_temperature_query_returns_temperature_class(self):
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("indoor air quality")
+        assert "temperature" in f["device_classes"] or "carbon_dioxide" in f["device_classes"]
+
+    def test_door_query_returns_lock_domain(self):
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("are the doors locked")
+        assert "lock" in f["domains"]
+
+    def test_unmatched_query_falls_back_to_summary(self):
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("xyzzy nonsense query")
+        # Falls back to summary which includes lights and sensors
+        assert len(f["domains"]) > 0 or len(f["device_classes"]) > 0

@@ -105,3 +105,54 @@ class TestForecastSearch:
         with patch("app.sources.forecast.requests.get", return_value=_mock_forecast_response(codes=(63, 63, 63))):
             result = forecast.search("weather")
         assert "rain" in result.lower()
+
+
+class TestDegreesToCardinal:
+    """Tests for _degrees_to_cardinal wind direction conversion."""
+
+    def setup_method(self):
+        from app.sources.forecast import _degrees_to_cardinal
+        self.convert = _degrees_to_cardinal
+
+    def test_north(self):
+        assert self.convert(0) == "north"
+        assert self.convert(360) == "north"
+
+    def test_east(self):
+        assert self.convert(90) == "east"
+
+    def test_south(self):
+        assert self.convert(180) == "south"
+
+    def test_west(self):
+        assert self.convert(270) == "west"
+
+    def test_northeast(self):
+        assert self.convert(45) == "northeast"
+
+    def test_southwest(self):
+        assert self.convert(225) == "southwest"
+
+
+class TestFmtTime:
+    """Tests for _fmt_time ISO time formatting."""
+
+    def setup_method(self):
+        from app.sources.forecast import _fmt_time
+        self.fmt = _fmt_time
+
+    def test_morning_time(self):
+        result = self.fmt("2026-06-18T08:30:00")
+        assert "8:30 am" in result
+
+    def test_afternoon_time(self):
+        result = self.fmt("2026-06-18T14:00:00")
+        assert "2:00 pm" in result
+
+    def test_noon(self):
+        result = self.fmt("2026-06-18T12:00:00")
+        assert "12:00 pm" in result
+
+    def test_lowercase(self):
+        result = self.fmt("2026-06-18T09:00:00")
+        assert result == result.lower()
