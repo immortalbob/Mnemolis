@@ -109,6 +109,78 @@ def _get_states() -> list[dict] | None:
         return None
 
 
+def _get_area_entities() -> dict[str, list[str]] | None:
+    """Fetch area → entity list mapping from HA template API.
+    Returns dict of {area_id: [entity_id, ...]} or None on failure.
+    """
+    if not settings.ha_url or not settings.ha_token:
+        return None
+    try:
+        template = "{% for area in areas() %}{{ area }}|||{{ area_entities(area) | join(',') }}\n{% endfor %}"
+        resp = requests.post(
+            f"{settings.ha_url}/api/template",
+            headers={
+                "Authorization": f"Bearer {settings.ha_token}",
+                "Content-Type": "application/json",
+            },
+            json={"template": template},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        area_map = {}
+        for line in resp.text.strip().splitlines():
+            if "|||" not in line:
+                continue
+            area_id, entities_str = line.split("|||", 1)
+            area_id = area_id.strip()
+            entities = [e.strip() for e in entities_str.split(",") if e.strip()]
+            if area_id and entities:
+                area_map[area_id] = entities
+        _LOGGER.debug("Loaded %d areas from HA", len(area_map))
+        return area_map
+    except Exception as e:
+        _LOGGER.warning("Failed to fetch HA area registry: %s", e)
+        return None
+
+
+# Natural language area name aliases
+_AREA_ALIASES = {
+    "living room": "living_room",
+    "master bedroom": "master_bedroom",
+    "master bath": "master_bathroom",
+    "master bathroom": "master_bathroom",
+    "guest bedroom": "guest_bedroom",
+    "guest room": "guest_bedroom",
+    "dining room": "dining_room",
+    "outside": "outside",
+    "outdoors": "outside",
+    "exterior": "outside",
+    "patio": "patio",
+    "back yard": "back",
+    "backyard": "back",
+    "front door": "front",
+    "front yard": "front",
+    "shed": "shed",
+    "kitchen": "kitchen",
+    "bathroom": "bathroom",
+    "bedroom": "bedroom",
+    "hallway": "hallway",
+    "utility": "utility_room",
+    "laundry": "utility_room",
+    "display": "display_cases",
+}
+
+
+def _detect_area(query: str) -> str | None:
+    """Return area_id if a room/area name is detected in the query, else None."""
+    query_lower = query.lower()
+    # Check aliases first (longest match wins)
+    for phrase in sorted(_AREA_ALIASES.keys(), key=len, reverse=True):
+        if phrase in query_lower:
+            return _AREA_ALIASES[phrase]
+    return None
+
+
 def _friendly_name(entity: dict) -> str:
     return entity.get("attributes", {}).get("friendly_name", entity["entity_id"])
 
@@ -281,7 +353,9 @@ def _matches_filter(entity: dict, f: dict) -> bool:
 
 
 def search(query: str) -> str:
-    """Query Home Assistant entity states for analytical summaries."""
+    """Query Home Assistant entity states for analytical summaries.
+    If a room/area name is detected in the query, filters results to that area.
+    """
     if not settings.ha_url or not settings.ha_token:
         return "Home Assistant is not configured. Set HA_URL and HA_TOKEN."
 
@@ -292,15 +366,51 @@ def search(query: str) -> str:
     if not states:
         return "No entity states returned from Home Assistant."
 
+    # Build a state lookup dict for fast access
+    state_by_id = {e["entity_id"]: e for e in states}
+
+    # Check for area/room reference in query
+    area_id = _detect_area(query)
+    area_entity_ids: set[str] = set()
+
+    if area_id:
+        area_map = _get_area_entities()
+        if area_map and area_id in area_map:
+            area_entity_ids = set(area_map[area_id])
+            _LOGGER.info("Area filter: '%s' has %d entities", area_id, len(area_entity_ids))
+        else:
+            _LOGGER.warning("Area '%s' not found in registry, falling back to keyword filter", area_id)
+            area_id = None
+
     f = _build_filter(query)
 
     # Deduplicate by entity_id
     seen_ids = set()
     matched = []
-    for e in states:
-        if e["entity_id"] not in seen_ids and _matches_filter(e, f):
-            seen_ids.add(e["entity_id"])
-            matched.append(e)
+
+    if area_id and area_entity_ids:
+        # Area-filtered search — only return entities in the specified area
+        for entity_id in area_entity_ids:
+            if entity_id in state_by_id:
+                e = state_by_id[entity_id]
+                if entity_id not in seen_ids and not _is_excluded(e):
+                    # Apply state filter if present (e.g. "lights on in bedroom")
+                    if f["state_filter"] and e["state"] != f["state_filter"]:
+                        continue
+                    # Apply domain filter if present
+                    domain = entity_id.split(".")[0]
+                    dc = e.get("attributes", {}).get("device_class", "")
+                    if f["domains"] or f["device_classes"]:
+                        if domain not in f["domains"] and dc not in f["device_classes"]:
+                            continue
+                    seen_ids.add(entity_id)
+                    matched.append(e)
+    else:
+        # Standard keyword-based filter
+        for e in states:
+            if e["entity_id"] not in seen_ids and _matches_filter(e, f):
+                seen_ids.add(e["entity_id"])
+                matched.append(e)
 
     # Add motion events for summary queries
     if f["include_motion"]:
@@ -311,9 +421,11 @@ def search(query: str) -> str:
                     matched.append(e)
 
     if not matched:
-        return "No matching entities found in Home Assistant for that query."
+        area_hint = f" in {area_id.replace('_', ' ')}" if area_id else ""
+        return f"No matching entities found in Home Assistant{area_hint} for that query."
 
-    _LOGGER.info("HA source: %d entities matched for query '%s'", len(matched), query[:50])
+    _LOGGER.info("HA source: %d entities matched for query '%s'%s",
+                 len(matched), query[:50], f" (area: {area_id})" if area_id else "")
 
     # Track motion event entity names to avoid double-counting with binary_sensors
     motion_event_names = {

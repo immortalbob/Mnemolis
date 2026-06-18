@@ -273,6 +273,135 @@ class TestMotionFormatting:
         assert "3 days ago" in result
 
 
+class TestAreaDetection:
+    """Tests for _detect_area area/room name detection."""
+
+    def setup_method(self):
+        from app.sources.home_assistant import _detect_area
+        self.detect = _detect_area
+
+    def test_living_room_detected(self):
+        assert self.detect("what lights are in the living room") == "living_room"
+
+    def test_master_bedroom_detected(self):
+        assert self.detect("temperature in the master bedroom") == "master_bedroom"
+
+    def test_bedroom_detected(self):
+        assert self.detect("lights in the bedroom") == "bedroom"
+
+    def test_kitchen_detected(self):
+        assert self.detect("what lights are on in the kitchen") == "kitchen"
+
+    def test_outside_detected(self):
+        assert self.detect("what are the outdoor conditions outside") == "outside"
+
+    def test_outdoors_alias(self):
+        assert self.detect("what is the temperature outdoors") == "outside"
+
+    def test_master_bathroom_detected(self):
+        assert self.detect("is the light on in the master bathroom") == "master_bathroom"
+
+    def test_guest_bedroom_detected(self):
+        assert self.detect("lights in the guest bedroom") == "guest_bedroom"
+
+    def test_no_area_returns_none(self):
+        assert self.detect("house status summary") is None
+
+    def test_no_area_for_generic_query(self):
+        assert self.detect("what is the temperature") is None
+
+    def test_longest_match_wins(self):
+        # "master bedroom" should match over "bedroom"
+        assert self.detect("temperature in the master bedroom") == "master_bedroom"
+
+
+class TestAreaSearch:
+    """Tests for area-filtered search behavior."""
+
+    def setup_method(self):
+        from app.config import settings
+        settings.ha_url = "http://homeassistant:8123"
+        settings.ha_token = "fake-token"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.ha_url = ""
+        settings.ha_token = ""
+
+    def _mock_states(self, entities):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = entities
+        mock_resp.raise_for_status.return_value = None
+        return mock_resp
+
+    def _mock_area_template(self, area_map: dict) -> MagicMock:
+        """Build a mock response for the area template API."""
+        lines = []
+        for area_id, entity_ids in area_map.items():
+            lines.append(f"{area_id}|||{','.join(entity_ids)}")
+        mock_resp = MagicMock()
+        mock_resp.text = "\n".join(lines)
+        mock_resp.raise_for_status.return_value = None
+        return mock_resp
+
+    def test_area_filter_limits_results(self):
+        from app.sources import home_assistant
+        states = [
+            _make_entity("light.bedroom_light", "on", friendly_name="Bedroom Light"),
+            _make_entity("light.living_room_light", "on", friendly_name="Living Room Light"),
+        ]
+        area_map = {"bedroom": ["light.bedroom_light"]}
+
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)),              patch("app.sources.home_assistant.requests.post", return_value=self._mock_area_template(area_map)):
+            result = home_assistant.search("lights in the bedroom")
+
+        assert "Bedroom Light" in result
+        assert "Living Room Light" not in result
+
+    def test_area_filter_with_state_filter(self):
+        from app.sources import home_assistant
+        states = [
+            _make_entity("light.bedroom_light", "on", friendly_name="Bedroom Light"),
+            _make_entity("light.bedroom_lamp", "off", friendly_name="Bedroom Lamp"),
+        ]
+        area_map = {"bedroom": ["light.bedroom_light", "light.bedroom_lamp"]}
+
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)),              patch("app.sources.home_assistant.requests.post", return_value=self._mock_area_template(area_map)):
+            result = home_assistant.search("which lights are on in the bedroom")
+
+        assert "Bedroom Light" in result
+        assert "Bedroom Lamp" not in result
+
+    def test_unknown_area_falls_back_to_keyword(self):
+        from app.sources import home_assistant
+        states = [
+            _make_entity("sensor.room_temperature", "72.5", device_class="temperature",
+                        friendly_name="Room Temp", unit="°F"),
+        ]
+        # Empty area map — area not found
+        area_map = {}
+
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)),              patch("app.sources.home_assistant.requests.post", return_value=self._mock_area_template(area_map)):
+            result = home_assistant.search("temperature in the attic")
+
+        # Should fall back to keyword filter and find temperature sensor
+        assert "Room Temp" in result
+
+    def test_no_area_uses_keyword_filter(self):
+        from app.sources import home_assistant
+        states = [
+            _make_entity("lock.front_door", "locked", friendly_name="Front Door"),
+            _make_entity("lock.back_door", "locked", friendly_name="Back Door"),
+        ]
+
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)):
+            result = home_assistant.search("are the doors locked")
+
+        assert "Front Door" in result
+        assert "Back Door" in result
+
+
 class TestValueFormatting:
     """Tests for numeric value formatting."""
 
