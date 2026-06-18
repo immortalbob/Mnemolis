@@ -386,10 +386,12 @@ def search(query: str) -> str:
     if not selected_books:
         return "Could not determine which Kiwix book to search."
 
-    # Strip stop words from query for Kiwix search — cleaner signal for its search engine
+    # Strip stop words and stem remaining words before sending to Kiwix
+    # Stemming fixes disambiguation — "galaxies" → "galaxy", "batteries" → "battery"
+    # so Kiwix's search engine finds the right articles instead of brand name matches
     # Keep original query for scoring so context is preserved
     search_terms = " ".join(
-        w for w in query.lower().split()
+        _stem(w) for w in query.lower().split()
         if w not in _STOP_WORDS and len(w) > 1
     ) or query
 
