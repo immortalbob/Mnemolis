@@ -4,6 +4,20 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
+## [3.5.2]
+
+### Added
+- **`GET /logs/stats`** — query log statistics endpoint surfacing Time To First Knowledge (TTFK), cache hit rate, success rate, average latency by source, top 10 most-asked queries, unique query count, and learned query count
+- **`POST /logs/clear`** — restored missing endpoint for clearing query log entries
+- **`tests/test_main.py`** — 27 new tests covering all FastAPI endpoints: `/health`, `/sources`, `/cache`, `/cache/routing`, `/logs`, `/logs/stats`
+
+### Changed
+- Version bumped to 3.5.2
+
+**Total test count: 284**
+
+---
+
 ## [3.5.1]
 
 ### Changed
@@ -180,7 +194,7 @@ Queries HA can't answer natively with its built-in intents:
 
 ---
 
-## [2.8.0]
+## [2.8.0] — Upcoming
 
 ### Added
 - Routing cache — source and Kiwix book selection decisions are cached for 1 hour, persisted to disk, eliminating redundant Ollama calls for repeated queries

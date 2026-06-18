@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.5.0",
+    version="3.5.2",
     lifespan=lifespan,
 )
 
@@ -359,6 +359,130 @@ def query_logs(limit: int = 50):
 
 @app.post("/logs/clear")
 def logs_clear():
+    """Clear all query log entries."""
+    try:
+        con = sqlite3.connect(_LOG_DB)
+        cur = con.execute("DELETE FROM query_log")
+        count = cur.rowcount
+        con.commit()
+        con.close()
+        return {"status": "cleared", "entries_removed": count}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/logs/stats")
+def query_log_stats():
+    """
+    Query log statistics — observability into Mnemolis usage patterns.
+
+    Returns:
+    - Total queries, cache hit rate, success rate
+    - Time To First Knowledge (TTFK) — average latency for first-seen queries
+    - Average latency by source
+    - Top 10 most-asked queries
+    - Queries per source breakdown
+    - Repeated queries with cache hit rate
+    """
+    try:
+        con = sqlite3.connect(_LOG_DB)
+
+        # Total queries and basic rates
+        totals = con.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(cached) as cache_hits,
+                SUM(success) as successes,
+                AVG(latency_ms) as avg_latency_ms
+            FROM query_log
+        """).fetchone()
+
+        total = totals[0] or 0
+        cache_hits = totals[1] or 0
+        successes = totals[2] or 0
+        avg_latency = round(totals[3] or 0, 1)
+
+        # TTFK — average latency of first-seen queries (cached=0, first occurrence)
+        # A query's "cold" cost is its first appearance in the log
+        ttfk_rows = con.execute("""
+            SELECT AVG(latency_ms) FROM (
+                SELECT MIN(id) as first_id, MIN(latency_ms) as latency_ms
+                FROM query_log
+                WHERE cached = 0
+                GROUP BY LOWER(TRIM(query))
+            )
+        """).fetchone()
+        ttfk_ms = round(ttfk_rows[0] or 0, 1)
+
+        # Average latency by source (warm queries only — cached=1 or repeated)
+        latency_by_source = {}
+        for row in con.execute("""
+            SELECT source_used, AVG(latency_ms) as avg_ms, COUNT(*) as count
+            FROM query_log
+            GROUP BY source_used
+            ORDER BY count DESC
+        """).fetchall():
+            latency_by_source[row[0]] = {
+                "avg_latency_ms": round(row[1], 1),
+                "query_count": row[2],
+            }
+
+        # Top 10 most asked queries
+        top_queries = []
+        for row in con.execute("""
+            SELECT
+                LOWER(TRIM(query)) as q,
+                COUNT(*) as times_asked,
+                SUM(cached) as cache_hits,
+                MIN(latency_ms) as min_latency_ms,
+                AVG(latency_ms) as avg_latency_ms,
+                source_used
+            FROM query_log
+            GROUP BY LOWER(TRIM(query))
+            ORDER BY times_asked DESC
+            LIMIT 10
+        """).fetchall():
+            top_queries.append({
+                "query": row[0],
+                "times_asked": row[1],
+                "cache_hits": row[2],
+                "cache_hit_rate": round(row[2] / row[1] * 100, 1) if row[1] > 0 else 0,
+                "min_latency_ms": row[3],
+                "avg_latency_ms": round(row[4], 1),
+                "source": row[5],
+            })
+
+        # Queries seen more than once — these are the ones the system has "learned"
+        learned = con.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT LOWER(TRIM(query))
+                FROM query_log
+                GROUP BY LOWER(TRIM(query))
+                HAVING COUNT(*) > 1
+            )
+        """).fetchone()[0] or 0
+
+        # Unique queries total
+        unique = con.execute("""
+            SELECT COUNT(DISTINCT LOWER(TRIM(query))) FROM query_log
+        """).fetchone()[0] or 0
+
+        con.close()
+
+        return {
+            "total_queries": total,
+            "unique_queries": unique,
+            "learned_queries": learned,
+            "cache_hit_rate_pct": round(cache_hits / total * 100, 1) if total > 0 else 0,
+            "success_rate_pct": round(successes / total * 100, 1) if total > 0 else 0,
+            "avg_latency_ms": avg_latency,
+            "ttfk_ms": ttfk_ms,
+            "latency_by_source": latency_by_source,
+            "top_queries": top_queries,
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
     """Clear all query log entries."""
     try:
         con = sqlite3.connect(_LOG_DB)

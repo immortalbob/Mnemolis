@@ -373,6 +373,9 @@ Returns recent query log entries — timestamp, query, source used, cached flag,
 ### `POST /logs/clear`
 Clears all query log entries.
 
+### `GET /logs/stats`
+Returns query log statistics — Time To First Knowledge (TTFK), cache hit rate, success rate, average latency by source, top 10 most-asked queries, unique query count, and learned query count.
+
 ## Caching
 
 Mnemolis caches results in memory and persists them to disk so the cache survives container restarts. TTLs are set per source:
@@ -449,7 +452,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-257 tests covering intent routing, query decomposition, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion truncation/deduplication/merging, and Home Assistant entity filtering.
+284 tests covering FastAPI endpoints, intent routing, query decomposition, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS article filtering, all source modules via mocking, fusion truncation/deduplication/merging, and Home Assistant entity filtering.
 
 ## Project Structure
 
@@ -477,6 +480,7 @@ Mnemolis/
 │   ├── test_uptime_kuma.py         # Uptime Kuma status parsing via mocking
 │   ├── test_fusion.py              # fusion merging, truncation, deduplication, same-source merging
 │   ├── test_home_assistant.py      # HA entity filtering, exclusions, formatting
+│   ├── test_main.py                # FastAPI endpoint tests
 │   └── locustfile.py               # Locust load testing suite
 └── app/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog endpoints
