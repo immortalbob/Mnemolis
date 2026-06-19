@@ -342,9 +342,22 @@ def get_changes(since_hours: int = 24) -> dict[str, list[str]]:
     Return meaningful changes detected across all snapshot sources
     within the last N hours.
 
+    For "flapping" sources (uptime, forecast) where intermediate state
+    changes can round-trip back to the original state within the window,
+    only the NET change (first snapshot vs. last snapshot) is reported —
+    avoiding noisy alarm/resolved pairs that don't reflect current reality.
+
+    For event-based sources (news, ha) every individual event is reported
+    since each one is independently meaningful (a new article, a door
+    opening) rather than a state that can "flap" back to baseline.
+
     Returns dict of {source: [change_description, ...]}
     """
     changes = {}
+
+    # Sources where only the net (first vs last) change matters —
+    # intermediate flapping within the window isn't independently meaningful
+    NET_CHANGE_SOURCES = {"uptime", "forecast"}
 
     for source, diff_fn in _DIFF_FNS.items():
         snapshots = _get_snapshots_since(source, since_hours=since_hours)
@@ -352,16 +365,25 @@ def get_changes(since_hours: int = 24) -> dict[str, list[str]]:
             continue
 
         source_changes = []
-        # Walk consecutive pairs looking for changes
-        seen_changes = set()
-        for i in range(len(snapshots) - 1):
-            ts_old, content_old = snapshots[i]
-            ts_new, content_new = snapshots[i + 1]
-            diffs = diff_fn(content_old, content_new)
+
+        if source in NET_CHANGE_SOURCES:
+            # Compare only first vs last snapshot in the window
+            ts_first, content_first = snapshots[0]
+            ts_last, content_last = snapshots[-1]
+            diffs = diff_fn(content_first, content_last)
             for diff in diffs:
-                if diff not in seen_changes:
-                    source_changes.append({"timestamp": ts_new, "change": diff})
-                    seen_changes.add(diff)
+                source_changes.append({"timestamp": ts_last, "change": diff})
+        else:
+            # Walk consecutive pairs — every event matters
+            seen_changes = set()
+            for i in range(len(snapshots) - 1):
+                ts_old, content_old = snapshots[i]
+                ts_new, content_new = snapshots[i + 1]
+                diffs = diff_fn(content_old, content_new)
+                for diff in diffs:
+                    if diff not in seen_changes:
+                        source_changes.append({"timestamp": ts_new, "change": diff})
+                        seen_changes.add(diff)
 
         if source_changes:
             changes[source] = source_changes

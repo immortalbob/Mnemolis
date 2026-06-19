@@ -77,12 +77,12 @@ ESP32 Voice Assistant
 ```text
         Background Scheduler (APScheduler)
                      │
-   ┌─────────┬───────┼───────┬──────────┐
-   ▼         ▼       ▼       ▼          │
-Uptime    Forecast  News    HA          │
-(2 min)   (30 min) (60 min) (5 min)     │
-   │         │       │       │          │
-   └─────────┴───────┴───────┘          │
+   ┌─────────┬───────┼───────┬─────────┐
+   ▼         ▼       ▼       ▼         │
+Uptime    Forecast  News    HA        │
+(2 min)   (30 min) (60 min) (5 min)    │
+   │         │       │       │         │
+   └─────────┴───────┴───────┘         │
              │                          │
              ▼                          │
       Store snapshot                    │
@@ -273,6 +273,8 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `LLM_URL` | LLM backend URL for intelligent routing | _(blank — disables LLM routing)_ |
 | `LLM_MODEL` | Model to use for source and book selection | `qwen3:8b` |
 | `LLM_API_TYPE` | API format: `ollama` or `openai` | `ollama` |
+| `MORNING_START_HOUR` | Reference hour (0-23, local time) for resolving "this morning" in changes queries | `6` |
+| `WORK_START_HOUR` | Reference hour (0-23, local time) for resolving "while at work" in changes queries | `9` |
 
 ### FreshRSS API setup
 1. Enable API access: **Administration → Authentication → Allow API access**
@@ -317,6 +319,14 @@ curl -X POST http://your-host:8888/catalog/refresh
 ```
 
 If `LLM_URL` is left blank, Mnemolis falls back to keyword-based routing and Wikipedia for all Kiwix queries.
+
+### Timezone configuration
+Set `TZ` in `docker-compose.yml` to your local timezone (e.g. `America/New_York`). Without it, the container defaults to UTC, which causes time-window phrases in `changes` queries ("this morning," "while at work") to be calculated against the wrong reference time — off by your UTC offset.
+
+```yaml
+environment:
+  TZ: "America/New_York"
+```
 
 ### Home Assistant setup
 Generate a long-lived access token in Home Assistant:
@@ -542,7 +552,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-422 tests covering FastAPI endpoints, backup/restore, intent routing, query decomposition, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting, uptime heartbeat parsing, fusion validation, LLM fusion source selection, snapshot diff engines including HA entity state changes, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, all source modules via mocking, and Home Assistant entity filtering.
+448 tests covering FastAPI endpoints, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting and location attribution, uptime heartbeat parsing, fusion validation and header formatting, LLM fusion source selection, snapshot diff engines including HA entity state changes and net-change collapsing, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 

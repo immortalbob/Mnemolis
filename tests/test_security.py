@@ -271,15 +271,26 @@ class TestConcurrency:
         assert errors == []
 
     def test_concurrent_snapshot_writes_no_crash(self):
-        from app.snapshots import _store_snapshot
+        import tempfile
+        import os as os_module
+        from unittest.mock import patch
+        from app.snapshots import _store_snapshot, init_snapshot_db
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            temp_db = f.name
+
         errors = []
 
         def store_repeatedly(source):
             for i in range(20):
                 try:
-                    _store_snapshot(source, f"snapshot content {i}")
+                    with patch("app.snapshots.SNAPSHOT_DB", temp_db):
+                        _store_snapshot(source, f"snapshot content {i}")
                 except Exception as e:
                     errors.append(e)
+
+        with patch("app.snapshots.SNAPSHOT_DB", temp_db):
+            init_snapshot_db()
 
         threads = [
             threading.Thread(target=store_repeatedly, args=("uptime",)),
@@ -291,6 +302,7 @@ class TestConcurrency:
         for t in threads:
             t.join(timeout=30)
 
+        os_module.unlink(temp_db)
         assert errors == []
 
     def test_concurrent_backup_requests_no_crash(self, client):

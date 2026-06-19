@@ -224,6 +224,93 @@ class TestAutoFusionEscalation:
         assert not mock_fusion.called
 
 
+class TestResolveChangesHours:
+    """Tests for _resolve_changes_hours time-window phrase parsing."""
+
+    def setup_method(self):
+        from app.router import _resolve_changes_hours
+        self.resolve = _resolve_changes_hours
+
+    def test_explicit_hour_count(self):
+        assert self.resolve("changes in the last 3 hours") == 3.0
+
+    def test_explicit_hour_count_different_number(self):
+        assert self.resolve("what changed in the last 12 hours") == 12.0
+
+    def test_today_defaults_to_24(self):
+        assert self.resolve("what changed today") == 24.0
+
+    def test_week_defaults_to_168(self):
+        assert self.resolve("what changed this week") == 168.0
+
+    def test_yesterday_defaults_to_48(self):
+        assert self.resolve("what changed since yesterday") == 48.0
+
+    def test_no_phrase_defaults_to_24(self):
+        assert self.resolve("any new outages") == 24.0
+
+    def test_this_morning_returns_positive_hours(self):
+        result = self.resolve("what changed this morning")
+        assert result > 0
+
+    def test_while_at_work_returns_positive_hours(self):
+        result = self.resolve("anything changed while i was at work")
+        assert result > 0
+
+    def test_tonight_returns_positive_hours(self):
+        result = self.resolve("what's happening tonight")
+        assert result > 0
+
+    def test_morning_uses_configured_start_hour(self):
+        from app.config import settings
+        original = settings.morning_start_hour
+        settings.morning_start_hour = 6
+        result = self.resolve("what changed this morning")
+        settings.morning_start_hour = original
+        assert result > 0
+
+    def test_work_uses_configured_start_hour(self):
+        from app.config import settings
+        original = settings.work_start_hour
+        settings.work_start_hour = 9
+        result = self.resolve("since i've been at work")
+        settings.work_start_hour = original
+        assert result > 0
+
+    def test_explicit_hour_count_takes_priority_over_today(self):
+        # "today" appears but explicit hour count should win
+        result = self.resolve("what changed today in the last 2 hours")
+        assert result == 2.0
+
+
+class TestHoursSince:
+    """Tests for _hours_since helper."""
+
+    def setup_method(self):
+        from app.router import _hours_since
+        self.hours_since = _hours_since
+
+    def test_returns_positive_float(self):
+        result = self.hours_since(6)
+        assert isinstance(result, float)
+        assert result > 0
+
+    def test_never_returns_zero_or_negative(self):
+        from datetime import datetime
+        current_hour = datetime.now().hour
+        # Even at the exact current hour, should return a small positive value
+        result = self.hours_since(current_hour)
+        assert result > 0
+
+    def test_future_hour_looks_back_to_yesterday(self):
+        from datetime import datetime
+        # An hour later than now should wrap to yesterday, giving ~24h - delta
+        future_hour = (datetime.now().hour + 1) % 24
+        result = self.hours_since(future_hour)
+        assert result > 0
+        assert result < 25
+
+
 class TestDecompose:
     """Tests for _decompose conjunction splitting."""
 

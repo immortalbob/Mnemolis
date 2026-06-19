@@ -29,8 +29,8 @@ class TestFusionBasics:
         })
         with patch("app.router.SOURCE_MAP", source_map):
             result = fusion.search("what is nitrogen", ["kiwix", "web"])
-        assert "[KIWIX]" in result
-        assert "[WEB]" in result
+        assert "[KIWIX" in result
+        assert "[WEB" in result
         assert "Nitrogen is an element." in result
         assert "78% of the atmosphere" in result
         assert "---" in result
@@ -43,7 +43,7 @@ class TestFusionBasics:
         })
         with patch("app.router.SOURCE_MAP", source_map):
             result = fusion.search("what is nitrogen", ["kiwix", "web"])
-        assert "[KIWIX]" not in result
+        assert "[KIWIX" not in result
         assert "Nitrogen is an element." in result
 
     def test_default_sources_when_none_specified(self):
@@ -65,9 +65,9 @@ class TestFusionBasics:
         })
         with patch("app.router.SOURCE_MAP", source_map):
             result = fusion.search("test query", ["kiwix", "web", "news"])
-        assert "[KIWIX]" in result
-        assert "[WEB]" in result
-        assert "[NEWS]" in result
+        assert "[KIWIX" in result
+        assert "[WEB" in result
+        assert "[NEWS" in result
 
     def test_source_order_preserved_in_output(self):
         from app.sources import fusion
@@ -77,8 +77,8 @@ class TestFusionBasics:
         })
         with patch("app.router.SOURCE_MAP", source_map):
             result = fusion.search("test query", ["kiwix", "web"])
-        kiwix_pos = result.index("[KIWIX]")
-        web_pos = result.index("[WEB]")
+        kiwix_pos = result.index("[KIWIX")
+        web_pos = result.index("[WEB")
         assert kiwix_pos < web_pos
 
 
@@ -144,7 +144,7 @@ class TestFusionFailureHandling:
         with patch("app.router.SOURCE_MAP", source_map):
             result = fusion.search("test query", ["kiwix", "web"])
         assert "Kiwix result." in result
-        assert "[WEB]" not in result
+        assert "[WEB" not in result
 
     def test_all_sources_fail_returns_error(self):
         from app.sources import fusion
@@ -164,7 +164,7 @@ class TestFusionFailureHandling:
         })
         with patch("app.router.SOURCE_MAP", source_map):
             result = fusion.search("test query", ["kiwix", "web"])
-        assert "[KIWIX]" not in result
+        assert "[KIWIX" not in result
         assert "Web result about nitrogen." in result
 
     def test_all_empty_results_returns_error(self):
@@ -210,6 +210,31 @@ class TestFusionCacheKey:
             result2 = route("test query", "fusion", ["kiwix", "web"])
             assert result2 == "Fused result."
             assert mock_search.call_count == 1  # still 1 — cached
+
+
+class TestFormatHeader:
+    """Tests for _format_header descriptive fusion section headers."""
+
+    def test_known_source_includes_label(self):
+        from app.sources.fusion import _format_header
+        header = _format_header("forecast")
+        assert "FORECAST" in header
+        assert "LOCATION" in header
+
+    def test_unknown_source_falls_back_to_uppercase(self):
+        from app.sources.fusion import _format_header
+        header = _format_header("nonexistent")
+        assert header == "[NONEXISTENT — NONEXISTENT]"
+
+    def test_kiwix_header_warns_unrelated(self):
+        from app.sources.fusion import _format_header
+        header = _format_header("kiwix")
+        assert "UNRELATED" in header
+
+    def test_news_header_clarifies_not_location_specific(self):
+        from app.sources.fusion import _format_header
+        header = _format_header("news")
+        assert "NOT LOCATION-SPECIFIC" in header
 
 
 class TestFusionTruncate:

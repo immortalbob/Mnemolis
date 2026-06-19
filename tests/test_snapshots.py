@@ -239,6 +239,82 @@ class TestDiffHA:
         assert len(changes) == 2
 
 
+class TestGetChangesNetCollapsing:
+    """Tests for get_changes net-change collapsing behavior on flapping sources."""
+
+    def setup_method(self):
+        import tempfile
+        from unittest.mock import patch
+        self.temp_db_fixture = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.temp_db = self.temp_db_fixture.name
+        self.temp_db_fixture.close()
+        self.patcher = patch("app.snapshots.SNAPSHOT_DB", self.temp_db)
+        self.patcher.start()
+        from app.snapshots import init_snapshot_db
+        init_snapshot_db()
+
+    def teardown_method(self):
+        import os
+        self.patcher.stop()
+        os.unlink(self.temp_db)
+
+    def _insert_snapshot(self, source, content, timestamp):
+        from app.snapshots import _connect, SNAPSHOT_DB
+        con = _connect(SNAPSHOT_DB)
+        con.execute(
+            "INSERT INTO snapshots (timestamp, source, content) VALUES (?, ?, ?)",
+            (timestamp, source, content)
+        )
+        con.commit()
+        con.close()
+
+    def test_uptime_flapping_collapses_to_net_change(self):
+        from app.snapshots import get_changes
+        # Flaps down then back up — net change should be empty (back to baseline)
+        self._insert_snapshot("uptime", "All 15 services are up.", "2026-06-19T08:00:00Z")
+        self._insert_snapshot("uptime", "1 service is down: Ollama", "2026-06-19T08:30:00Z")
+        self._insert_snapshot("uptime", "All 15 services are up.", "2026-06-19T09:00:00Z")
+        changes = get_changes(since_hours=24)
+        # Net change: first vs last is identical, so no change reported
+        assert "uptime" not in changes
+
+    def test_uptime_real_outage_reports_net_change(self):
+        from app.snapshots import get_changes
+        # Starts up, ends down — real net change should be reported
+        self._insert_snapshot("uptime", "All 15 services are up.", "2026-06-19T08:00:00Z")
+        self._insert_snapshot("uptime", "1 service is down: Ollama", "2026-06-19T08:30:00Z")
+        self._insert_snapshot("uptime", "1 service is down: Ollama", "2026-06-19T09:00:00Z")
+        changes = get_changes(since_hours=24)
+        assert "uptime" in changes
+        assert len(changes["uptime"]) >= 1
+
+    def test_forecast_flapping_collapses_to_net_change(self):
+        from app.snapshots import get_changes
+        # Precipitation appears then disappears — net change should be empty
+        self._insert_snapshot("forecast", "Today will be clear with a high of about 90.", "2026-06-19T08:00:00Z")
+        self._insert_snapshot("forecast", "Today will be rainy with a high of about 90.", "2026-06-19T08:30:00Z")
+        self._insert_snapshot("forecast", "Today will be clear with a high of about 90.", "2026-06-19T09:00:00Z")
+        changes = get_changes(since_hours=24)
+        assert "forecast" not in changes
+
+    def test_forecast_real_change_reports_net(self):
+        from app.snapshots import get_changes
+        self._insert_snapshot("forecast", "Today will be clear with a high of about 80.", "2026-06-19T08:00:00Z")
+        self._insert_snapshot("forecast", "Today will be clear with a high of about 95.", "2026-06-19T09:00:00Z")
+        changes = get_changes(since_hours=24)
+        assert "forecast" in changes
+
+    def test_news_reports_every_event_not_net(self):
+        from app.snapshots import get_changes
+        self._insert_snapshot("news", "**Story A** (World)\nContent.\n---", "2026-06-19T08:00:00Z")
+        self._insert_snapshot("news", "**Story A** (World)\nContent.\n---\n\n**Story B** (World)\nContent.\n---", "2026-06-19T08:30:00Z")
+        self._insert_snapshot("news", "**Story A** (World)\nContent.\n---\n\n**Story B** (World)\nContent.\n---\n\n**Story C** (World)\nContent.\n---", "2026-06-19T09:00:00Z")
+        changes = get_changes(since_hours=24)
+        assert "news" in changes
+        # Both Story B and Story C should be reported as individual events
+        assert len(changes["news"]) == 2
+
+
 class TestFormatChanges:
     """Tests for format_changes output formatting."""
 

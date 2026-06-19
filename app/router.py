@@ -44,6 +44,10 @@ INTENT_MAP = {
         "new articles", "new news", "new headlines",
         "anything different", "what happened today",
         "since last time", "changes today",
+        "changed in the house", "house since", "anything changed",
+        "while i was at work", "while i've been at work", "while at work",
+        "since work", "since this morning", "this morning while",
+        "since i left", "since i woke up",
     ],
     "uptime": [
         "uptime", "is down", "what's down", "whats down",
@@ -61,21 +65,64 @@ INTENT_MAP = {
     ],
 }
 
-def _search_changes(query: str) -> str:
-    """Search changes source — returns detected changes from snapshots."""
-    hours = 24
+def _hours_since(hour_of_day: int) -> float:
+    """Return the number of hours elapsed since the given hour today (local time).
+    If that hour hasn't happened yet today, looks back to yesterday's occurrence.
+    """
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    target = now.replace(hour=hour_of_day, minute=0, second=0, microsecond=0)
+    if target > now:
+        target -= timedelta(days=1)
+    elapsed = (now - target).total_seconds() / 3600
+    return max(elapsed, 0.1)  # avoid zero/negative windows
+
+
+def _resolve_changes_hours(query: str) -> float:
+    """Resolve a changes query into a precise hours-since window.
+
+    Time-window phrases are checked in order of specificity (most specific first)
+    so "this morning while at work" doesn't get misread by a less specific match.
+    """
     q = query.lower()
-    if "today" in q or "24" in q:
-        hours = 24
-    elif "hour" in q:
+
+    # Explicit hour count — "in the last 3 hours"
+    if "hour" in q:
         import re
         m = re.search(r"(\d+)\s*hour", q)
         if m:
-            hours = int(m.group(1))
-    elif "week" in q:
-        hours = 168
+            return float(m.group(1))
+
+    # Specific time-of-day phrases — resolved against configured start hours
+    if "this morning" in q or "since morning" in q or "since this morning" in q:
+        return _hours_since(settings.morning_start_hour)
+
+    if "at work" in q or "since work" in q or "while at work" in q or "while i was at work" in q or "while i've been at work" in q:
+        return _hours_since(settings.work_start_hour)
+
+    if "tonight" in q or "this evening" in q:
+        return _hours_since(18)
+
+    # Broader windows
+    if "yesterday" in q or "since yesterday" in q:
+        return 48.0
+
+    if "week" in q:
+        return 168.0
+
+    if "today" in q:
+        return 24.0
+
+    # Default — no specific window detected
+    return 24.0
+
+
+def _search_changes(query: str) -> str:
+    """Search changes source — returns detected changes from snapshots,
+    resolving natural language time-window phrases into precise hour windows."""
+    hours = _resolve_changes_hours(query)
     detected = get_changes(since_hours=hours)
-    return format_changes(detected, since_hours=hours)
+    return format_changes(detected, since_hours=round(hours, 1))
 
 
 SOURCE_MAP = {
@@ -680,7 +727,7 @@ def route(query: str, source: str = "auto", fusion_sources: list[str] | None = N
                 merged.append((current_source, current_result))
 
                 return "\n\n---\n\n".join(
-                    f"[{source.upper()}]\n{result}" for source, result in merged
+                    f"{fusion._format_header(source)}\n{result}" for source, result in merged
                 )
             # All sub-queries returned empty — fall through to single query routing
 

@@ -21,6 +21,7 @@ services:
     ports:
       - "8888:8000"
     environment:
+      TZ: ""                          # your timezone e.g. America/New_York — REQUIRED for accurate "this morning"/"while at work" changes queries, container defaults to UTC otherwise
       KIWIX_URL: "http://kiwix:8080"
       FRESHRSS_URL: "http://freshrss"
       FRESHRSS_USER: ""               # your FreshRSS username

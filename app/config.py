@@ -38,5 +38,10 @@ class Settings(BaseSettings):
     llm_model: str = "qwen3:8b"
     llm_api_type: str = "ollama"  # "ollama" (native) or "openai" (OpenAI-compatible)
 
+    # Snapshot Engine — time-window phrase defaults
+    # Used to resolve phrases like "this morning" or "while at work" into hour windows
+    morning_start_hour: int = 6   # "this morning" looks back to this hour, local time
+    work_start_hour: int = 9      # "while at work" / "since work" looks back to this hour, local time
+
 
 settings = Settings()

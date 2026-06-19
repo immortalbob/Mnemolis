@@ -39,6 +39,15 @@ def _mock_forecast_response(
 class TestForecastSearch:
     """Tests for forecast.search() with mocked Open-Meteo responses."""
 
+    def setup_method(self):
+        from app.config import settings
+        self._original_location_name = settings.forecast_location_name
+        settings.forecast_location_name = ""
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.forecast_location_name = self._original_location_name
+
     def test_returns_today_tomorrow_and_day3(self):
         from app.sources import forecast
         with patch("app.sources.forecast.requests.get", return_value=_mock_forecast_response()):
@@ -105,6 +114,68 @@ class TestForecastSearch:
         with patch("app.sources.forecast.requests.get", return_value=_mock_forecast_response(codes=(63, 63, 63))):
             result = forecast.search("weather")
         assert "rain" in result.lower()
+
+
+class TestLocationNamePrefix:
+    """Tests for location name appearing in forecast output."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._original_location_name = settings.forecast_location_name
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.forecast_location_name = self._original_location_name
+
+    def test_location_name_included_when_configured(self):
+        from app.sources import forecast
+        from app.config import settings
+        from unittest.mock import patch, MagicMock
+        settings.forecast_location_name = "Kingman, Arizona"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "daily": {
+                "weathercode": [0, 0, 0],
+                "temperature_2m_max": [95, 93, 92],
+                "temperature_2m_min": [70, 68, 65],
+                "precipitation_probability_max": [0, 0, 0],
+                "windspeed_10m_max": [5, 5, 5],
+                "winddirection_10m_dominant": [180, 180, 180],
+                "sunrise": ["2026-06-19T05:21:00", "2026-06-20T05:21:00", "2026-06-21T05:22:00"],
+                "sunset": ["2026-06-19T19:53:00", "2026-06-20T19:53:00", "2026-06-21T19:53:00"],
+                "time": ["2026-06-19", "2026-06-20", "2026-06-21"],
+            }
+        }
+        mock_resp.raise_for_status.return_value = None
+        with patch("app.sources.forecast.requests.get", return_value=mock_resp):
+            result = forecast.search("weather")
+        assert "Kingman, Arizona" in result
+
+    def test_no_location_prefix_when_not_configured(self):
+        from app.sources import forecast
+        from app.config import settings
+        from unittest.mock import patch, MagicMock
+        settings.forecast_location_name = ""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "daily": {
+                "weathercode": [0, 0, 0],
+                "temperature_2m_max": [95, 93, 92],
+                "temperature_2m_min": [70, 68, 65],
+                "precipitation_probability_max": [0, 0, 0],
+                "windspeed_10m_max": [5, 5, 5],
+                "winddirection_10m_dominant": [180, 180, 180],
+                "sunrise": ["2026-06-19T05:21:00", "2026-06-20T05:21:00", "2026-06-21T05:22:00"],
+                "sunset": ["2026-06-19T19:53:00", "2026-06-20T19:53:00", "2026-06-21T19:53:00"],
+                "time": ["2026-06-19", "2026-06-20", "2026-06-21"],
+            }
+        }
+        mock_resp.raise_for_status.return_value = None
+        with patch("app.sources.forecast.requests.get", return_value=mock_resp):
+            result = forecast.search("weather")
+        assert result.startswith("Today will be")
 
 
 class TestDegreesToCardinal:

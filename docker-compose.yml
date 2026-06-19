@@ -6,6 +6,7 @@ services:
     ports:
       - "8888:8000"   # REST API + MCP SSE (mounted at /mcp/sse)
     environment:
+      TZ: "" # your timezone e.g. America/New_York — REQUIRED for accurate "this morning"/"while at work" changes queries, container defaults to UTC otherwise
       # Kiwix
       KIWIX_URL: "http://kiwix:8080"
       # FreshRSS

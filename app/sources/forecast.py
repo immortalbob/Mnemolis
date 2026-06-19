@@ -60,7 +60,10 @@ def search(query: str) -> str:
     lines = []
 
     # Today
-    s = f"Today will be {_describe(daily['weathercode'][0])} with a high of about {round(daily['temperature_2m_max'][0])} and a low of {round(daily['temperature_2m_min'][0])}."
+    if settings.forecast_location_name:
+        s = f"In {settings.forecast_location_name}, today will be {_describe(daily['weathercode'][0])} with a high of about {round(daily['temperature_2m_max'][0])} and a low of {round(daily['temperature_2m_min'][0])}."
+    else:
+        s = f"Today will be {_describe(daily['weathercode'][0])} with a high of about {round(daily['temperature_2m_max'][0])} and a low of {round(daily['temperature_2m_min'][0])}."
     if daily["precipitation_probability_max"][0] >= 20:
         s += f" {daily['precipitation_probability_max'][0]}% chance of precipitation."
     if daily["windspeed_10m_max"][0] >= 15:

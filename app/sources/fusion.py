@@ -98,6 +98,25 @@ def _merge_same_source(parts: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return merged
 
 
+_HEADER_LABELS = {
+    "kiwix": "ENCYCLOPEDIC KNOWLEDGE — UNRELATED TO OTHER SECTIONS BELOW",
+    "forecast": "WEATHER FORECAST FOR YOUR CONFIGURED HOME LOCATION",
+    "news": "RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED",
+    "web": "LIVE WEB SEARCH RESULTS",
+    "uptime": "YOUR HOMELAB SERVICE STATUS",
+    "ha": "YOUR HOME ASSISTANT ENTITY STATES",
+    "changes": "DETECTED CHANGES SINCE LAST SNAPSHOT",
+}
+
+
+def _format_header(source: str) -> str:
+    """Build a fusion section header. Includes a descriptive label to prevent
+    the LLM from cross-referencing unrelated sections (e.g. inferring location
+    from a news article when reading the forecast section)."""
+    label = _HEADER_LABELS.get(source, source.upper())
+    return f"[{source.upper()} — {label}]"
+
+
 def search(query: str, sources: list[str] | None = None) -> str:
     """
     Query multiple sources concurrently and merge results.
@@ -194,7 +213,7 @@ def search(query: str, sources: list[str] | None = None) -> str:
     parts = _merge_same_source(parts)
 
     merged = "\n\n---\n\n".join(
-        f"[{source.upper()}]\n{result}" for source, result in parts
+        f"{_format_header(source)}\n{result}" for source, result in parts
     )
 
     _LOGGER.info(
