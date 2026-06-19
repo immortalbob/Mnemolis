@@ -8,3 +8,4 @@ mcp[cli]
 uptime-kuma-api
 pytest
 apscheduler
+hypothesis

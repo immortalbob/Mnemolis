@@ -4,6 +4,27 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
+## [3.6.3]
+
+### Added — Hardening Pass
+- **`tests/test_security.py`** — 27 tests covering SQL injection resistance, path traversal attempts against the backup endpoint, token/secret leakage checks in health responses and error messages, fuzz input (very long queries, unicode/emoji, null bytes, pure punctuation, empty/whitespace), and concurrency tests using real threads against cache clear, log clear, snapshot writes, and concurrent backup downloads
+- **`tests/test_property.py`** — Hypothesis property-based tests across 9 pure functions: `_decompose`, `_stem`, `_score_result`, `_is_definitional_query`, `_build_filter`, `_detect_area`, `_is_excluded`, all 4 snapshot diff functions, `_looks_empty`, `_truncate`, `_deduplicate`. Each property runs 100-300 randomly generated examples, totaling thousands of input combinations tested automatically.
+- **`hypothesis`** added to `requirements.txt`
+
+### Verified
+- No SQL injection vulnerabilities — all queries use parameterized placeholders
+- No path traversal possible — backup endpoint uses a fixed file list, ignores all query params
+- No token/secret leakage — HA token and FreshRSS password confirmed absent from `/health` responses and connection error messages
+- No crashes under adversarial input — confirmed across decomposition, stemming, scoring, HA filtering, and all snapshot diff engines
+- No race conditions — confirmed under concurrent cache clear + search, log clear + log write, concurrent snapshot writes, and concurrent backup downloads
+
+### Changed
+- Version bumped to 3.6.3
+
+**Total test count: 422**
+
+---
+
 ## [3.6.2]
 
 ### Added
