@@ -29,7 +29,8 @@ ESP32 Voice Assistant
           ▼               ├─ SearXNG
    Smart Routing          ├─ Open-Meteo
    ├─ Single source       ├─ Uptime Kuma
-   └─ Auto-fusion    ────►└─ Home Assistant
+   ├─ Auto-fusion         ├─ Home Assistant
+   └─ Decomposition  ────►└─ Snapshot Engine (changes)
           │
           ▼
       Response
@@ -54,12 +55,12 @@ ESP32 Voice Assistant
                            Mnemolis
                                 │
                           Smart Routing
-                   ┌────────────┴────────────┐
-                   ▼                         ▼
-             Single Source             Auto-Fusion
-             (keyword or LLM)      (multi-keyword or LLM)
-                   │                         │
-                   └────────────┬────────────┘
+              ┌─────────────────┼─────────────────┐
+              ▼                 ▼                 ▼
+        Single Source     Auto-Fusion       Decomposition
+       (keyword or LLM) (multi-keyword/LLM) (conjunction split)
+              │                 │                 │
+              └─────────────────┴─────────────────┘
                                 │
                            ┌────┴────┐
                            ▼         ▼
@@ -69,6 +70,42 @@ ESP32 Voice Assistant
              (Mnemolis Intents)   Client
                            │
                     Voice Pipeline
+```
+
+### Snapshot Engine
+
+```text
+        Background Scheduler (APScheduler)
+                     │
+   ┌─────────┬───────┼───────┬─────────┐
+   ▼         ▼       ▼       ▼         │
+Uptime    Forecast  News    HA        │
+(2 min)   (30 min) (60 min) (5 min)    │
+   │         │       │       │         │
+   └─────────┴───────┴───────┘         │
+             │                          │
+             ▼                          │
+      Store snapshot                    │
+      (SQLite, JSON for HA)             │
+             │                          │
+   Retain last 288 per source ◄─────────┘
+             │
+             ▼
+      Diff consecutive snapshots
+   ┌─────────┬───────┬─────────┐
+   ▼         ▼       ▼         ▼
+Outages/   Temp Δ≥5°/ New     Lock/door/
+Recovery   Precip     headlines battery
+                                changes
+   └─────────┴───────┴─────────┘
+             │
+             ▼
+   GET /changes?hours=N
+   source="changes" (auto-routed)
+             │
+             ▼
+      Formatted summary
+   "what changed today?"
 ```
 
 ### Source Fusion
@@ -459,7 +496,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-354 tests covering FastAPI endpoints, intent routing, query decomposition, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting, uptime heartbeat parsing, fusion validation, LLM fusion source selection, snapshot diff engines, all source modules via mocking, and Home Assistant entity filtering.
+366 tests covering FastAPI endpoints, intent routing, query decomposition, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting, uptime heartbeat parsing, fusion validation, LLM fusion source selection, snapshot diff engines including HA entity state changes, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 

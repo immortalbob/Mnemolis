@@ -138,6 +138,107 @@ class TestDiffNews:
         assert len(changes) <= 5
 
 
+class TestDiffHA:
+    """Tests for _diff_ha entity state change detection."""
+
+    def setup_method(self):
+        from app.snapshots import _diff_ha
+        self.diff = _diff_ha
+
+    def _entity(self, entity_id, state, friendly_name=None, device_class=""):
+        return {
+            "entity_id": entity_id,
+            "state": state,
+            "friendly_name": friendly_name or entity_id,
+            "device_class": device_class,
+        }
+
+    def _snapshot(self, entities):
+        import json
+        return json.dumps(entities)
+
+    def test_no_change_when_identical(self):
+        snap = self._snapshot([self._entity("lock.front_door", "locked", "Front Door")])
+        assert self.diff(snap, snap) == []
+
+    def test_detects_lock_unlocked(self):
+        old = self._snapshot([self._entity("lock.front_door", "locked", "Front Door")])
+        new = self._snapshot([self._entity("lock.front_door", "unlocked", "Front Door")])
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "Front Door" in changes[0]
+        assert "unlocked" in changes[0]
+
+    def test_detects_lock_locked(self):
+        old = self._snapshot([self._entity("lock.front_door", "unlocked", "Front Door")])
+        new = self._snapshot([self._entity("lock.front_door", "locked", "Front Door")])
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "locked" in changes[0]
+
+    def test_detects_door_opened(self):
+        old = self._snapshot([self._entity("binary_sensor.front_door", "off", "Front Door", "door")])
+        new = self._snapshot([self._entity("binary_sensor.front_door", "on", "Front Door", "door")])
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "opened" in changes[0]
+
+    def test_detects_door_closed(self):
+        old = self._snapshot([self._entity("binary_sensor.front_door", "on", "Front Door", "door")])
+        new = self._snapshot([self._entity("binary_sensor.front_door", "off", "Front Door", "door")])
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "closed" in changes[0]
+
+    def test_detects_battery_crossing_below_20(self):
+        old = self._snapshot([self._entity("sensor.lock_battery", "25", "Lock Battery", "battery")])
+        new = self._snapshot([self._entity("sensor.lock_battery", "15", "Lock Battery", "battery")])
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "low" in changes[0].lower()
+        assert "15" in changes[0]
+
+    def test_ignores_battery_already_below_20(self):
+        old = self._snapshot([self._entity("sensor.lock_battery", "15", "Lock Battery", "battery")])
+        new = self._snapshot([self._entity("sensor.lock_battery", "10", "Lock Battery", "battery")])
+        changes = self.diff(old, new)
+        assert changes == []
+
+    def test_ignores_battery_staying_above_20(self):
+        old = self._snapshot([self._entity("sensor.lock_battery", "90", "Lock Battery", "battery")])
+        new = self._snapshot([self._entity("sensor.lock_battery", "85", "Lock Battery", "battery")])
+        changes = self.diff(old, new)
+        assert changes == []
+
+    def test_ignores_lights(self):
+        old = self._snapshot([self._entity("light.bedroom", "off", "Bedroom Light")])
+        new = self._snapshot([self._entity("light.bedroom", "on", "Bedroom Light")])
+        changes = self.diff(old, new)
+        assert changes == []
+
+    def test_ignores_new_entity(self):
+        old = self._snapshot([])
+        new = self._snapshot([self._entity("lock.new_lock", "locked", "New Lock")])
+        changes = self.diff(old, new)
+        assert changes == []
+
+    def test_handles_malformed_json_gracefully(self):
+        changes = self.diff("not json", "also not json")
+        assert changes == []
+
+    def test_multiple_changes_detected(self):
+        old = self._snapshot([
+            self._entity("lock.front_door", "locked", "Front Door"),
+            self._entity("binary_sensor.back_door", "off", "Back Door", "door"),
+        ])
+        new = self._snapshot([
+            self._entity("lock.front_door", "unlocked", "Front Door"),
+            self._entity("binary_sensor.back_door", "on", "Back Door", "door"),
+        ])
+        changes = self.diff(old, new)
+        assert len(changes) == 2
+
+
 class TestFormatChanges:
     """Tests for format_changes output formatting."""
 

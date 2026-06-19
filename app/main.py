@@ -30,6 +30,7 @@ from app.snapshots import (
     snapshot_uptime,
     snapshot_forecast,
     snapshot_news,
+    snapshot_ha,
     get_changes,
     format_changes,
 )
@@ -44,10 +45,18 @@ _LOGGER = logging.getLogger(__name__)
 _LOG_DB = "/app/data/query_log.db"
 
 
+def _connect(db_path: str) -> sqlite3.Connection:
+    """Open a SQLite connection with WAL mode and busy timeout to reduce lock contention."""
+    con = sqlite3.connect(db_path, timeout=10)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=10000")
+    return con
+
+
 def _init_log_db():
     """Create query log table if it doesn't exist."""
     try:
-        con = sqlite3.connect(_LOG_DB)
+        con = _connect(_LOG_DB)
         con.execute("""
             CREATE TABLE IF NOT EXISTS query_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,7 +78,7 @@ def _init_log_db():
 def _log_query(query: str, source_requested: str, source_used: str, cached: bool, success: bool, latency_ms: int):
     """Write a query log entry."""
     try:
-        con = sqlite3.connect(_LOG_DB)
+        con = _connect(_LOG_DB)
         con.execute(
             "INSERT INTO query_log (timestamp, query, source_requested, source_used, cached, success, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), query, source_requested, source_used, int(cached), int(success), latency_ms)
@@ -95,6 +104,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(snapshot_uptime, "interval", minutes=2, id="snapshot_uptime")
     scheduler.add_job(snapshot_forecast, "interval", minutes=30, id="snapshot_forecast")
     scheduler.add_job(snapshot_news, "interval", minutes=60, id="snapshot_news")
+    scheduler.add_job(snapshot_ha, "interval", minutes=5, id="snapshot_ha")
     scheduler.start()
     _LOGGER.info("Snapshot scheduler started")
 
@@ -102,6 +112,7 @@ async def lifespan(app: FastAPI):
     await loop.run_in_executor(None, snapshot_uptime)
     await loop.run_in_executor(None, snapshot_forecast)
     await loop.run_in_executor(None, snapshot_news)
+    await loop.run_in_executor(None, snapshot_ha)
 
     yield
 
@@ -112,7 +123,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.6.0",
+    version="3.6.1",
     lifespan=lifespan,
 )
 
@@ -361,7 +372,7 @@ def query_logs(limit: int = 50):
     timestamp, source, cached flag, success, and latency in milliseconds.
     """
     try:
-        con = sqlite3.connect(_LOG_DB)
+        con = _connect(_LOG_DB)
         rows = con.execute(
             "SELECT timestamp, query, source_requested, source_used, cached, success, latency_ms FROM query_log ORDER BY id DESC LIMIT ?",
             (limit,)
@@ -388,7 +399,7 @@ def query_logs(limit: int = 50):
 def logs_clear():
     """Clear all query log entries."""
     try:
-        con = sqlite3.connect(_LOG_DB)
+        con = _connect(_LOG_DB)
         cur = con.execute("DELETE FROM query_log")
         count = cur.rowcount
         con.commit()
@@ -408,6 +419,7 @@ def changes(hours: int = 24):
     - Service outages and recoveries (Uptime Kuma)
     - Meaningful weather forecast changes (Open-Meteo)
     - New news articles (FreshRSS)
+    - Lock state changes, door sensor changes, low battery alerts (Home Assistant)
     """
     detected = get_changes(since_hours=hours)
     formatted = format_changes(detected, since_hours=hours)
@@ -423,18 +435,19 @@ def changes(hours: int = 24):
 def trigger_snapshots():
     """Manually trigger all snapshot jobs immediately."""
     import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [
             executor.submit(snapshot_uptime),
             executor.submit(snapshot_forecast),
             executor.submit(snapshot_news),
+            executor.submit(snapshot_ha),
         ]
         concurrent.futures.wait(futures)
-    return {"status": "ok", "snapshots_triggered": ["uptime", "forecast", "news"]}
+    return {"status": "ok", "snapshots_triggered": ["uptime", "forecast", "news", "ha"]}
 def logs_clear():
     """Clear all query log entries."""
     try:
-        con = sqlite3.connect(_LOG_DB)
+        con = _connect(_LOG_DB)
         cur = con.execute("DELETE FROM query_log")
         count = cur.rowcount
         con.commit()
@@ -458,7 +471,7 @@ def query_log_stats():
     - Repeated queries with cache hit rate
     """
     try:
-        con = sqlite3.connect(_LOG_DB)
+        con = _connect(_LOG_DB)
 
         # Total queries and basic rates
         totals = con.execute("""
@@ -558,7 +571,7 @@ def query_log_stats():
         return {"error": str(e)}
     """Clear all query log entries."""
     try:
-        con = sqlite3.connect(_LOG_DB)
+        con = _connect(_LOG_DB)
         cur = con.execute("DELETE FROM query_log")
         count = cur.rowcount
         con.commit()

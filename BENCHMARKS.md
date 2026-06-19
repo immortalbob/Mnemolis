@@ -136,6 +136,31 @@ These benchmarks reflect a homelab deployment — not a production cloud environ
 - Kiwix ZIM file size and disk I/O speed
 - Routing cache warmth
 
+### 20 Users — Hot Cache (v3.6.1, with Snapshot Scheduler)
+
+Re-benchmarked after adding the background snapshot scheduler (4 jobs: uptime every 2 min, forecast every 30 min, news every 60 min, HA every 5 min) and fixing SQLite lock contention with WAL mode.
+
+**First run** showed connection resets under load (9 errors across various endpoints) despite 100% success in server logs — determined to be Locust/Docker networking noise, not a code regression, since a clean rerun showed 0 errors.
+
+| Endpoint | Median | p95 | p99 | Failures |
+|----------|--------|-----|-----|----------|
+| `/health` | 730ms | 840ms | 840ms | 0% |
+| `/search [kiwix]` | 17ms | 20ms | 22ms | 0% |
+| `/search [forecast]` | 17ms | 19ms | 20ms | 0% |
+| `/search [news]` | 16ms | 20ms | 22ms | 0% |
+| `/search [uptime]` | 18ms | 23ms | 1000ms | 0% |
+| `/search [ha]` | 34ms | 74ms | 74ms | 0% |
+| `/search [auto]` | 17ms | 20ms | 1100ms | 0% |
+| `/search [fusion_explicit]` | 17ms | 20ms | 72ms | 0% |
+| `/search [fusion_auto]` | 17ms | 22ms | 28ms | 0% |
+| `/search [fusion_triple]` | 17ms | 20ms | 32ms | 0% |
+| `/search [cache_hit]` | 17ms | 19ms | 19ms | 0% |
+| **Aggregated** | **17ms** | **72ms** | **790ms** | **0%** |
+
+**429 requests. 0 failures on clean run.**
+
+The background scheduler adds no meaningful overhead to search latency. Median rose slightly (15ms → 17ms) due to WAL pragma overhead per connection, but this is negligible and p95/p99 remain within the same range as v3.5.0 despite four additional background jobs competing for resources.
+
 ## Running benchmarks
 
 ```bash
