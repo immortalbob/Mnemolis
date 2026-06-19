@@ -77,12 +77,12 @@ ESP32 Voice Assistant
 ```text
         Background Scheduler (APScheduler)
                      │
-   ┌─────────┬───────┼───────┬─────────┐
-   ▼         ▼       ▼       ▼         │
-Uptime    Forecast  News    HA        │
-(2 min)   (30 min) (60 min) (5 min)    │
-   │         │       │       │         │
-   └─────────┴───────┴───────┘         │
+   ┌─────────┬───────┼───────┬──────────┐
+   ▼         ▼       ▼       ▼          │
+Uptime    Forecast  News    HA          │
+(2 min)   (30 min) (60 min) (5 min)     │
+   │         │       │       │          │
+   └─────────┴───────┴───────┘          │
              │                          │
              ▼                          │
       Store snapshot                    │
