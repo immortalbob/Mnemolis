@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
@@ -40,6 +40,30 @@ from app.snapshots import (
 from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# API key authentication — protects /search and /changes only
+# ---------------------------------------------------------------------------
+
+def _valid_api_keys() -> set[str]:
+    """Parse the comma-separated API_KEYS setting into a set of valid keys."""
+    if not settings.api_keys:
+        return set()
+    return {k.strip() for k in settings.api_keys.split(",") if k.strip()}
+
+
+async def require_api_key(x_api_key: str | None = Header(default=None)):
+    """
+    FastAPI dependency enforcing API key auth on protected endpoints.
+    No-op (always passes) if API_KEYS is unset — auth is opt-in and
+    backward compatible with existing deployments.
+    """
+    valid_keys = _valid_api_keys()
+    if not valid_keys:
+        return  # auth disabled
+    if not x_api_key or x_api_key not in valid_keys:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
 # ---------------------------------------------------------------------------
 # Query logging — SQLite
@@ -126,7 +150,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.7.1",
+    version="3.8.0",
     lifespan=lifespan,
 )
 
@@ -328,7 +352,7 @@ def routing_cache_clear():
     return {"status": "cleared", "entries_removed": count}
 
 
-@app.post("/search", response_model=SearchResponse)
+@app.post("/search", response_model=SearchResponse, dependencies=[Depends(require_api_key)])
 def search(request: SearchRequest):
     if request.source == "auto":
         intent = detect_intent(request.query)
@@ -495,7 +519,21 @@ def logs_clear():
         return {"status": "error", "error": str(e)}
 
 
-@app.get("/changes")
+@app.get("/areas")
+def areas():
+    """
+    List all Home Assistant areas detected via the area registry, with
+    entity counts and the natural-language phrases that resolve to each
+    one (e.g. "living room", "master bath").
+
+    Returns not_configured if HA_URL/HA_TOKEN are unset, or error if the
+    HA area registry could not be reached.
+    """
+    from app.sources.home_assistant import list_areas
+    return list_areas()
+
+
+@app.get("/changes", dependencies=[Depends(require_api_key)])
 def changes(hours: int = 24):
     """
     Return meaningful changes detected across all snapshot sources

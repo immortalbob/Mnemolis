@@ -43,5 +43,10 @@ class Settings(BaseSettings):
     morning_start_hour: int = 6   # "this morning" looks back to this hour, local time
     work_start_hour: int = 9      # "while at work" / "since work" looks back to this hour, local time
 
+    # API key authentication — protects /search and /changes
+    # Leave blank to disable auth entirely (default, backward compatible)
+    # Comma-separated list of valid keys, e.g. "key1,key2,key3"
+    api_keys: str = ""
+
 
 settings = Settings()

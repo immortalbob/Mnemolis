@@ -77,12 +77,12 @@ ESP32 Voice Assistant
 ```text
         Background Scheduler (APScheduler)
                      │
-   ┌─────────┬───────┼───────┬──────────┐
-   ▼         ▼       ▼       ▼          │
-Uptime    Forecast  News    HA          │
-(2 min)   (30 min) (60 min) (5 min)     │
-   │         │       │       │          │
-   └─────────┴───────┴───────┘          │
+   ┌─────────┬───────┼───────┬─────────┐
+   ▼         ▼       ▼       ▼         │
+Uptime    Forecast  News    HA        │
+(2 min)   (30 min) (60 min) (5 min)    │
+   │         │       │       │         │
+   └─────────┴───────┴───────┘         │
              │                          │
              ▼                          │
       Store snapshot                    │
@@ -275,6 +275,7 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `LLM_API_TYPE` | API format: `ollama` or `openai` | `ollama` |
 | `MORNING_START_HOUR` | Reference hour (0-23, local time) for resolving "this morning" in changes queries | `6` |
 | `WORK_START_HOUR` | Reference hour (0-23, local time) for resolving "while at work" in changes queries | `9` |
+| `API_KEYS` | Comma-separated list of valid API keys. Protects `POST /search` and `GET /changes`. | _(blank — auth disabled)_ |
 
 ### FreshRSS API setup
 1. Enable API access: **Administration → Authentication → Allow API access**
@@ -327,6 +328,34 @@ Set `TZ` in `docker-compose.yml` to your local timezone (e.g. `America/New_York`
 environment:
   TZ: "America/New_York"
 ```
+
+### API key authentication (optional)
+By default, Mnemolis has no authentication — anyone on your network can query it. This matches the trust model of a homelab where Mnemolis sits behind your own firewall.
+
+To require an API key for `POST /search` and `GET /changes`:
+
+```yaml
+environment:
+  API_KEYS: "your-secret-key-here"
+```
+
+Multiple keys are supported, comma-separated:
+
+```yaml
+environment:
+  API_KEYS: "key-for-open-webui,key-for-claude-desktop"
+```
+
+Clients must send the key in the `X-API-Key` header:
+
+```bash
+curl -X POST http://your-host:8888/search \
+  -H "X-API-Key: your-secret-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "what is nitrogen", "source": "kiwix"}'
+```
+
+All other endpoints (`/health`, `/areas`, `/backup`, `/cache`, etc.) remain unauthenticated regardless of this setting, so monitoring tools and discovery requests aren't blocked.
 
 ### Home Assistant setup
 Generate a long-lived access token in Home Assistant:
@@ -420,6 +449,9 @@ Downloads a tarball of all Mnemolis data — result cache, routing cache, query 
 
 ### `GET /backup/info`
 Shows file sizes and last-modified times for each data file without creating a backup.
+
+### `GET /areas`
+Lists all detected Home Assistant areas with entity counts and matching natural-language aliases.
 
 ### `GET /changes`
 Returns meaningful changes detected across snapshot sources within the last N hours. Optional `?hours=N` parameter (default 24). Detects service outages and recoveries, forecast temperature shifts ≥5°, precipitation changes, and new news headlines.
@@ -570,7 +602,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-452 tests covering FastAPI endpoints, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting and location attribution, uptime heartbeat parsing, fusion validation and header formatting, LLM fusion source selection, snapshot diff engines including HA entity state changes and net-change collapsing, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, all source modules via mocking, and Home Assistant entity filtering.
+473 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting and location attribution, uptime heartbeat parsing, fusion validation and header formatting, LLM fusion source selection, snapshot diff engines including HA entity state changes and net-change collapsing, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 

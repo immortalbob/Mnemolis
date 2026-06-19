@@ -135,6 +135,114 @@ class TestLogsEndpoints:
                 assert field in entry
 
 
+class TestAPIKeyAuth:
+    """Tests for API key authentication on /search and /changes."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._original_keys = settings.api_keys
+        settings.api_keys = ""
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.api_keys = self._original_keys
+
+    def test_search_works_without_key_when_auth_disabled(self, client):
+        resp = client.post("/search", json={"query": "what is nitrogen", "source": "kiwix"})
+        assert resp.status_code == 200
+
+    def test_changes_works_without_key_when_auth_disabled(self, client):
+        resp = client.get("/changes")
+        assert resp.status_code == 200
+
+    def test_search_rejected_without_key_when_auth_enabled(self, client):
+        from app.config import settings
+        settings.api_keys = "secret123"
+        resp = client.post("/search", json={"query": "test", "source": "kiwix"})
+        assert resp.status_code == 401
+
+    def test_search_rejected_with_wrong_key(self, client):
+        from app.config import settings
+        settings.api_keys = "secret123"
+        resp = client.post(
+            "/search",
+            json={"query": "test", "source": "kiwix"},
+            headers={"X-API-Key": "wrong-key"},
+        )
+        assert resp.status_code == 401
+
+    def test_search_accepted_with_correct_key(self, client):
+        from app.config import settings
+        settings.api_keys = "secret123"
+        resp = client.post(
+            "/search",
+            json={"query": "what is nitrogen", "source": "kiwix"},
+            headers={"X-API-Key": "secret123"},
+        )
+        assert resp.status_code == 200
+
+    def test_changes_rejected_without_key_when_auth_enabled(self, client):
+        from app.config import settings
+        settings.api_keys = "secret123"
+        resp = client.get("/changes")
+        assert resp.status_code == 401
+
+    def test_changes_accepted_with_correct_key(self, client):
+        from app.config import settings
+        settings.api_keys = "secret123"
+        resp = client.get("/changes", headers={"X-API-Key": "secret123"})
+        assert resp.status_code == 200
+
+    def test_multiple_keys_all_valid(self, client):
+        from app.config import settings
+        settings.api_keys = "key1,key2,key3"
+        resp1 = client.post("/search", json={"query": "test", "source": "kiwix"}, headers={"X-API-Key": "key1"})
+        resp2 = client.post("/search", json={"query": "test", "source": "kiwix"}, headers={"X-API-Key": "key3"})
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+
+    def test_health_never_requires_key(self, client):
+        from app.config import settings
+        settings.api_keys = "secret123"
+        resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_areas_never_requires_key(self, client):
+        from app.config import settings
+        settings.api_keys = "secret123"
+        resp = client.get("/areas")
+        assert resp.status_code == 200
+
+    def test_keys_with_whitespace_are_trimmed(self, client):
+        from app.config import settings
+        settings.api_keys = " key1 , key2 "
+        resp = client.post("/search", json={"query": "test", "source": "kiwix"}, headers={"X-API-Key": "key1"})
+        assert resp.status_code == 200
+
+
+class TestAreasEndpoint:
+    """Tests for GET /areas."""
+
+    def test_areas_returns_status_and_areas_keys(self, client):
+        resp = client.get("/areas")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "status" in data
+        assert "areas" in data
+
+    def test_areas_not_configured_without_ha_settings(self, client):
+        from app.config import settings
+        original_url = settings.ha_url
+        original_token = settings.ha_token
+        settings.ha_url = ""
+        settings.ha_token = ""
+        resp = client.get("/areas")
+        data = resp.json()
+        assert data["status"] == "not_configured"
+        settings.ha_url = original_url
+        settings.ha_token = original_token
+
+
 class TestBackupEndpoint:
     """Tests for GET /backup and GET /backup/info."""
 

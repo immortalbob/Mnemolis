@@ -471,6 +471,91 @@ class TestHAHelperFunctions:
         assert _is_excluded(entity) is False
 
 
+class TestListAreas:
+    """Tests for list_areas() — GET /areas endpoint backing function."""
+
+    def setup_method(self):
+        from app.config import settings
+        settings.ha_url = "http://homeassistant:8123"
+        settings.ha_token = "fake-token"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.ha_url = ""
+        settings.ha_token = ""
+
+    def test_not_configured_when_no_url(self):
+        from app.sources import home_assistant
+        from app.config import settings
+        settings.ha_url = ""
+        result = home_assistant.list_areas()
+        assert result["status"] == "not_configured"
+        assert result["areas"] == {}
+
+    def test_not_configured_when_no_token(self):
+        from app.sources import home_assistant
+        from app.config import settings
+        settings.ha_token = ""
+        result = home_assistant.list_areas()
+        assert result["status"] == "not_configured"
+
+    def test_error_when_area_fetch_fails(self):
+        from app.sources import home_assistant
+        from unittest.mock import patch
+        with patch("app.sources.home_assistant._get_area_entities", return_value=None):
+            result = home_assistant.list_areas()
+        assert result["status"] == "error"
+        assert result["areas"] == {}
+
+    def test_returns_entity_counts(self):
+        from app.sources import home_assistant
+        from unittest.mock import patch
+        area_map = {
+            "kitchen": ["light.kitchen_1", "light.kitchen_2", "sensor.kitchen_temp"],
+            "bedroom": ["light.bedroom_1"],
+        }
+        with patch("app.sources.home_assistant._get_area_entities", return_value=area_map):
+            result = home_assistant.list_areas()
+        assert result["status"] == "ok"
+        assert result["areas"]["kitchen"]["entity_count"] == 3
+        assert result["areas"]["bedroom"]["entity_count"] == 1
+
+    def test_includes_matching_aliases(self):
+        from app.sources import home_assistant
+        from unittest.mock import patch
+        area_map = {"living_room": ["light.lr_1"]}
+        with patch("app.sources.home_assistant._get_area_entities", return_value=area_map):
+            result = home_assistant.list_areas()
+        assert "living room" in result["areas"]["living_room"]["aliases"]
+
+    def test_area_with_no_aliases_returns_empty_list(self):
+        from app.sources import home_assistant
+        from unittest.mock import patch
+        area_map = {"unmapped_area_xyz": ["light.x"]}
+        with patch("app.sources.home_assistant._get_area_entities", return_value=area_map):
+            result = home_assistant.list_areas()
+        assert result["areas"]["unmapped_area_xyz"]["aliases"] == []
+
+    def test_areas_sorted_alphabetically(self):
+        from app.sources import home_assistant
+        from unittest.mock import patch
+        area_map = {"zebra_room": ["light.z"], "alpha_room": ["light.a"]}
+        with patch("app.sources.home_assistant._get_area_entities", return_value=area_map):
+            result = home_assistant.list_areas()
+        area_names = list(result["areas"].keys())
+        assert area_names == sorted(area_names)
+
+    def test_multiple_aliases_for_same_area(self):
+        from app.sources import home_assistant
+        from unittest.mock import patch
+        area_map = {"master_bathroom": ["light.mb_1"]}
+        with patch("app.sources.home_assistant._get_area_entities", return_value=area_map):
+            result = home_assistant.list_areas()
+        aliases = result["areas"]["master_bathroom"]["aliases"]
+        assert "master bath" in aliases
+        assert "master bathroom" in aliases
+
+
 class TestBuildFilter:
     """Tests for _build_filter query keyword matching."""
 

@@ -181,6 +181,37 @@ def _detect_area(query: str) -> str | None:
     return None
 
 
+def list_areas() -> dict:
+    """
+    Return all HA areas with entity counts and the natural-language phrases
+    that resolve to each one. Used by the GET /areas endpoint.
+
+    Returns:
+        {"status": "ok", "areas": {area_id: {"entity_count": N, "aliases": [...]}}}
+        or {"status": "error"/"not_configured", "areas": {}}
+    """
+    if not settings.ha_url or not settings.ha_token:
+        return {"status": "not_configured", "areas": {}}
+
+    area_map = _get_area_entities()
+    if area_map is None:
+        return {"status": "error", "areas": {}}
+
+    # Build reverse lookup: area_id -> [aliases that map to it]
+    aliases_by_area: dict[str, list[str]] = {}
+    for phrase, area_id in _AREA_ALIASES.items():
+        aliases_by_area.setdefault(area_id, []).append(phrase)
+
+    areas = {}
+    for area_id, entities in sorted(area_map.items()):
+        areas[area_id] = {
+            "entity_count": len(entities),
+            "aliases": sorted(aliases_by_area.get(area_id, [])),
+        }
+
+    return {"status": "ok", "areas": areas}
+
+
 def _friendly_name(entity: dict) -> str:
     return entity.get("attributes", {}).get("friendly_name", entity["entity_id"])
 
