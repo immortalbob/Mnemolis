@@ -4,6 +4,24 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
+## [3.6.2]
+
+### Added
+- **`GET /backup`** — downloads a tarball of all Mnemolis state (result cache, routing cache, query log, snapshot history) as `mnemolis-backup-{timestamp}.tar.gz`
+- **`GET /backup/info`** — shows file sizes and last-modified times for each data file without creating a backup
+- **Backup & Restore section in README** — manual backup command, cron automation example, and full restore procedure using a throwaway alpine container against the named Docker volume
+- **6 new tests** — `TestBackupEndpoint` covering file dict structure, known files present, content-type header, filename format, and valid tar structure
+
+### Fixed
+- **`POST /logs/clear`** — restored a third time after being accidentally dropped during endpoint insertion. Verified present in route list post-fix.
+
+### Changed
+- Version bumped to 3.6.2
+
+**Total test count: 372**
+
+---
+
 ## [3.6.1]
 
 ### Added
