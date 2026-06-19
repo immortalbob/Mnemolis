@@ -135,6 +135,49 @@ class TestLogsEndpoints:
                 assert field in entry
 
 
+class TestBackupEndpoint:
+    """Tests for GET /backup and GET /backup/info."""
+
+    def test_backup_info_returns_file_dict(self, client):
+        resp = client.get("/backup/info")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "files" in data
+
+    def test_backup_info_includes_known_files(self, client):
+        resp = client.get("/backup/info")
+        files = resp.json()["files"]
+        for expected in ["cache.json", "routing_cache.json", "query_log.db", "snapshots.db"]:
+            assert expected in files
+
+    def test_backup_info_reports_existence(self, client):
+        resp = client.get("/backup/info")
+        files = resp.json()["files"]
+        for name, info in files.items():
+            assert "exists" in info
+
+    def test_backup_returns_tarball(self, client):
+        resp = client.get("/backup")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/gzip"
+
+    def test_backup_filename_has_timestamp(self, client):
+        resp = client.get("/backup")
+        content_disposition = resp.headers.get("content-disposition", "")
+        assert "mnemolis-backup-" in content_disposition
+        assert ".tar.gz" in content_disposition
+
+    def test_backup_contains_valid_tar(self, client):
+        import tarfile
+        import io
+        resp = client.get("/backup")
+        tar_bytes = io.BytesIO(resp.content)
+        with tarfile.open(fileobj=tar_bytes, mode="r:gz") as tar:
+            names = tar.getnames()
+            # Should contain at least the files that exist on disk
+            assert isinstance(names, list)
+
+
 class TestLogsStatsEndpoint:
     """Tests for GET /logs/stats."""
 

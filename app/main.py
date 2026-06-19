@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sqlite3
 import time
 import requests
@@ -8,6 +9,8 @@ from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from app.router import (
@@ -396,6 +399,89 @@ def query_logs(limit: int = 50):
 
 
 @app.post("/logs/clear")
+def logs_clear():
+    """Clear all query log entries."""
+    try:
+        con = _connect(_LOG_DB)
+        cur = con.execute("DELETE FROM query_log")
+        count = cur.rowcount
+        con.commit()
+        con.close()
+        return {"status": "cleared", "entries_removed": count}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/backup")
+def backup():
+    """
+    Create a backup of all Mnemolis data — result cache, routing cache,
+    query log, and snapshot history — and return it as a downloadable tarball.
+
+    Restore by stopping the container, extracting the tarball into the
+    /app/data volume, and restarting. See README for full instructions.
+    """
+    import tarfile
+    import tempfile
+
+    data_files = [
+        "/app/data/cache.json",
+        "/app/data/routing_cache.json",
+        "/app/data/query_log.db",
+        "/app/data/snapshots.db",
+    ]
+
+    try:
+        tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+
+        with tarfile.open(tmp_path, "w:gz") as tar:
+            included = []
+            for f in data_files:
+                if os.path.exists(f):
+                    tar.add(f, arcname=os.path.basename(f))
+                    included.append(os.path.basename(f))
+
+        timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        filename = f"mnemolis-backup-{timestamp}.tar.gz"
+
+        return FileResponse(
+            tmp_path,
+            media_type="application/gzip",
+            filename=filename,
+            background=BackgroundTask(os.unlink, tmp_path),
+        )
+    except Exception as e:
+        _LOGGER.error("Backup failed: %s", e)
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/backup/info")
+def backup_info():
+    """
+    Show what would be included in a backup without creating one —
+    file sizes and last-modified times for each data file.
+    """
+    data_files = [
+        "/app/data/cache.json",
+        "/app/data/routing_cache.json",
+        "/app/data/query_log.db",
+        "/app/data/snapshots.db",
+    ]
+    info = {}
+    for f in data_files:
+        name = os.path.basename(f)
+        if os.path.exists(f):
+            stat = os.stat(f)
+            info[name] = {
+                "exists": True,
+                "size_bytes": stat.st_size,
+                "modified": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
+            }
+        else:
+            info[name] = {"exists": False}
+    return {"files": info}
 def logs_clear():
     """Clear all query log entries."""
     try:

@@ -405,6 +405,12 @@ Shows all current routing cache entries — source and Kiwix book selection deci
 ### `POST /cache/routing/clear`
 Clears all routing cache entries from memory and disk.
 
+### `GET /backup`
+Downloads a tarball of all Mnemolis data — result cache, routing cache, query log, and snapshot history. See [Backup & Restore](#backup--restore) below.
+
+### `GET /backup/info`
+Shows file sizes and last-modified times for each data file without creating a backup.
+
 ### `GET /changes`
 Returns meaningful changes detected across snapshot sources within the last N hours. Optional `?hours=N` parameter (default 24). Detects service outages and recoveries, forecast temperature shifts ≥5°, precipitation changes, and new news headlines.
 
@@ -480,6 +486,46 @@ Popular ZIMs for a homelab stack:
 4. Rebuild: `docker compose up -d --build`
 
 The new source is automatically available via both REST and MCP — and immediately fusable with any other source.
+
+## Backup & Restore
+
+All Mnemolis state — result cache, routing cache, query log, and snapshot history — lives in four files under `/app/data`, backed by the `minisearch_data` Docker volume.
+
+### Backing up
+
+```bash
+curl -o mnemolis-backup.tar.gz http://your-host:8888/backup
+```
+
+Check what would be included first:
+
+```bash
+curl -s http://your-host:8888/backup/info | python3 -m json.tool
+```
+
+Automate it with cron:
+
+```bash
+0 3 * * * curl -s -o /path/to/backups/mnemolis-$(date +\%Y\%m\%d).tar.gz http://your-host:8888/backup
+```
+
+### Restoring
+
+```bash
+# Stop the container
+docker compose down
+
+# Extract the backup into the data volume
+docker run --rm -v minisearch_data:/app/data -v $(pwd):/backup alpine \
+  sh -c "cd /app/data && tar xzf /backup/mnemolis-backup.tar.gz"
+
+# Restart
+docker compose up -d
+```
+
+### What's NOT in the backup
+
+Kiwix ZIM files, your `docker-compose.yml` configuration, and `searxng/settings.yml` are not included — back those up separately as part of your normal homelab backup routine. The `/backup` endpoint only covers Mnemolis's own state: caches, logs, and snapshot history.
 
 ## Running Tests
 
