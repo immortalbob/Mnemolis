@@ -6,7 +6,7 @@ services:
     ports:
       - "8888:8000"   # REST API + MCP SSE (mounted at /mcp/sse)
     environment:
-      TZ: "" # your timezone e.g. America/New_York — REQUIRED for accurate "this morning"/"while at work" changes queries, container defaults to UTC otherwise
+      TZ: "America/Phoenix"
       # Kiwix
       KIWIX_URL: "http://kiwix:8080"
       # FreshRSS
@@ -33,12 +33,12 @@ services:
       FORECAST_LOCATION_NAME: "Kingman, Arizona"
       FORECAST_TIMEZONE: "America/Phoenix"
     volumes:
-      - minisearch_data:/app/data
+      - mnemolis_data:/app/data
     networks:
       - mnemo-net
 
 volumes:
-  minisearch_data:
+  mnemolis_data:
 
 networks:
   mnemo-net:

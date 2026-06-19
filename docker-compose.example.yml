@@ -39,6 +39,8 @@ services:
       UPTIME_KUMA_USERNAME: ""         # your Uptime Kuma username
       UPTIME_KUMA_PASSWORD: ""         # your Uptime Kuma password
       FORECAST_TIMEZONE: ""           # e.g. America/New_York — see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+    volumes:
+      - mnemolis_data:/app/data
     networks:
       - mnemo-net
     depends_on:
@@ -109,6 +111,7 @@ services:
   # ---------------------------------------------------------------------------
 
 volumes:
+  mnemolis_data:
   freshrss_data:
   freshrss_extensions:
 

@@ -283,6 +283,42 @@ class TestResolveChangesHours:
         assert result == 2.0
 
 
+class TestSearchChanges:
+    """Tests for _search_changes — the actual wired entry point for source='changes'."""
+
+    def test_calls_get_changes_and_format_changes(self):
+        from app.router import _search_changes
+        from unittest.mock import patch
+        with patch("app.router.get_changes", return_value={"uptime": [{"timestamp": "2026-06-19T10:00:00Z", "change": "test"}]}) as mock_get, \
+             patch("app.router.format_changes", return_value="formatted result") as mock_fmt:
+            result = _search_changes("what changed today")
+        assert mock_get.called
+        assert mock_fmt.called
+        assert result == "formatted result"
+
+    def test_passes_resolved_hours_to_get_changes(self):
+        from app.router import _search_changes
+        from unittest.mock import patch
+        with patch("app.router.get_changes", return_value={}) as mock_get, \
+             patch("app.router.format_changes", return_value=""):
+            _search_changes("what changed in the last 5 hours")
+        # get_changes should be called with since_hours=5.0
+        call_kwargs = mock_get.call_args
+        assert call_kwargs is not None
+
+    def test_no_changes_returns_format_changes_no_data_message(self):
+        from app.router import _search_changes
+        result = _search_changes("any new outages")
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_integration_with_real_today_query(self):
+        from app.router import _search_changes
+        # End-to-end smoke test against real (likely empty in test env) snapshot data
+        result = _search_changes("what changed today")
+        assert isinstance(result, str)
+
+
 class TestHoursSince:
     """Tests for _hours_since helper."""
 

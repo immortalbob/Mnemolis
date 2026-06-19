@@ -77,12 +77,12 @@ ESP32 Voice Assistant
 ```text
         Background Scheduler (APScheduler)
                      │
-   ┌─────────┬───────┼───────┬──────────┐
-   ▼         ▼       ▼       ▼          │
-Uptime    Forecast  News    HA          │
-(2 min)   (30 min) (60 min) (5 min)     │
-   │         │       │       │          │
-   └─────────┴───────┴───────┘          │
+   ┌─────────┬───────┼───────┬─────────┐
+   ▼         ▼       ▼       ▼         │
+Uptime    Forecast  News    HA        │
+(2 min)   (30 min) (60 min) (5 min)    │
+   │         │       │       │         │
+   └─────────┴───────┴───────┘         │
              │                          │
              ▼                          │
       Store snapshot                    │
@@ -519,6 +519,24 @@ Automate it with cron:
 0 3 * * * curl -s -o /path/to/backups/mnemolis-$(date +\%Y\%m\%d).tar.gz http://your-host:8888/backup
 ```
 
+### A note on volume naming
+
+Docker Compose automatically prefixes named volumes with your **project name**, which defaults to the name of the folder `docker-compose.yml` lives in. If your folder is `minisearch/`, a volume named `mnemolis_data` in the YAML actually gets created as `minisearch_mnemolis_data` — not `mnemolis_data`.
+
+This matters when restoring or migrating data manually with `docker run -v`. Always check the real volume name first:
+
+```bash
+docker volume ls | grep data
+# or, for a running container:
+docker inspect mnemolis --format '{{json .Mounts}}' | python3 -m json.tool
+```
+
+Use the exact name Docker reports — not the bare name written in `docker-compose.yml` — in any manual `docker run -v` commands. Set `COMPOSE_PROJECT_NAME` in a `.env` file alongside `docker-compose.yml` if you want a stable, predictable volume prefix regardless of folder name:
+
+```bash
+echo "COMPOSE_PROJECT_NAME=mnemolis" > .env
+```
+
 ### Restoring
 
 ```bash
@@ -552,7 +570,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-448 tests covering FastAPI endpoints, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting and location attribution, uptime heartbeat parsing, fusion validation and header formatting, LLM fusion source selection, snapshot diff engines including HA entity state changes and net-change collapsing, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, all source modules via mocking, and Home Assistant entity filtering.
+452 tests covering FastAPI endpoints, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting and location attribution, uptime heartbeat parsing, fusion validation and header formatting, LLM fusion source selection, snapshot diff engines including HA entity state changes and net-change collapsing, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 
