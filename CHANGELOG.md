@@ -4,6 +4,29 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.15.1]
+
+### Fixed — Proper-Noun-Pair Guard Didn't Actually Work
+The proper-noun-pair guard introduced in 3.15.0 (to protect "Iran and Israel," "Phoenix and Kingman" style pairs from being incorrectly split) shipped with three compounding bugs, all found through testing against realistic, full-length compound sentences rather than short isolated test strings — the same lesson from earlier tonight repeating at a deeper layer.
+
+1. **Unbounded scope** — the function only ever checked the *first* occurrence of a conjunction in the whole query, and treated everything after that point — potentially the rest of a long, multi-clause sentence — as the "after" side. In a real compound query, "after" became dozens of unrelated words instead of just the next name, so the length check never matched and the guard silently never fired at all in any realistic multi-intent query.
+2. **Trailing filler broke the length check** — once scope was bounded to the next comma/conjunction, "Israel right now" (3 words: the name plus two filler words) failed a strict `<=2 words` check that was meant to validate the name itself, not the whole bounded segment. Fixed by checking only the word immediately following the conjunction, allowing 1-2 word names ("Israel" or "New York") with any trailing filler.
+3. **Global gate instead of per-occurrence check** — even after the above fixes, the guard was structured as a single whole-query yes/no gate: if *any* conjunction occurrence anywhere looked like a proper-noun pair, decomposition aborted *entirely*, discarding completely unrelated, genuinely separate real intents elsewhere in the same sentence. A query containing both "Iran and Israel" *and* an unrelated "my back door" clause *and* an unrelated "numpy error" clause would lose all three to one false global abort. Redesigned as `_is_proper_noun_pair_at()` — checked independently at every conjunction occurrence, filtering only the specific split points that are proper-noun pairs rather than vetoing the whole operation.
+
+### Verified
+Tested against a deliberately constructed query containing two separate proper-noun pairs ("Iran and Israel," "Kingman and Phoenix") interleaved with two genuinely unrelated real intents ("back door," "numpy import error") in the same sentence — confirmed all 4 parts correctly separated, both pairs intact, both real intents preserved. Also verified against a second, independent test query mixing an "or"-joined proper-noun pair ("Tokyo or Osaka") with three other real intents, confirming the existing conjunction list naturally excludes "or" without needing special-casing.
+
+### Added
+- 1 new regression test reproducing the full combined scenario (two proper-noun pairs + two real intents in one query) — the exact shape that exposed bug #3
+
+### Changed
+- Version bumped to 3.15.1
+- `_decompose()`'s docstring and the renamed `_is_proper_noun_pair_at()` helper's docstring both updated to describe per-occurrence checking instead of a whole-query gate
+
+**Total test count: 813**
+
+---
+
 ## [3.15.0]
 
 ### Fixed — Decomposition Silently Dropped Technical/Programming Content
