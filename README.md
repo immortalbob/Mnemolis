@@ -287,6 +287,8 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `CACHE_MAX_SIZE` | Maximum result cache entries before oldest-eviction kicks in | `500` |
 | `KIWIX_SEARCH_LIMIT` | Results requested per book per Kiwix search — higher values help the scoring function find the right answer among brand-name collisions | `15` |
 | `KIWIX_MAX_BOOKS` | Maximum number of Kiwix books the LLM can select for a single query — raise for broader multi-book fusion | `2` |
+| `WEB_NEWS_SCORE_THRESHOLD` | Web/news results scoring at or below this are dropped as irrelevant | `0` |
+| `WEB_NEWS_TOP_N` | Maximum web/news results kept after scoring | `10` |
 
 ### FreshRSS API setup
 1. Enable API access: **Administration → Authentication → Allow API access**
@@ -537,6 +539,14 @@ When a query genuinely spans multiple books — "python raspberry pi gpio setup"
 
 Raise `KIWIX_MAX_BOOKS` (default 2) to let the LLM select more books per query for broader multi-book fusion — useful if you have the GPU headroom for more concurrent Kiwix requests per search.
 
+## Confidence-aware fusion (web & news)
+
+Unlike Kiwix, the web (SearXNG) and news (FreshRSS) sources don't have a built-in relevance ranking worth trusting on its own. Mnemolis scores every result against the query using stemmed keyword overlap, penalizes homepage/about-page results that describe a site rather than containing an actual article, and drops anything scoring at or below `WEB_NEWS_SCORE_THRESHOLD` before capping the survivors at `WEB_NEWS_TOP_N`.
+
+For web search specifically, Mnemolis also tries a second, differently-phrased version of longer queries (3+ words) when an LLM is configured — merging results from both searches and scoring everything against your original query, not the alternate phrasing. This catches results that one specific wording of a question would have missed. Duplicate articles reached via slightly different URLs (`www.` vs not, trailing slash, query string) are recognized as the same result and merged.
+
+This doesn't apply to FreshRSS, which fetches and locally re-scores your existing feed items rather than issuing a remote query — there's no alternate phrasing to act on there.
+
 ## Adding a New Source
 
 1. Create `app/sources/your_source.py` with a `search(query: str) -> str` function
@@ -619,7 +629,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-699 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation/multi-book fusion, definitional query detection, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning, FreshRSS authentication, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
+764 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation/multi-book fusion, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 

@@ -4,6 +4,46 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.11.0]
+
+### Added — Confidence-Aware Fusion with Expanded Ingest
+Fourth of five capability-expansion items. Web (SearXNG) and news (FreshRSS) results were previously trusted wholesale with zero relevance scoring — unlike Kiwix's dedicated scoring, these sources just returned whatever the upstream API gave back. This release builds real scoring infrastructure and adds multi-query expansion on top.
+
+**Part A — `app/scoring.py` (new shared module):**
+- `score_text_result()` — stemmed keyword overlap (title + content), exact-title-match bonus, generic/homepage-result penalty, optional recency bonus
+- `_is_generic_result()` — detects homepage/about-page/site-description results rather than actual articles (generic title patterns, generic content phrases, bare-domain-root + short-content heuristic)
+- `filter_and_rank()` — drops results at or below a configurable score threshold, caps survivors at a configurable top-N
+- `normalize_url()` — strips scheme, `www.`, trailing slashes, query strings, and fragments for deduplication purposes
+- `WEB_NEWS_SCORE_THRESHOLD` (default 0) and `WEB_NEWS_TOP_N` (default 10) config vars
+
+**Part B — wired into the sources:**
+- `searxng.py` — now pulls up to 25 raw results (was hardcoded top 5) and scores/filters/caps them instead of trusting SearXNG's own ranking
+- `freshrss.py` — specific-query path now uses the shared scorer instead of its own duplicated logic; added a recency bonus (3 tiers: 1hr/6hr/24hr) so fresher articles rank higher; general-query bypass ("news", "headlines") preserved exactly as before
+
+**Part C — multi-query expansion (web only):**
+- `app/query_expansion.py` (new) — `get_alternate_phrasing()` asks the LLM for one genuinely different phrasing of a query (≥3 words, LLM configured), routing-cached, with sanity checks rejecting empty/oversized/identical responses
+- `searxng.py` — when an alternate phrasing is available, searches both the original and alternate query, merges and deduplicates by normalized URL, scores the combined pool against the **original** query only — so a result survives because it's genuinely relevant to what was asked, not because of how the alternate phrasing happened to word it
+- Deliberately **not** wired into FreshRSS — FreshRSS fetches and locally re-scores your existing feed items rather than issuing a remote query, so an alternate phrasing has nothing to act on there
+
+### Fixed
+- **Real bug** — `_fetch_searxng()` returning `[]` on both genuine connection failure and successful-but-empty results meant a SearXNG outage was silently reported as "no results found" instead of a real error. Now returns `None` on failure, `[]` only for a genuinely empty successful response.
+- **Real bug** — duplicate results from the same article (e.g. `https://www.example.com/page/` and `https://example.com/page`) weren't deduplicated across primary/alternate query merges because comparison used raw URL strings. Fixed with `normalize_url()`.
+- **Test fragility** — `TestGetChangesNetCollapsing` in `test_snapshots.py` used hardcoded absolute dates (`2026-06-19T08:00:00Z`) in tests that compare against a 24-hour rolling window. These silently failed once real time passed the window relative to the hardcoded dates. Replaced with a `_ago(minutes_ago)` helper generating timestamps relative to the actual current time, so these tests can never expire again.
+
+### Verified
+Tested against real production data across genuinely different domains — network troubleshooting, personal finance, home security, baking — confirming scoring, generic-result filtering, and deduplication all generalize well rather than being overfit to any one query style.
+
+### Changed
+- Version bumped to 3.11.0
+- 64 new tests across `test_scoring.py`, `test_query_expansion.py`, `test_searxng.py`, `test_freshrss.py`, and the `test_snapshots.py` fix
+
+**Total test count: 764**
+
+### Roadmap
+Fourth of five capability-expansion items complete: configurable thresholds (done), Kiwix search term disambiguation (done), multi-book Kiwix fusion (done), confidence-aware fusion with expanded ingest (done). Remaining: recursive/conditional decomposition.
+
+---
+
 ## [3.10.0]
 
 ### Added — Multi-Book Kiwix Fusion

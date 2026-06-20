@@ -55,55 +55,51 @@ class TestIsGeneralQuery:
 
 
 # ---------------------------------------------------------------------------
-# Article scoring
+# Article scoring — now delegated to app.scoring.filter_and_rank, see
+# tests/test_scoring.py for the underlying scoring mechanics. These tests
+# confirm freshrss.py wires it in correctly, not the scoring math itself.
 # ---------------------------------------------------------------------------
 
-class TestScoreArticle:
-    """Tests for _score_article — article relevance to query."""
+class TestRecencyBonus:
+    """Tests for _recency_bonus — freshness scoring for news articles."""
 
-    def setup_method(self):
-        from app.sources.freshrss import _score_article, _STOP_WORDS
-        self.score = _score_article
-        self.stop_words = _STOP_WORDS
+    def test_no_bonus_for_missing_timestamp(self):
+        from app.sources.freshrss import _recency_bonus
+        assert _recency_bonus(None) == 0
 
-    def _query_words(self, query: str) -> set:
-        return set(query.lower().split()) - self.stop_words
+    def test_no_bonus_for_zero_timestamp(self):
+        from app.sources.freshrss import _recency_bonus
+        assert _recency_bonus(0) == 0
 
-    def test_title_match_scores_higher_than_summary(self):
-        query_words = self._query_words("politics")
-        title_score = self.score("Politics in America", "", query_words)
-        summary_score = self.score("Daily Roundup", "politics discussed today", query_words)
-        assert title_score > summary_score
+    def test_high_bonus_for_very_recent_article(self):
+        from app.sources.freshrss import _recency_bonus
+        import time
+        one_minute_ago = int(time.time()) - 60
+        assert _recency_bonus(one_minute_ago) == 15
 
-    def test_zero_score_for_unrelated(self):
-        query_words = self._query_words("politics")
-        score = self.score("Blueberry Pancake Recipe", "whole grain cornmeal healthy", query_words)
-        assert score == 0
+    def test_medium_bonus_for_few_hours_old(self):
+        from app.sources.freshrss import _recency_bonus
+        import time
+        four_hours_ago = int(time.time()) - (4 * 3600)
+        assert _recency_bonus(four_hours_ago) == 10
 
-    def test_multi_word_query_scores_higher_with_more_hits(self):
-        query_words = self._query_words("artificial intelligence machine learning")
-        full_match = self.score("AI and Machine Learning Trends", "artificial intelligence developments", query_words)
-        partial_match = self.score("AI Overview", "some information", query_words)
-        assert full_match > partial_match
+    def test_low_bonus_for_within_a_day(self):
+        from app.sources.freshrss import _recency_bonus
+        import time
+        twenty_hours_ago = int(time.time()) - (20 * 3600)
+        assert _recency_bonus(twenty_hours_ago) == 5
 
-    def test_stop_words_dont_contribute_to_score(self):
-        query_words = self._query_words("what is the news")
-        # After stop word removal, query_words should be empty or just "news"
-        meaningful = query_words - self.stop_words
-        # A generic title shouldn't score high just from stop word matches
-        score = self.score("What Is It", "the news is here", query_words)
-        # Score should only reflect actual meaningful word hits
-        assert score >= 0  # just verify it doesn't crash
+    def test_no_bonus_for_old_article(self):
+        from app.sources.freshrss import _recency_bonus
+        import time
+        three_days_ago = int(time.time()) - (3 * 86400)
+        assert _recency_bonus(three_days_ago) == 0
 
-    def test_case_insensitive_scoring(self):
-        query_words = self._query_words("Politics")
-        score1 = self.score("politics in washington", "", query_words)
-        score2 = self.score("POLITICS IN WASHINGTON", "", query_words)
-        assert score1 == score2
-
-    def test_empty_query_words_scores_zero(self):
-        score = self.score("Any Title", "any summary", set())
-        assert score == 0
+    def test_no_bonus_for_future_timestamp(self):
+        from app.sources.freshrss import _recency_bonus
+        import time
+        future = int(time.time()) + 3600
+        assert _recency_bonus(future) == 0
 
 
 class TestGetToken:

@@ -79,5 +79,11 @@ class Settings(BaseSettings):
     # concurrent Kiwix requests per search and more candidates to score.
     kiwix_max_books: int = 2
 
+    # Web/News confidence-aware fusion — results scoring at or below this
+    # threshold are dropped as irrelevant before formatting. Survivors are
+    # capped at top_n to bound response size.
+    web_news_score_threshold: int = 0
+    web_news_top_n: int = 10
+
 
 settings = Settings()

@@ -320,12 +320,21 @@ class TestGetChangesNetCollapsing:
         con.commit()
         con.close()
 
+    def _ago(self, minutes_ago: int) -> str:
+        """Return an ISO timestamp `minutes_ago` minutes before now, so test
+        data stays valid regardless of when the suite actually runs — these
+        tests previously used hardcoded absolute dates that silently expired
+        once real time passed the since_hours=24 window relative to them."""
+        from datetime import datetime, timedelta, timezone
+        ts = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     def test_uptime_flapping_collapses_to_net_change(self):
         from app.snapshots import get_changes
         # Flaps down then back up — net change should be empty (back to baseline)
-        self._insert_snapshot("uptime", "All 15 services are up.", "2026-06-19T08:00:00Z")
-        self._insert_snapshot("uptime", "1 service is down: Ollama", "2026-06-19T08:30:00Z")
-        self._insert_snapshot("uptime", "All 15 services are up.", "2026-06-19T09:00:00Z")
+        self._insert_snapshot("uptime", "All 15 services are up.", self._ago(120))
+        self._insert_snapshot("uptime", "1 service is down: Ollama", self._ago(90))
+        self._insert_snapshot("uptime", "All 15 services are up.", self._ago(60))
         changes = get_changes(since_hours=24)
         # Net change: first vs last is identical, so no change reported
         assert "uptime" not in changes
@@ -333,9 +342,9 @@ class TestGetChangesNetCollapsing:
     def test_uptime_real_outage_reports_net_change(self):
         from app.snapshots import get_changes
         # Starts up, ends down — real net change should be reported
-        self._insert_snapshot("uptime", "All 15 services are up.", "2026-06-19T08:00:00Z")
-        self._insert_snapshot("uptime", "1 service is down: Ollama", "2026-06-19T08:30:00Z")
-        self._insert_snapshot("uptime", "1 service is down: Ollama", "2026-06-19T09:00:00Z")
+        self._insert_snapshot("uptime", "All 15 services are up.", self._ago(120))
+        self._insert_snapshot("uptime", "1 service is down: Ollama", self._ago(90))
+        self._insert_snapshot("uptime", "1 service is down: Ollama", self._ago(60))
         changes = get_changes(since_hours=24)
         assert "uptime" in changes
         assert len(changes["uptime"]) >= 1
@@ -343,24 +352,24 @@ class TestGetChangesNetCollapsing:
     def test_forecast_flapping_collapses_to_net_change(self):
         from app.snapshots import get_changes
         # Precipitation appears then disappears — net change should be empty
-        self._insert_snapshot("forecast", "Today will be clear with a high of about 90.", "2026-06-19T08:00:00Z")
-        self._insert_snapshot("forecast", "Today will be rainy with a high of about 90.", "2026-06-19T08:30:00Z")
-        self._insert_snapshot("forecast", "Today will be clear with a high of about 90.", "2026-06-19T09:00:00Z")
+        self._insert_snapshot("forecast", "Today will be clear with a high of about 90.", self._ago(120))
+        self._insert_snapshot("forecast", "Today will be rainy with a high of about 90.", self._ago(90))
+        self._insert_snapshot("forecast", "Today will be clear with a high of about 90.", self._ago(60))
         changes = get_changes(since_hours=24)
         assert "forecast" not in changes
 
     def test_forecast_real_change_reports_net(self):
         from app.snapshots import get_changes
-        self._insert_snapshot("forecast", "Today will be clear with a high of about 80.", "2026-06-19T08:00:00Z")
-        self._insert_snapshot("forecast", "Today will be clear with a high of about 95.", "2026-06-19T09:00:00Z")
+        self._insert_snapshot("forecast", "Today will be clear with a high of about 80.", self._ago(120))
+        self._insert_snapshot("forecast", "Today will be clear with a high of about 95.", self._ago(60))
         changes = get_changes(since_hours=24)
         assert "forecast" in changes
 
     def test_news_reports_every_event_not_net(self):
         from app.snapshots import get_changes
-        self._insert_snapshot("news", "**Story A** (World)\nContent.\n---", "2026-06-19T08:00:00Z")
-        self._insert_snapshot("news", "**Story A** (World)\nContent.\n---\n\n**Story B** (World)\nContent.\n---", "2026-06-19T08:30:00Z")
-        self._insert_snapshot("news", "**Story A** (World)\nContent.\n---\n\n**Story B** (World)\nContent.\n---\n\n**Story C** (World)\nContent.\n---", "2026-06-19T09:00:00Z")
+        self._insert_snapshot("news", "**Story A** (World)\nContent.\n---", self._ago(120))
+        self._insert_snapshot("news", "**Story A** (World)\nContent.\n---\n\n**Story B** (World)\nContent.\n---", self._ago(90))
+        self._insert_snapshot("news", "**Story A** (World)\nContent.\n---\n\n**Story B** (World)\nContent.\n---\n\n**Story C** (World)\nContent.\n---", self._ago(60))
         changes = get_changes(since_hours=24)
         assert "news" in changes
         # Both Story B and Story C should be reported as individual events
