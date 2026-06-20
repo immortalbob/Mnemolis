@@ -178,7 +178,7 @@ intent    intents
    └─────────────┤
                  ▼
           Single Response
-     with [SOURCE] attribution
+     with [SOURCE — DESCRIPTION] attribution
 ```
 
 Decomposition only applies to `source="auto"`. Explicit source requests (`source="kiwix"`) skip decomposition entirely. Consecutive results from the same source are merged under a single header — "indoor air quality and are the doors locked" returns one `[HA]` block, not two.
@@ -366,15 +366,17 @@ openssl rand -hex 32
 ```
 
 ### LLM-assisted routing
-Mnemolis uses a local LLM backend in three ways:
+Mnemolis uses a local LLM backend in five ways:
 
 1. **Source selection** — when `auto` is used and no keyword matches, the LLM picks the best source based on the query. For complex multi-topic queries it returns multiple sources, triggering fusion automatically.
-2. **Book selection** — once routed to Kiwix, the LLM picks the best 1-2 ZIM books from your catalog for the query
-3. **Fusion source selection** — when `fusion` is used without specifying sources, the LLM picks the best 2-3 sources for the query
+2. **Book selection** — once routed to Kiwix, the LLM picks the best books from your catalog for the query, up to `KIWIX_MAX_BOOKS` (default 2)
+3. **Search term disambiguation** — for short, definitional Kiwix queries (e.g. "what is a galaxy"), the LLM generates 3 candidate disambiguation terms to break brand-name/homonym collisions. Each candidate is actually searched and scored against real Kiwix results rather than trusting a single guess — see [Kiwix Internal Flow](#kiwix-internal-flow).
+4. **Fusion source selection** — when `fusion` is used without specifying sources, the LLM picks the best 2-3 sources for the query
+5. **Web query expansion** — for web searches of 3+ words, the LLM generates one alternate phrasing so SearXNG is queried twice and results merged, scored against your original query — see [Confidence-aware fusion](#confidence-aware-fusion-web-news)
 
 **Auto-fusion escalation** — `source="auto"` now detects multi-topic queries at the keyword level too. If a query matches triggers from multiple sources (e.g. "weather" + "services up"), fusion is triggered automatically without an LLM call.
 
-Routing decisions are cached for 1 hour so repeated queries skip the LLM call entirely.
+Routing decisions (including disambiguation candidates and alternate phrasings) are cached for 1 hour so repeated queries skip the LLM call entirely.
 
 **Supported backends** via `LLM_API_TYPE`:
 - `ollama` — Ollama native API (default)
@@ -521,7 +523,7 @@ Shows file sizes and last-modified times for each data file without creating a b
 Lists all detected Home Assistant areas with entity counts and matching natural-language aliases.
 
 ### `GET /changes`
-Returns meaningful changes detected across snapshot sources within the last N hours. Optional `?hours=N` parameter (default 24). Detects service outages and recoveries, forecast temperature shifts ≥5°, precipitation changes, and new news headlines.
+Returns meaningful changes detected across snapshot sources within the last N hours. Optional `?hours=N` parameter (default 24). Detects service outages and recoveries, forecast temperature shifts above `FORECAST_TEMP_CHANGE_THRESHOLD` (default 5°), precipitation changes, and new news headlines.
 
 ### `POST /snapshots/trigger`
 Manually trigger all snapshot jobs immediately.
@@ -612,7 +614,7 @@ The new source is automatically available via both REST and MCP — and immediat
 
 ## Backup & Restore
 
-All Mnemolis state — result cache, routing cache, query log, and snapshot history — lives in four files under `/app/data`, backed by the `minisearch_data` Docker volume.
+All Mnemolis state — result cache, routing cache, query log, and snapshot history — lives in four files under `/app/data`, backed by the `mnemolis_data` Docker volume (see the volume naming note below for how Docker Compose actually names it).
 
 ### Backing up
 
@@ -765,7 +767,7 @@ Looking for contributors interested in building out additional sources:
 
 Each source only needs a single `search(query: str) -> str` function. See any existing file in `app/sources/` as a reference.
 
-## Part of the MiniNet stack
+## Part of the Mnemo-net stack
 
 - [Mnemolis Intents](https://github.com/immortalbob/mnemolis_intents) — native Home Assistant LLM integration for Mnemolis
 - [Mnemovox-T7S3](https://github.com/immortalbob/Mnemovox-T7S3) — ESP32-S3 voice satellite with CO2, temperature, and humidity sensing
