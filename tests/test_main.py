@@ -74,6 +74,44 @@ class TestSourcesEndpoint:
             assert expected in sources
 
 
+class TestCatalogEndpoints:
+    """Tests for GET /catalog and POST /catalog/refresh."""
+
+    def test_catalog_returns_count_and_books(self, client):
+        resp = client.get("/catalog")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "count" in data
+        assert "books" in data
+
+    def test_catalog_count_matches_books_length(self, client):
+        resp = client.get("/catalog")
+        data = resp.json()
+        assert data["count"] == len(data["books"])
+
+    def test_catalog_refresh_returns_status(self, client):
+        from unittest.mock import patch
+        with patch("app.main.refresh_catalog", return_value=[]):
+            resp = client.post("/catalog/refresh")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "refreshed"
+        assert "count" in data
+
+    def test_catalog_refresh_reflects_new_count(self, client):
+        from unittest.mock import patch
+        fake_books = [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+        with patch("app.main.refresh_catalog", return_value=fake_books):
+            resp = client.post("/catalog/refresh")
+        assert resp.json()["count"] == 3
+
+    def test_catalog_refresh_calls_refresh_function(self, client):
+        from unittest.mock import patch
+        with patch("app.main.refresh_catalog", return_value=[]) as mock_refresh:
+            client.post("/catalog/refresh")
+        assert mock_refresh.called
+
+
 class TestCacheEndpoints:
     """Tests for cache management endpoints."""
 

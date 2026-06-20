@@ -159,6 +159,8 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> l
 
     for candidate in raw.split(","):
         candidate = candidate.strip().strip(".")
+        if not candidate:
+            continue
         if candidate in book_names:
             chosen.append(candidate)
         else:

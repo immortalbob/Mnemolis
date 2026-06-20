@@ -1,6 +1,6 @@
 """
 Mnemolis MCP Server
-Exposes MiniSearch as an MCP tool server via SSE transport.
+Exposes Mnemolis as an MCP tool server via SSE transport.
 Mounted at /mcp by the FastAPI app in main.py.
 """
 
@@ -22,7 +22,7 @@ server = Server("mnemolis")
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    """List available MiniSearch tools."""
+    """List available Mnemolis tools."""
     return [
         Tool(
             name="search",

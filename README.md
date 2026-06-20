@@ -77,12 +77,12 @@ ESP32 Voice Assistant
 ```text
         Background Scheduler (APScheduler)
                      │
-   ┌─────────┬───────┼───────┬──────────┐
-   ▼         ▼       ▼       ▼          │
-Uptime    Forecast  News    HA          │
-(2 min)   (30 min) (60 min) (5 min)     │
-   │         │       │       │          │
-   └─────────┴───────┴───────┘          │
+   ┌─────────┬───────┼───────┬─────────┐
+   ▼         ▼       ▼       ▼         │
+Uptime    Forecast  News    HA        │
+(2 min)   (30 min) (60 min) (5 min)    │
+   │         │       │       │         │
+   └─────────┴───────┴───────┘         │
              │                          │
              ▼                          │
       Store snapshot                    │
@@ -602,7 +602,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-473 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic, routing cache, Kiwix scoring and stemming, definitional query detection, list article penalties, HA area detection, search term cleaning, FreshRSS authentication, forecast formatting and location attribution, uptime heartbeat parsing, fusion validation and header formatting, LLM fusion source selection, snapshot diff engines including HA entity state changes and net-change collapsing, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, all source modules via mocking, and Home Assistant entity filtering.
+646 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection, definitional query detection, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning, FreshRSS authentication, forecast formatting and location attribution, uptime heartbeat parsing, fusion validation and header formatting, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 

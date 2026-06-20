@@ -471,6 +471,202 @@ class TestHAHelperFunctions:
         assert _is_excluded(entity) is False
 
 
+class TestGetStates:
+    """Tests for _get_states() — raw HA REST API fetch."""
+
+    def setup_method(self):
+        from app.config import settings
+        settings.ha_url = "http://homeassistant:8123"
+        settings.ha_token = "fake-token"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.ha_url = ""
+        settings.ha_token = ""
+
+    def test_returns_none_when_not_configured(self):
+        from app.sources import home_assistant
+        from app.config import settings
+        settings.ha_url = ""
+        result = home_assistant._get_states()
+        assert result is None
+
+    def test_returns_states_list_on_success(self):
+        from app.sources import home_assistant
+        from unittest.mock import patch, MagicMock
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [{"entity_id": "light.test", "state": "on", "attributes": {}}]
+        mock_resp.raise_for_status.return_value = None
+        with patch("app.sources.home_assistant.requests.get", return_value=mock_resp):
+            result = home_assistant._get_states()
+        assert result == [{"entity_id": "light.test", "state": "on", "attributes": {}}]
+
+    def test_returns_none_on_connection_error(self):
+        from app.sources import home_assistant
+        import requests as req
+        from unittest.mock import patch
+        with patch("app.sources.home_assistant.requests.get", side_effect=req.exceptions.ConnectionError()):
+            result = home_assistant._get_states()
+        assert result is None
+
+    def test_returns_none_on_http_error(self):
+        from app.sources import home_assistant
+        import requests as req
+        from unittest.mock import patch, MagicMock
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.side_effect = req.exceptions.HTTPError("401")
+        with patch("app.sources.home_assistant.requests.get", return_value=mock_resp):
+            result = home_assistant._get_states()
+        assert result is None
+
+    def test_sends_bearer_token_header(self):
+        from app.sources import home_assistant
+        from unittest.mock import patch, MagicMock
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = []
+        mock_resp.raise_for_status.return_value = None
+        with patch("app.sources.home_assistant.requests.get", return_value=mock_resp) as mock_get:
+            home_assistant._get_states()
+        headers = mock_get.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer fake-token"
+
+
+class TestFormatEntity:
+    """Tests for _format_entity() — entity → display string formatting."""
+
+    def test_formats_with_unit(self):
+        from app.sources.home_assistant import _format_entity
+        entity = {
+            "entity_id": "sensor.temp",
+            "state": "72.5",
+            "attributes": {"friendly_name": "Room Temp", "unit_of_measurement": "°F"},
+        }
+        result = _format_entity(entity)
+        assert "Room Temp" in result
+        assert "72.5" in result
+        assert "°F" in result
+
+    def test_formats_without_unit(self):
+        from app.sources.home_assistant import _format_entity
+        entity = {
+            "entity_id": "lock.front_door",
+            "state": "locked",
+            "attributes": {"friendly_name": "Front Door"},
+        }
+        result = _format_entity(entity)
+        assert result == "Front Door: locked"
+
+    def test_falls_back_to_entity_id_without_friendly_name(self):
+        from app.sources.home_assistant import _format_entity
+        entity = {"entity_id": "light.unnamed", "state": "on", "attributes": {}}
+        result = _format_entity(entity)
+        assert "light.unnamed" in result
+
+
+class TestMatchesFilter:
+    """Tests for _matches_filter() — the core entity matching engine."""
+
+    def _entity(self, entity_id, state="on", device_class="", friendly_name=""):
+        return {
+            "entity_id": entity_id,
+            "state": state,
+            "attributes": {
+                "device_class": device_class,
+                "friendly_name": friendly_name or entity_id,
+            },
+        }
+
+    def _filter(self, **kwargs):
+        base = {
+            "domains": set(), "device_classes": set(), "entity_keywords": set(),
+            "exclude_entity_keywords": set(), "event_keywords": set(),
+            "state_filter": None, "strict": False, "include_motion": False,
+        }
+        base.update(kwargs)
+        return base
+
+    def test_excluded_entity_never_matches(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("sensor.x", state="unavailable")
+        f = self._filter(domains={"sensor"})
+        assert _matches_filter(entity, f) is False
+
+    def test_domain_match(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("light.bedroom")
+        f = self._filter(domains={"light"})
+        assert _matches_filter(entity, f) is True
+
+    def test_domain_mismatch(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("lock.front_door")
+        f = self._filter(domains={"light"})
+        assert _matches_filter(entity, f) is False
+
+    def test_device_class_match(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("sensor.battery1", device_class="battery")
+        f = self._filter(device_classes={"battery"})
+        assert _matches_filter(entity, f) is True
+
+    def test_state_filter_matches(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("light.bedroom", state="on")
+        f = self._filter(domains={"light"}, state_filter="on")
+        assert _matches_filter(entity, f) is True
+
+    def test_state_filter_excludes_non_matching_state(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("light.bedroom", state="off")
+        f = self._filter(domains={"light"}, state_filter="on")
+        assert _matches_filter(entity, f) is False
+
+    def test_exclude_entity_keywords(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("sensor.cotech_outdoor_temp", device_class="temperature")
+        f = self._filter(device_classes={"temperature"}, exclude_entity_keywords={"cotech"})
+        assert _matches_filter(entity, f) is False
+
+    def test_strict_mode_blocks_entity_keyword_bleed(self):
+        from app.sources.home_assistant import _matches_filter
+        # In strict mode, entity_keywords must explicitly match — domain/dc alone still works
+        entity = self._entity("switch.random_thing")
+        f = self._filter(strict=True, domains={"light"})
+        assert _matches_filter(entity, f) is False
+
+    def test_strict_mode_allows_domain_match(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("light.bedroom")
+        f = self._filter(strict=True, domains={"light"})
+        assert _matches_filter(entity, f) is True
+
+    def test_event_domain_matches_by_keyword(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("event.front_yard_motion")
+        f = self._filter(event_keywords={"motion"})
+        assert _matches_filter(entity, f) is True
+
+    def test_event_domain_no_match_without_keyword(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("event.button_press")
+        f = self._filter(event_keywords={"motion"})
+        assert _matches_filter(entity, f) is False
+
+    def test_entity_keyword_match(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("sensor.outdoor_weather_station")
+        f = self._filter(entity_keywords={"outdoor"})
+        assert _matches_filter(entity, f) is True
+
+    def test_no_criteria_matches_nothing(self):
+        from app.sources.home_assistant import _matches_filter
+        entity = self._entity("light.bedroom")
+        f = self._filter()
+        assert _matches_filter(entity, f) is False
+
+
 class TestListAreas:
     """Tests for list_areas() — GET /areas endpoint backing function."""
 
