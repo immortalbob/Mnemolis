@@ -131,14 +131,19 @@ ESP32 Voice Assistant
          └───────────┴───────────┘
                      │
         Filter empty / failed results
+        web/news results scored + ranked
+        (app/scoring.py — keyword overlap,
+         generic-result penalty, recency)
         Partial failure OK — best effort
                      │
-      Merge with [SOURCE] attribution headers
+   Merge with [SOURCE — DESCRIPTION] headers
+   (descriptive label prevents cross-source
+    inference, e.g. weather ≠ news location)
                      │
                Single Response
 ```
 
-Fusion queries all specified sources concurrently, filters empty or failed results, and merges the remainder with source attribution headers. If only one source returns results, it is returned directly without headers.
+Fusion queries all specified sources concurrently, filters empty or failed results, and merges the remainder with descriptive source attribution headers (e.g. `[FORECAST — WEATHER FORECAST FOR YOUR CONFIGURED HOME LOCATION]`) so the LLM reading the fused response can't mistakenly infer facts across unrelated sections. If only one source returns results, it is returned directly without headers.
 
 ### Query Decomposition
 
@@ -177,6 +182,55 @@ intent    intents
 ```
 
 Decomposition only applies to `source="auto"`. Explicit source requests (`source="kiwix"`) skip decomposition entirely. Consecutive results from the same source are merged under a single header — "indoor air quality and are the doors locked" returns one `[HA]` block, not two.
+
+### Kiwix Internal Flow
+
+```text
+              query
+                │
+                ▼
+       LLM picks 1-2 books
+     (or Wikipedia-first fallback
+        if LLM not configured)
+                │
+                ▼
+   Definitional query? Single word?
+   Wikipedia selected? LLM configured?
+                │
+        ┌───────┴───────┐
+        ▼               ▼
+       No              Yes
+        │               │
+        │      Ask LLM for 3 candidate
+        │      disambiguation terms
+        │      (broad field / specific
+        │       synonym / bare word)
+        │               │
+        └───────┬───────┘
+                ▼
+   Search each book × each candidate
+   term, merge results, dedupe by URL
+                │
+                ▼
+        Score every result
+     against the ORIGINAL query
+   (exact match, stemmed title/excerpt
+    overlap, Wikipedia bonus, list penalty)
+                │
+                ▼
+   2+ books scoring within 50% of
+   the leading book's top result?
+                │
+        ┌───────┴───────┐
+        ▼               ▼
+       No              Yes
+        │               │
+  Return single    Fuse best result per
+  best-scoring     book — multi-book
+  article           fusion response
+```
+
+This is the layer that fixed the "galaxy returns Samsung phones, battery returns military fortifications" problem — rather than trusting one LLM guess about which search term will work, Mnemolis tries several candidates and verifies against real Kiwix results, scored the same way regardless of which term found them.
 
 ## Integrations
 
