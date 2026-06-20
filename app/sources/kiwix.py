@@ -96,9 +96,12 @@ def refresh_catalog() -> list[dict]:
 # LLM-assisted book selection
 # ---------------------------------------------------------------------------
 
-def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> list[str]:
+def _pick_books_with_llm(query: str, books: list[dict], max_books: int | None = None) -> list[str]:
     """Ask Ollama to pick the best books for the query. Returns ranked list of book names.
-    Checks routing cache first to avoid redundant Ollama calls."""
+    Checks routing cache first to avoid redundant Ollama calls.
+    Defaults to settings.kiwix_max_books when max_books is not specified."""
+    if max_books is None:
+        max_books = settings.kiwix_max_books
     if not books:
         return []
 
@@ -466,7 +469,7 @@ def search(query: str) -> str:
         return "No books available in Kiwix catalog."
 
     if settings.llm_url and settings.llm_model:
-        selected_books = _pick_books_with_llm(query, books, max_books=2)
+        selected_books = _pick_books_with_llm(query, books)
     else:
         # Fallback — Wikipedia first
         fallback = next((b["name"] for b in books if "wikipedia" in b["name"]), books[0]["name"])
@@ -512,10 +515,32 @@ def search(query: str) -> str:
 
     scored = sorted(all_results, key=lambda r: _score_result(r, query, selected_books[0]), reverse=True)
     top = scored[0]
+    top_score = _score_result(top, query, selected_books[0])
     _LOGGER.info(
         "Selected article '%s' from %s (score=%d)",
-        top["title"], top["book"], _score_result(top, query, selected_books[0])
+        top["title"], top["book"], top_score
     )
+
+    # Multi-book fusion — when multiple books were selected, check if more
+    # than one book has a strong, relevant result (not just the LLM picking
+    # a tangentially-related book). Only fuse when results from different
+    # books are genuinely competitive in relevance, not when one book
+    # dominates and the rest are noise.
+    if len(selected_books) > 1:
+        best_per_book: dict[str, dict] = {}
+        for r in scored:
+            book = r["book"]
+            if book not in best_per_book:
+                best_per_book[book] = r
+
+        relevant_books = []
+        for book, result in best_per_book.items():
+            score = _score_result(result, query, selected_books[0])
+            if score >= top_score * 0.5:
+                relevant_books.append((book, result, score))
+
+        if len(relevant_books) > 1:
+            return _fuse_multi_book_results(relevant_books)
 
     article_text = _fetch_article(top["url"])
     if not article_text:
@@ -530,3 +555,33 @@ def search(query: str) -> str:
         return f"Found {top['title']} but could not fetch article content.\nURL: {top['url']}"
 
     return f"# {top['title']}\nSource: {top['book']}\n\n{article_text}"
+
+
+def _fuse_multi_book_results(relevant_books: list[tuple[str, dict, int]]) -> str:
+    """
+    Merge the best result from each relevant book into one response,
+    mirroring the cross-source fusion pattern in fusion.py — truncated
+    per-book sections with attribution headers, sorted by relevance.
+    """
+    from app.sources.fusion import _truncate
+
+    # Sort by score descending so the most relevant book's result leads
+    relevant_books = sorted(relevant_books, key=lambda x: x[2], reverse=True)
+
+    sections = []
+    for book, result, score in relevant_books:
+        article_text = _fetch_article(result["url"])
+        if not article_text:
+            continue
+        truncated = _truncate(article_text)
+        sections.append(f"[{book.upper()}]\n# {result['title']}\n\n{truncated}")
+
+    if not sections:
+        return "Found multiple relevant books but could not fetch article content."
+
+    if len(sections) == 1:
+        # Only one book's article actually fetched successfully — return plainly
+        return sections[0].split("\n", 1)[1].lstrip()
+
+    _LOGGER.info("Multi-book fusion: merged %d books", len(sections))
+    return "\n\n---\n\n".join(sections)

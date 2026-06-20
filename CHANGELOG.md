@@ -4,6 +4,30 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.10.0]
+
+### Added — Multi-Book Kiwix Fusion
+Third of five capability-expansion items. When a query genuinely spans multiple Kiwix books — "python raspberry pi gpio setup" touching both a Raspberry Pi Stack Exchange thread and an Electronics Stack Exchange thread — Mnemolis now merges the best result from each relevant book instead of returning only the single highest-scoring article.
+
+- **`_fuse_multi_book_results()`** — takes the best-scoring result per book, fetches each article, truncates using the existing fusion truncation logic (`settings.fusion_max_chars_per_source`), and merges with `[BOOK NAME]` attribution headers sorted by relevance
+- **Relevance gate** — fusion only triggers when a second or third book's top result scores within 50% of the leading book's score. Prevents an LLM book-selection misfire from injecting an irrelevant book into an otherwise clean single-topic answer.
+- **`KIWIX_MAX_BOOKS`** config var (default 2) — raise this to let the LLM select more books per query, enabling broader multi-book fusion (e.g. Python + Raspberry Pi + Unix Stack Exchange together) on hardware with the GPU headroom to handle more concurrent Kiwix requests per search
+- **`KIWIX_SEARCH_LIMIT`** config var (default 15) — results requested per book per search, raised from the prior hardcoded 5 to give scoring more candidates when common terms get crowded out by brand-name collisions
+- Verified against real production data: "python raspberry pi gpio setup" correctly fuses Raspberry Pi SE + Electronics SE. "What is nitrogen" correctly fuses Wikipedia (encyclopedic) + Wiktionary (etymology/pronunciation) — a genuinely complementary pairing the relevance gate identified without being explicitly told to expect it.
+- **22 new tests** — `TestFuseMultiBookResults` (6), `TestSearchMultiBookFusionIntegration` (3), `TestConfigurableMaxBooks` (4), plus config default tests for both new settings
+
+### Changed
+- `_pick_books_with_llm()` — `max_books` parameter now defaults to `settings.kiwix_max_books` instead of a hardcoded `2`
+- `_search_book()` — `limit` parameter now defaults to `settings.kiwix_search_limit` instead of a hardcoded `5`
+- Version bumped to 3.10.0
+
+**Total test count: 699**
+
+### Roadmap
+Third of five capability-expansion items complete: configurable thresholds (done), Kiwix search term disambiguation (done), multi-book Kiwix fusion (done). Remaining: confidence-aware fusion with expanded ingest, recursive/conditional decomposition.
+
+---
+
 ## [3.9.0]
 
 ### Added — Kiwix Search Term Disambiguation (Multi-Candidate, Score-and-Verify)

@@ -73,5 +73,11 @@ class Settings(BaseSettings):
     # returning dozens of Samsung phone articles). Increases Kiwix request size.
     kiwix_search_limit: int = 15
 
+    # Kiwix — maximum number of books the LLM can select for a single query.
+    # Raise this if you want broader multi-book fusion (e.g. querying Python,
+    # Raspberry Pi, and Unix Stack Exchange together) at the cost of more
+    # concurrent Kiwix requests per search and more candidates to score.
+    kiwix_max_books: int = 2
+
 
 settings = Settings()

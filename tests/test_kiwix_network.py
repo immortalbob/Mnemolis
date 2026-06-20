@@ -543,6 +543,242 @@ class TestSearchMultiCandidateScoring:
         assert call_count["n"] == 1
 
 
+class TestConfigurableMaxBooks:
+    """Tests for settings-backed kiwix_max_books default."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._orig_max_books = settings.kiwix_max_books
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.kiwix_max_books = self._orig_max_books
+
+    def _books(self, n):
+        return [
+            {"name": f"book_{i}", "title": f"Book {i}", "summary": ""}
+            for i in range(n)
+        ]
+
+    def test_pick_books_uses_settings_default(self):
+        from app.sources.kiwix import _pick_books_with_llm
+        from app.config import settings
+        from unittest.mock import patch, MagicMock
+        settings.kiwix_max_books = 1
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.is_configured", return_value=False):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _pick_books_with_llm("test", self._books(5))
+        assert len(result) <= 1
+
+    def test_pick_books_respects_higher_configured_max(self):
+        from app.sources.kiwix import _pick_books_with_llm
+        from app.config import settings
+        from unittest.mock import patch, MagicMock
+        settings.kiwix_max_books = 3
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="book_0, book_1, book_2, book_3"):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _pick_books_with_llm("test", self._books(5))
+        assert len(result) == 3
+
+    def test_explicit_max_books_overrides_settings(self):
+        from app.sources.kiwix import _pick_books_with_llm
+        from app.config import settings
+        from unittest.mock import patch, MagicMock
+        settings.kiwix_max_books = 5
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="book_0, book_1, book_2, book_3, book_4"):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _pick_books_with_llm("test", self._books(5), max_books=2)
+        assert len(result) == 2
+
+    def test_search_passes_no_explicit_max_books(self):
+        """search() should let _pick_books_with_llm fall through to the
+        settings default rather than hardcoding max_books=2 at the call site."""
+        from app.sources import kiwix
+        from unittest.mock import patch
+
+        captured_kwargs = {}
+
+        def fake_pick_books(query, books, **kwargs):
+            captured_kwargs.update(kwargs)
+            return ["wikipedia_en_all_maxi_2026-02"]
+
+        with patch.object(kiwix, "get_books", return_value=[{"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""}]), \
+             patch.object(kiwix, "_pick_books_with_llm", side_effect=fake_pick_books), \
+             patch.object(kiwix, "_search_book", return_value=[]):
+            kiwix.search("what is nitrogen")
+
+        assert "max_books" not in captured_kwargs
+
+
+class TestFuseMultiBookResults:
+    """Tests for _fuse_multi_book_results() — merging best result per book."""
+
+    def test_merges_multiple_books(self):
+        from app.sources.kiwix import _fuse_multi_book_results
+        from unittest.mock import patch
+        relevant = [
+            ("python.org_en_all", {"title": "GPIO Module", "url": "http://kiwix/python/gpio", "book": "python.org_en_all"}, 30),
+            ("raspberrypi.stackexchange.com_en_all", {"title": "GPIO pinout", "url": "http://kiwix/rpi/gpio", "book": "raspberrypi.stackexchange.com_en_all"}, 28),
+        ]
+        with patch("app.sources.kiwix._fetch_article", side_effect=["Python GPIO docs content.", "Raspberry Pi GPIO pinout content."]):
+            result = _fuse_multi_book_results(relevant)
+        assert "GPIO Module" in result
+        assert "GPIO pinout" in result
+        assert "PYTHON.ORG_EN_ALL" in result
+        assert "RASPBERRYPI.STACKEXCHANGE.COM_EN_ALL" in result
+
+    def test_sorts_by_score_descending(self):
+        from app.sources.kiwix import _fuse_multi_book_results
+        from unittest.mock import patch
+        relevant = [
+            ("book_low", {"title": "Lower Result", "url": "http://kiwix/low", "book": "book_low"}, 20),
+            ("book_high", {"title": "Higher Result", "url": "http://kiwix/high", "book": "book_high"}, 35),
+        ]
+        with patch("app.sources.kiwix._fetch_article", side_effect=["Lower content.", "Higher content."]):
+            result = _fuse_multi_book_results(relevant)
+        # Higher-scored book should appear first
+        assert result.index("Higher Result") < result.index("Lower Result")
+
+    def test_skips_books_with_failed_fetch(self):
+        from app.sources.kiwix import _fuse_multi_book_results
+        from unittest.mock import patch
+        relevant = [
+            ("book_a", {"title": "Result A", "url": "http://kiwix/a", "book": "book_a"}, 30),
+            ("book_b", {"title": "Result B", "url": "http://kiwix/b", "book": "book_b"}, 28),
+        ]
+        with patch("app.sources.kiwix._fetch_article", side_effect=["Content A.", ""]):
+            result = _fuse_multi_book_results(relevant)
+        assert "Result A" in result
+        assert "Result B" not in result
+
+    def test_returns_plain_format_when_only_one_fetch_succeeds(self):
+        from app.sources.kiwix import _fuse_multi_book_results
+        from unittest.mock import patch
+        relevant = [
+            ("book_a", {"title": "Result A", "url": "http://kiwix/a", "book": "book_a"}, 30),
+            ("book_b", {"title": "Result B", "url": "http://kiwix/b", "book": "book_b"}, 28),
+        ]
+        with patch("app.sources.kiwix._fetch_article", side_effect=["Content A.", ""]):
+            result = _fuse_multi_book_results(relevant)
+        # Single surviving section should not have a [BOOK] header since fusion didn't really happen
+        assert "[BOOK_A]" not in result
+        assert "Result A" in result
+
+    def test_returns_error_when_all_fetches_fail(self):
+        from app.sources.kiwix import _fuse_multi_book_results
+        from unittest.mock import patch
+        relevant = [
+            ("book_a", {"title": "Result A", "url": "http://kiwix/a", "book": "book_a"}, 30),
+        ]
+        with patch("app.sources.kiwix._fetch_article", return_value=""):
+            result = _fuse_multi_book_results(relevant)
+        assert "could not fetch" in result.lower()
+
+    def test_truncates_long_articles(self):
+        from app.sources.kiwix import _fuse_multi_book_results
+        from app.config import settings
+        from unittest.mock import patch
+        original_max = settings.fusion_max_chars_per_source
+        settings.fusion_max_chars_per_source = 100
+        relevant = [
+            ("book_a", {"title": "Result A", "url": "http://kiwix/a", "book": "book_a"}, 30),
+            ("book_b", {"title": "Result B", "url": "http://kiwix/b", "book": "book_b"}, 28),
+        ]
+        with patch("app.sources.kiwix._fetch_article", side_effect=["x" * 1000, "y" * 1000]):
+            result = _fuse_multi_book_results(relevant)
+        settings.fusion_max_chars_per_source = original_max
+        # Each section should be truncated, not the full 1000 chars
+        assert result.count("x") < 1000
+
+
+class TestSearchMultiBookFusionIntegration:
+    """Integration tests confirming search() triggers multi-book fusion
+    only when multiple books have genuinely competitive relevance scores."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._orig_url = settings.llm_url
+        self._orig_model = settings.llm_model
+        settings.llm_url = "http://ollama:11434"
+        settings.llm_model = "qwen3:8b"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.llm_url = self._orig_url
+        settings.llm_model = self._orig_model
+
+    def test_fuses_when_multiple_books_competitive(self):
+        from app.sources import kiwix
+        from unittest.mock import patch
+
+        def fake_search_book(term, book, limit=None):
+            if book == "python.org_en_all":
+                return [{"title": "Python GPIO", "excerpt": "gpio python raspberry pi", "url": "http://kiwix/py", "book": book}]
+            elif book == "raspberrypi.stackexchange.com_en_all":
+                return [{"title": "GPIO pinout", "excerpt": "gpio raspberry pi python", "url": "http://kiwix/rpi", "book": book}]
+            return []
+
+        with patch.object(kiwix, "get_books", return_value=[
+                {"name": "python.org_en_all", "title": "P", "summary": ""},
+                {"name": "raspberrypi.stackexchange.com_en_all", "title": "R", "summary": ""},
+            ]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["python.org_en_all", "raspberrypi.stackexchange.com_en_all"]), \
+             patch.object(kiwix, "_search_book", side_effect=fake_search_book), \
+             patch.object(kiwix, "_fetch_article", side_effect=["Python content.", "RPi content."]):
+            result = kiwix.search("python raspberry pi gpio not working")
+
+        assert "Python GPIO" in result
+        assert "GPIO pinout" in result
+
+    def test_does_not_fuse_when_second_book_irrelevant(self):
+        from app.sources import kiwix
+        from unittest.mock import patch
+
+        def fake_search_book(term, book, limit=None):
+            if book == "wikipedia_en_all_maxi_2026-02":
+                return [{"title": "Nitrogen", "excerpt": "nitrogen is a chemical element nitrogen nitrogen", "url": "http://kiwix/n2", "book": book}]
+            elif book == "unrelated_book":
+                return [{"title": "Unrelated Page", "excerpt": "", "url": "http://kiwix/u", "book": book}]
+            return []
+
+        with patch.object(kiwix, "get_books", return_value=[
+                {"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""},
+                {"name": "unrelated_book", "title": "U", "summary": ""},
+            ]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["wikipedia_en_all_maxi_2026-02", "unrelated_book"]), \
+             patch.object(kiwix, "_search_book", side_effect=fake_search_book), \
+             patch.object(kiwix, "_fetch_article", return_value="Nitrogen content."):
+            result = kiwix.search("what is nitrogen")
+
+        # Should return single best result, not fuse in the irrelevant book
+        assert "Nitrogen" in result
+        assert "[UNRELATED_BOOK]" not in result
+
+    def test_single_book_never_triggers_fusion_path(self):
+        from app.sources import kiwix
+        from unittest.mock import patch, MagicMock
+
+        with patch.object(kiwix, "get_books", return_value=[{"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""}]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["wikipedia_en_all_maxi_2026-02"]), \
+             patch.object(kiwix, "_search_book", return_value=[{"title": "Nitrogen", "excerpt": "test", "url": "http://kiwix/n2", "book": "wikipedia_en_all_maxi_2026-02"}]), \
+             patch.object(kiwix, "_fuse_multi_book_results") as mock_fuse, \
+             patch.object(kiwix, "_fetch_article", return_value="content"):
+            kiwix.search("what is nitrogen")
+
+        assert not mock_fuse.called
+
+
 class TestSearchBook:
     """Tests for _search_book() HTML scraping of Kiwix search results."""
 

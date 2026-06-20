@@ -34,6 +34,7 @@ class TestDefaultValues:
             "FORECAST_TEMP_CHANGE_THRESHOLD", "BATTERY_LOW_THRESHOLD_PCT",
             "FUSION_MAX_SOURCES", "FUSION_MAX_CHARS_PER_SOURCE",
             "FUSION_TIMEOUT_SECONDS", "CACHE_MAX_SIZE", "KIWIX_SEARCH_LIMIT",
+            "KIWIX_MAX_BOOKS",
         ]
         self._saved_env = {}
         for key in self._env_keys:
@@ -153,6 +154,10 @@ class TestDefaultValues:
     def test_kiwix_search_limit_default(self):
         s = self._bare_settings()
         assert s.kiwix_search_limit == 15
+
+    def test_kiwix_max_books_default(self):
+        s = self._bare_settings()
+        assert s.kiwix_max_books == 2
 
 
 class TestSettingsConstructibility:
