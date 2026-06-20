@@ -632,6 +632,193 @@ _NOSPLIT_PATTERNS = [
     "both", "either", "neither", "between",
 ]
 
+# Deliberately narrow conditional pattern — ONLY matches a leading "if X,
+# Y" / "should X, Y" / "in case X, Y" structure with an explicit comma.
+#
+# "if" is genuinely ambiguous in English: it has both a conditional sense
+# ("if it's raining, bring an umbrella") and a "whether" sense ("check if
+# the lights are on" = "check whether the lights are on"). The whether
+# sense never appears at the very start of a sentence followed by a
+# comma — it's always embedded after a verb like "check"/"see"/"tell me"/
+# "let me know". Restricting to the leading-comma form sidesteps that
+# ambiguity entirely rather than trying to disambiguate verb context,
+# which runs into genuinely unresolvable cases ("let me know if X" could
+# mean either "tell me the current status" or "notify me if it changes" —
+# even a human reader can't always tell without more context).
+#
+# Mid-sentence and trailing "if" ("remind me to bring an umbrella if it's
+# raining") are NOT matched here — deliberately out of scope for now,
+# since reliably distinguishing those from "whether" usage would require
+# real grammatical parsing, not pattern matching, and the value of
+# guessing wrong (misframing a search result) outweighs catching the
+# easier, narrower, completely unambiguous leading-comma case correctly.
+_CONDITIONAL_LEAD_PATTERN = re.compile(
+    r"^(if|should|in case)\s+(.+?),\s*(.+)$", re.IGNORECASE
+)
+
+
+def detect_conditional(query: str) -> tuple[str, str, str] | None:
+    """
+    Detect a leading "if X, Y" / "should X, Y" / "in case X, Y" structure.
+
+    Returns (condition, consequence, remainder) if matched, else None.
+    The condition is the searchable part ("it's raining"); the
+    consequence is plain text describing what the person wants to
+    happen or know, which Mnemolis cannot act on (no reminder/trigger
+    capability exists) but can reference when framing the response
+    around the condition's actual answer. The remainder is any
+    additional, genuinely separate content that followed a conjunction
+    after the consequence — empty string if none.
+
+    Found via real usage: "if any services are down, let me know, and
+    also whats the weather" originally captured "let me know, and also
+    whats the weather" as a single consequence, silently swallowing a
+    completely unrelated second intent ("whats the weather") that should
+    have been decomposed and searched independently. The remainder is
+    now split off and returned separately so the caller can route it as
+    its own real intent rather than either losing it entirely or letting
+    it pollute the conditional's consequence text.
+    """
+    m = _CONDITIONAL_LEAD_PATTERN.match(query.strip())
+    if not m:
+        return None
+    _, condition, consequence = m.groups()
+    condition = condition.strip()
+    consequence = consequence.strip()
+
+    consequence_lower = consequence.lower()
+    cut_points = [
+        consequence_lower.find(conj) for conj in _CONJUNCTIONS
+        if conj in consequence_lower
+    ]
+    cut_points = [p for p in cut_points if p != -1]
+    remainder = ""
+    if cut_points:
+        cut = min(cut_points)
+        # Find which conjunction matched at this exact cut point, so we
+        # can strip it cleanly from the start of the remainder
+        for conj in _CONJUNCTIONS:
+            if consequence_lower[cut:cut + len(conj)] == conj:
+                remainder = consequence[cut + len(conj):].strip()
+                break
+        consequence = consequence[:cut].strip()
+
+    return condition, consequence, remainder
+
+
+# Only these sources have a structured, reliably-interpretable yes/no
+# signal in their output — HA's lock/door states and uptime's service
+# status are genuine binary enums (locked/unlocked, up/down), not
+# free-text that would require real semantic judgment to interpret.
+# Forecast is included ONLY for explicit precipitation, not subjective
+# conditions like "hot enough" (no universal threshold exists for that).
+# Kiwix, web, and news are deliberately excluded — their content is
+# open-ended free text with no structured signal to safely key off of,
+# and guessing wrong here would actively mislead rather than just be
+# unhelpful, which is worse than not attempting interpretation at all.
+_YES_NO_INTERPRETABLE_SOURCES = {"ha", "uptime", "forecast"}
+
+
+def _interpret_yes_no(condition: str, result: str, source: str) -> bool | None:
+    """
+    Attempt to determine whether `result` confirms or denies `condition`,
+    restricted to sources with a genuinely structured, reliable signal.
+    Returns True (condition holds), False (condition does not hold), or
+    None if no safe interpretation is possible — callers must fall back
+    to presenting the raw result without a yes/no claim when None.
+    """
+    if source not in _YES_NO_INTERPRETABLE_SOURCES:
+        return None
+
+    result_lower = result.lower()
+    condition_lower = condition.lower()
+
+    if source == "uptime":
+        if "down" in condition_lower or "not up" in condition_lower:
+            if "all" in result_lower and "up" in result_lower:
+                return False
+            if "down" in result_lower:
+                return True
+            return None
+        if "up" in condition_lower or "running" in condition_lower or "working" in condition_lower:
+            if "all" in result_lower and "up" in result_lower:
+                return True
+            if "down" in result_lower:
+                return False
+            return None
+        return None
+
+    if source == "ha":
+        if "unlocked" in condition_lower:
+            if "unlocked" in result_lower:
+                return True
+            if "locked" in result_lower:
+                return False
+            return None
+        if "locked" in condition_lower:
+            if "unlocked" in result_lower:
+                return False
+            if "locked" in result_lower:
+                return True
+            return None
+        return None
+
+    if source == "forecast":
+        # Only explicit precipitation — never attempt subjective
+        # conditions ("hot enough", "nice out") which have no universal
+        # threshold and would require a real guess, not a safe inference
+        if "rain" in condition_lower or "raining" in condition_lower:
+            if "rain" in result_lower or "storm" in result_lower or "shower" in result_lower:
+                return True
+            if "clear" in result_lower:
+                return False
+            return None
+        return None
+
+    return None
+
+
+def _frame_conditional_response(condition: str, consequence: str, condition_result: str, condition_source: str) -> str:
+    """
+    Compose the final response for a detected conditional query.
+
+    When a safe yes/no interpretation exists (structured sources only —
+    see _interpret_yes_no), state explicitly whether the consequence
+    applies, e.g. "It IS raining, so you may want to bring an umbrella."
+    Otherwise, present the real condition result plainly with a note
+    that this was a conditional question, since Mnemolis has no
+    reminder/trigger capability and guessing wrong on an open-ended
+    condition (encyclopedic facts, subjective thresholds) would actively
+    mislead rather than just be unhelpful.
+
+    Takes the actual source string returned by route_with_source()
+    directly, rather than guessing it from header text in the result —
+    a single, non-decomposed result has no [SOURCE] header at all
+    (headers are only added when merging multiple decomposed parts), so
+    text-based source guessing silently failed for the most common case.
+    """
+    verdict = _interpret_yes_no(condition, condition_result, condition_source)
+
+    if verdict is True:
+        return (
+            f"This was a conditional question: \"if {condition}, {consequence}.\"\n\n"
+            f"It is the case that {condition} — so you may want to: {consequence}\n\n"
+            f"{condition_result}"
+        )
+    if verdict is False:
+        return (
+            f"This was a conditional question: \"if {condition}, {consequence}.\"\n\n"
+            f"It is NOT the case that {condition} — so the suggested action ({consequence}) may not apply.\n\n"
+            f"{condition_result}"
+        )
+
+    # No safe interpretation available — present the real result plainly
+    return (
+        f"This was a conditional question: \"if {condition}, {consequence}.\" "
+        f"Here is what was found regarding the condition — you'll need to judge "
+        f"whether it applies:\n\n{condition_result}"
+    )
+
 
 def _is_proper_noun_pair_at(query: str, idx: int, conj_len: int) -> bool:
     """
@@ -790,30 +977,38 @@ def _decompose(query: str) -> list[str]:
             continue
 
         parts = []
-        remaining = q
-        remaining_lower = remaining.lower()
-        consumed = 0  # how much of the original query has been consumed so far
-        while conj in remaining_lower:
-            idx = remaining_lower.index(conj)
-            # Skip this specific occurrence if it's a bare proper-noun
-            # pair ("Iran and Israel") — don't split here, but keep
-            # scanning for the NEXT occurrence of this conjunction rather
-            # than aborting the whole split, since other occurrences in
-            # the same query may be genuinely independent intents
-            absolute_idx = consumed + idx
-            if _is_proper_noun_pair_at(q, absolute_idx, len(conj)):
-                remaining = remaining[idx + len(conj):]
-                remaining_lower = remaining.lower()
-                consumed += idx + len(conj)
+        # segment_start marks where the CURRENT accumulating part began;
+        # search_from marks where to resume looking for the next
+        # occurrence of this conjunction. These differ specifically when
+        # a proper-noun pair is skipped — found via real usage: the
+        # original version reset `remaining` (and therefore the next
+        # part's start) to right after EVERY occurrence, including
+        # skipped ones, which silently discarded real, meaningful text
+        # that came before a protected pair ("also whats happening with
+        # Iran and" was discarded entirely, just because "Iran and
+        # Israel" needed protecting — the text before the pair was real
+        # content from a genuinely separate intent, not part of the pair
+        # at all). Now, skipping a proper-noun-pair occurrence advances
+        # search_from (so we don't re-examine the same occurrence) but
+        # leaves segment_start untouched, so that text accumulates into
+        # the next real part instead of vanishing.
+        segment_start = 0
+        search_from = 0
+        while True:
+            idx = q_lower.find(conj, search_from)
+            if idx == -1:
+                break
+            if _is_proper_noun_pair_at(q, idx, len(conj)):
+                search_from = idx + len(conj)
                 continue
-            part = remaining[:idx].strip()
+            part = q[segment_start:idx].strip()
             if part:
                 parts.append(part)
-            remaining = remaining[idx + len(conj):]
-            remaining_lower = remaining.lower()
-            consumed += idx + len(conj)
-        if remaining.strip():
-            parts.append(remaining.strip())
+            segment_start = idx + len(conj)
+            search_from = segment_start
+        remaining = q[segment_start:].strip()
+        if remaining:
+            parts.append(remaining)
 
         meaningful = _filter_meaningful(parts)
         if len(meaningful) >= 2 and (best_split is None or len(meaningful) > len(best_split)):
@@ -900,7 +1095,71 @@ def route_with_source(query: str, source: str = "auto", fusion_sources: list[str
     source_used field still said 'kiwix' because main.py independently
     re-derived the intended source before calling route(), with no way
     to learn that an internal fallback had actually occurred.
+
+    Conditional detection (both at the top level and re-checked against
+    each decomposed sub-query) recurses into this function by passing the
+    already-extracted CONDITION text, never the original "if X, Y" string
+    — so the recursive call's input essentially never re-matches the
+    leading "if/should/in case" pattern again. This is naturally
+    self-limiting without needing an explicit recursion-depth counter.
+    An earlier version used a manual _depth parameter for this, but that
+    introduced a real bug: the depth incremented before the conditional
+    was actually consumed, so a sub-query's recursive call (still
+    containing the full "if X, Y" text) had its OWN necessary
+    conditional re-detection blocked by the very counter meant to guard
+    against runaway recursion that was never actually possible.
     """
+    # Conditional detection — only for auto routing, checked before
+    # decomposition since "if X, Y" is structurally a single statement
+    # with a condition and a consequence, not a flat list of independent
+    # intents the way "X and Y" is. Only the condition is searched;
+    # Mnemolis has no reminder/trigger capability to act on the
+    # consequence, but the response is framed around the condition's
+    # actual real answer rather than presenting it as an unconditional fact.
+    if source == "auto":
+        conditional = detect_conditional(query)
+        if conditional:
+            condition, consequence, remainder = conditional
+            _LOGGER.info(
+                "Detected conditional query — condition=%r consequence=%r remainder=%r",
+                condition[:50], consequence[:50], remainder[:50]
+            )
+            condition_result, condition_source = route_with_source(condition, "auto")
+            framed = _frame_conditional_response(condition, consequence, condition_result, condition_source)
+
+            # A real, separate intent followed the conditional statement
+            # ("...let me know, and also whats the weather") — search it
+            # independently and merge it in, rather than either losing it
+            # entirely or letting it pollute the conditional's consequence.
+            #
+            # If the remainder itself decomposes into multiple distinct
+            # sources, route_with_source() already returns "fusion" as
+            # its reported source for an already-self-headered result
+            # (each contributing source has its own [SOURCE — DESC]
+            # header baked in). Wrapping that in ANOTHER header using the
+            # literal string "fusion" produces the same nonsensical
+            # "[FUSION — FUSION]" double-header bug found and fixed
+            # earlier this session in the decomposition loop — this is
+            # the same root cause showing up at a different call site
+            # that needed the identical fix: only wrap genuinely
+            # single-source results, pass fusion results through as-is.
+            if remainder:
+                remainder_result, remainder_source = route_with_source(remainder, "auto")
+                if not _looks_empty(remainder_result):
+                    overall_source = "fusion" if remainder_source != condition_source else condition_source
+                    remainder_section = (
+                        remainder_result if remainder_source == "fusion"
+                        else f"{fusion._format_header(remainder_source)}\n{remainder_result}"
+                    )
+                    condition_section = (
+                        framed if condition_source == "fusion"
+                        else f"{fusion._format_header(condition_source)}\n{framed}"
+                    )
+                    merged = f"{condition_section}\n\n---\n\n{remainder_section}"
+                    return merged, overall_source
+
+            return framed, condition_source
+
     # Query decomposition — only for auto routing
     if source == "auto":
         sub_queries = _decompose(query)
@@ -908,6 +1167,51 @@ def route_with_source(query: str, source: str = "auto", fusion_sources: list[str
             _LOGGER.info("Routing %d decomposed sub-queries for: '%s'", len(sub_queries), query[:50])
             parts = []  # list of (source, result) tuples
             for sub_q in sub_queries:
+                # Each decomposed sub-query may itself contain a leading
+                # "if X, Y" structure that the top-level conditional check
+                # never sees — detect_conditional() only runs once, against
+                # the FULL original query, before decomposition. A query
+                # like "what is the weather and if the back door is
+                # unlocked, let me know" doesn't start with "if" so the
+                # top-level check correctly returns None, but the second
+                # decomposed sub-query ("if the back door is unlocked, let
+                # me know") absolutely does match and was never being
+                # re-checked at all.
+                #
+                # Mirrors the top-level handling exactly: extract the
+                # condition and search ONLY that (via a recursive call on
+                # the condition text, not the original "if X, Y" string),
+                # then frame the response. An earlier version of this fix
+                # recursed on the original sub_q string with a manual
+                # _depth counter meant to stop infinite recursion — but
+                # that counter blocked the recursive call's OWN necessary
+                # re-detection of the very same conditional it was meant
+                # to handle, since the depth incremented before the
+                # conditional was actually consumed. Passing the
+                # already-extracted condition (not the still-"if"-prefixed
+                # sub_q) sidesteps the whole problem: the condition text
+                # essentially never re-matches the leading "if/should/in
+                # case" pattern, so this naturally terminates without
+                # needing any artificial depth limit at all.
+                sub_conditional = detect_conditional(sub_q)
+                if sub_conditional:
+                    sub_condition, sub_consequence, sub_remainder = sub_conditional
+                    sub_condition_result, sub_source = route_with_source(sub_condition, "auto")
+                    sub_result = _frame_conditional_response(
+                        sub_condition, sub_consequence, sub_condition_result, sub_source
+                    )
+                    if not _looks_empty(sub_condition_result):
+                        parts.append((sub_source, sub_result))
+                    # A real, separate intent followed the conditional
+                    # within this one decomposed sub-query — search it
+                    # independently too, rather than losing it or letting
+                    # it pollute the consequence text
+                    if sub_remainder:
+                        remainder_result, remainder_source = route_with_source(sub_remainder, "auto")
+                        if not _looks_empty(remainder_result):
+                            parts.append((remainder_source, remainder_result))
+                    continue
+
                 intent = detect_intent(sub_q)
                 if isinstance(intent, list):
                     sub_source = "fusion"

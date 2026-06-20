@@ -670,6 +670,38 @@ class TestDecompose:
         assert any("door" in p.lower() for p in parts)
         assert any("numpy" in p.lower() for p in parts)
 
+    def test_proper_noun_pair_skip_does_not_discard_preceding_content(self):
+        """Regression test — a deeper bug found via real usage in a
+        megaquery test, AFTER the previous proper-noun-pair fixes had
+        already shipped. The single-conjunction-type split loop's skip
+        logic, when encountering a protected pair ("Iran and Israel"),
+        reset the search position to just past the skipped occurrence —
+        which also reset where the NEXT kept part would start FROM,
+        silently discarding all the real text that came before the pair
+        ("also whats happening with Iran and" got reduced to just
+        "Israel, plus...", losing "also whats happening with Iran and"
+        entirely). The fix tracks segment_start (where the current
+        accumulating part begins) separately from search_from (where to
+        resume looking for the next conjunction), so skipping a
+        protected pair advances the search position without discarding
+        any of the real content that precedes it."""
+        query = (
+            "also whats happening with Iran and Israel, plus I keep "
+            "getting a weird numpy import error on my raspberry pi, and "
+            "if any services are down let me know too, and one more "
+            "thing whats the deal with sunspots"
+        )
+        parts = self.decompose(query)
+        assert len(parts) == 3
+        # The proper-noun pair AND the real content before it must both
+        # survive in the same part — neither lost, neither split apart
+        first_part = parts[0].lower()
+        assert "iran and israel" in first_part
+        assert "whats happening with" in first_part
+        assert any("numpy" in p.lower() for p in parts)
+        assert any("services are down" in p.lower() for p in parts)
+        assert any("sunspots" in p.lower() for p in parts)
+
     def test_explicit_source_not_decomposed(self):
         from app.router import route, clear_cache
         import app.router as router_module
@@ -1004,3 +1036,445 @@ class TestRouteWithSource:
         finally:
             router_module.SOURCE_MAP.update(original_map)
         assert source == "fusion"
+
+
+class TestConditionalDetection:
+    """Tests for detect_conditional() — deliberately narrow leading
+    "if X, Y" / "should X, Y" / "in case X, Y" pattern detection.
+
+    Scope is intentionally restricted to the leading-comma form only.
+    "if" is genuinely ambiguous in English — it has both a conditional
+    sense ("if it's raining, bring an umbrella") and a "whether" sense
+    ("check if the lights are on" = "check whether the lights are on").
+    The whether sense never appears at the very start of a sentence
+    followed by a comma, so restricting to that form sidesteps the
+    ambiguity entirely rather than guessing at verb-based disambiguation,
+    which runs into genuinely unresolvable cases ("let me know if X"
+    could mean either "tell me the status" or "notify me if it changes").
+    """
+
+    def detect(self, query):
+        from app.router import detect_conditional
+        return detect_conditional(query)
+
+    def test_leading_if_with_comma(self):
+        result = self.detect("if it's raining, remind me to bring an umbrella")
+        assert result == ("it's raining", "remind me to bring an umbrella", "")
+
+    def test_leading_should_with_comma(self):
+        result = self.detect("should it rain this weekend, I'll need to reschedule")
+        assert result == ("it rain this weekend", "I'll need to reschedule", "")
+
+    def test_leading_in_case_with_comma(self):
+        result = self.detect("in case my services are down, I want to know right away")
+        assert result == ("my services are down", "I want to know right away", "")
+
+    def test_consequence_with_trailing_conjunction_splits_off_remainder(self):
+        """Regression test — the real bug found via real usage. The
+        consequence group's regex is greedy and originally captured
+        everything to the end of the string, silently swallowing a
+        completely unrelated second intent that happened to follow a
+        conjunction after the consequence. "if any services are down,
+        let me know, and also whats the weather" used to extract
+        consequence="let me know, and also whats the weather" — losing
+        track of "whats the weather" as a real, separate, searchable
+        intent entirely. The remainder is now split off and returned
+        separately so the caller can route it independently."""
+        result = self.detect("if any services are down, let me know, and also whats the weather")
+        condition, consequence, remainder = result
+        assert condition == "any services are down"
+        assert "weather" not in consequence.lower()
+        assert "weather" in remainder.lower()
+
+    def test_plain_query_no_match(self):
+        assert self.detect("what is the weather today") is None
+
+    def test_embedded_if_does_not_match_whether_usage(self):
+        """'check if X' uses 'if' in the 'whether' sense — must NOT be
+        treated as a conditional, since 'if' doesn't lead the sentence."""
+        assert self.detect("check if the lights are on") is None
+
+    def test_trailing_if_does_not_match(self):
+        """Condition-after-consequence phrasing is deliberately out of
+        scope — distinguishing it reliably from 'whether' usage would
+        require real grammatical parsing, not pattern matching."""
+        assert self.detect("remind me to bring an umbrella if it's raining") is None
+
+    def test_let_me_know_if_does_not_match(self):
+        """Deliberately excluded — genuinely ambiguous even to a human
+        reader (could mean 'tell me the current status' or 'notify me
+        if it changes'), not safely interpretable either way."""
+        assert self.detect("let me know if the back door is unlocked") is None
+
+    def test_mid_sentence_and_if_does_not_match(self):
+        """Mid-sentence 'if' after a conjunction is out of scope for the
+        same reason — only the unambiguous leading-comma form is handled."""
+        assert self.detect("check the weather and if it's raining remind me to bring an umbrella") is None
+
+
+class TestInterpretYesNo:
+    """Tests for _interpret_yes_no() — restricted to structured,
+    genuinely binary sources only (ha, uptime, forecast-precipitation).
+    Kiwix/web/news are deliberately excluded — open-ended free text has
+    no structured signal to safely key off of, and guessing wrong would
+    actively mislead rather than just be unhelpful."""
+
+    def interpret(self, condition, result, source):
+        from app.router import _interpret_yes_no
+        return _interpret_yes_no(condition, result, source)
+
+    def test_ha_unlocked_condition_true(self):
+        assert self.interpret("the back door is unlocked", "Back Door: unlocked", "ha") is True
+
+    def test_ha_unlocked_condition_false(self):
+        assert self.interpret("the back door is unlocked", "Back Door: locked", "ha") is False
+
+    def test_ha_locked_condition_true(self):
+        assert self.interpret("the back door is locked", "Back Door: locked", "ha") is True
+
+    def test_uptime_down_condition_false_when_all_up(self):
+        assert self.interpret("my services are down", "All 15 monitored services are up.", "uptime") is False
+
+    def test_uptime_down_condition_true_when_down(self):
+        assert self.interpret("my services are down", "1 service is down: Ollama", "uptime") is True
+
+    def test_forecast_rain_condition_false_when_clear(self):
+        result = self.interpret("it's raining", "Today will be clear with a high of 94.", "forecast")
+        assert result is False
+
+    def test_forecast_rain_condition_true_when_rainy(self):
+        result = self.interpret("it's raining", "Today will be rainy with thunderstorms.", "forecast")
+        assert result is True
+
+    def test_forecast_subjective_condition_not_interpreted(self):
+        """'hot enough' has no universal threshold — must NOT attempt
+        interpretation even though the source (forecast) is otherwise
+        in the interpretable set, since this specific condition has no
+        safe, structured signal to key off of."""
+        result = self.interpret("it's hot enough", "high of 94, low of 69.", "forecast")
+        assert result is None
+
+    def test_kiwix_source_never_interpreted(self):
+        """Open-ended encyclopedic content is never interpreted — no
+        structured yes/no signal exists in free-text article content."""
+        result = self.interpret("mercury is in retrograde", "# Mercury\nMercury most commonly refers to...", "kiwix")
+        assert result is None
+
+    def test_web_source_never_interpreted(self):
+        result = self.interpret("it's a good time to invest", "Some web search result text.", "web")
+        assert result is None
+
+
+class TestFrameConditionalResponse:
+    """Tests for _frame_conditional_response() — the actual response
+    composition for a detected conditional query."""
+
+    def frame(self, condition, consequence, result, source):
+        from app.router import _frame_conditional_response
+        return _frame_conditional_response(condition, consequence, result, source)
+
+    def test_true_verdict_states_condition_holds(self):
+        response = self.frame(
+            "it's raining", "remind me to bring an umbrella",
+            "Today will be rainy with thunderstorms.", "forecast"
+        )
+        assert "is the case" in response.lower()
+        assert "umbrella" in response.lower()
+
+    def test_false_verdict_states_condition_does_not_hold(self):
+        response = self.frame(
+            "it's raining", "remind me to bring an umbrella",
+            "Today will be clear with a high of 94.", "forecast"
+        )
+        assert "not the case" in response.lower()
+
+    def test_no_interpretation_presents_raw_result_honestly(self):
+        """When no safe interpretation exists, the response must still
+        include the real result and must NOT claim a definitive yes/no
+        it can't actually support."""
+        response = self.frame(
+            "mercury is in retrograde", "I'll be careful with communication",
+            "# Mercury\nMercury most commonly refers to...", "kiwix"
+        )
+        assert "is the case" not in response.lower()
+        assert "not the case" not in response.lower()
+        assert "mercury most commonly refers to" in response.lower()
+
+    def test_original_real_result_always_preserved(self):
+        """Regardless of verdict, the actual underlying search result
+        must always be included in the final response — framing adds
+        context, it never replaces or hides the real data."""
+        real_result = "Back Door: unlocked"
+        response = self.frame("the back door is unlocked", "let me know", real_result, "ha")
+        assert real_result in response
+
+
+class TestConditionalIntegration:
+    """Integration tests confirming detect_conditional() and
+    _frame_conditional_response() are actually wired into
+    route_with_source(), not just correct in isolation."""
+
+    def test_conditional_query_only_searches_the_condition(self):
+        """The consequence ('remind me to bring an umbrella') must never
+        itself be sent to a source as a search query — only the
+        condition is searched, since Mnemolis has no reminder capability
+        to act on the consequence at all."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["forecast"] = lambda q: "Today will be clear with a high of 94."
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.detect_intent", return_value="forecast"):
+                result, source = route_with_source(
+                    "if it's raining, remind me to bring an umbrella", "auto"
+                )
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert source == "forecast"
+        assert "not the case" in result.lower()
+        assert "clear" in result.lower()
+
+    def test_remainder_after_conditional_is_searched_and_merged(self):
+        """Regression test — the real bug found via real usage. "if any
+        services are down, let me know, and also whats the weather" used
+        to swallow "whats the weather" into the conditional's consequence
+        text, never actually searching it. The trailing real intent must
+        now be searched independently and merged into the final response,
+        with overall source reported as 'fusion' since two distinct
+        sources contributed."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        def fake_detect_intent(q):
+            return "forecast" if "weather" in q.lower() else "uptime"
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["uptime"] = lambda q: "All 15 monitored services are up."
+        router_module.SOURCE_MAP["forecast"] = lambda q: "Today will be clear with a high of 94."
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.detect_intent", side_effect=fake_detect_intent):
+                result, source = route_with_source(
+                    "if any services are down, let me know, and also whats the weather",
+                    "auto"
+                )
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert source == "fusion"
+        assert "conditional question" in result.lower()
+        assert "not the case" in result.lower()
+        assert "all 15 monitored services are up" in result.lower()
+        assert "clear" in result.lower()
+
+    def test_remainder_decomposing_into_multiple_sources_has_no_double_header(self):
+        """Regression test — the real bug found via real usage,
+        immediately after the remainder-merging fix shipped. When the
+        remainder itself decomposes into multiple distinct sources
+        (e.g. "...also check the news, plus hows the humidity" decomposes
+        into news + ha), route_with_source() already returns "fusion" as
+        its reported source for an ALREADY-self-headered result. Wrapping
+        that in another header using the literal string "fusion" produced
+        the exact same nonsensical "[FUSION — FUSION]" double-header bug
+        found and fixed earlier this session in the decomposition loop —
+        this is the identical root cause appearing at the new
+        remainder-merging call site, which needed the same fix applied."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        def fake_detect_intent(q):
+            if "door" in q.lower():
+                return "ha"
+            if "news" in q.lower():
+                return "news"
+            if "humid" in q.lower():
+                return "ha"
+            return "forecast"
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["ha"] = lambda q: "Back Door: locked" if "door" in q.lower() else "Humidity: 45%"
+        router_module.SOURCE_MAP["news"] = lambda q: "Some news headline content."
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.detect_intent", side_effect=fake_detect_intent):
+                result, source = route_with_source(
+                    "if the back door is unlocked, let me know, and also check the news, plus hows the humidity",
+                    "auto"
+                )
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert "[FUSION" not in result
+        assert source == "fusion"
+        assert "conditional question" in result.lower()
+        assert "news headline content" in result.lower()
+        assert "humidity: 45%" in result.lower()
+
+    def test_non_conditional_query_unaffected(self):
+        """A normal, non-conditional query must behave exactly as before
+        — conditional detection must never interfere with the existing
+        decomposition/routing path for queries it doesn't match."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["forecast"] = lambda q: "Today will be clear."
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.detect_intent", return_value="forecast"):
+                result, source = route_with_source("what is the weather today", "auto")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert source == "forecast"
+        assert "conditional question" not in result.lower()
+
+    def test_conditional_only_applies_to_auto_source(self):
+        """Explicit source requests should skip conditional detection
+        entirely, the same way they already skip decomposition."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["forecast"] = lambda q: "Today will be clear."
+        try:
+            with patch("app.router._get_cached", return_value=None):
+                result, source = route_with_source(
+                    "if it's raining, remind me to bring an umbrella", "forecast"
+                )
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert source == "forecast"
+        assert "conditional question" not in result.lower()
+
+
+class TestRecursiveConditionalDetection:
+    """Tests for re-checking decomposed sub-queries for their own
+    embedded conditional structure — the real gap found while designing
+    recursive decomposition: detect_conditional() only ever ran once,
+    against the FULL original query, before decomposition. A query like
+    "what is the weather and if the back door is unlocked, let me know"
+    doesn't start with "if" so the top-level check correctly returns
+    None and the query proceeds to normal decomposition — but neither
+    resulting sub-query was ever re-checked for its own conditional
+    structure, even though "if the back door is unlocked, let me know"
+    (the second sub-query) clearly has one.
+
+    The first implementation of this fix recursed on the ORIGINAL
+    sub-query string ("if the back door is unlocked, let me know") with
+    a manual _depth counter meant to prevent runaway recursion. That
+    introduced a real, found-via-testing bug: the depth incremented
+    before the conditional was actually consumed, so the recursive
+    call's own necessary re-detection of the very same conditional was
+    blocked by the counter meant to guard against recursion that was
+    never actually possible in the first place. Fixed by extracting the
+    condition/consequence directly in the loop (mirroring exactly how
+    the top-level handler already works) and recursing on the
+    already-extracted CONDITION text only — which essentially never
+    re-matches the leading "if/should/in case" pattern, so this
+    terminates naturally without needing any depth parameter at all."""
+
+    def test_decomposed_subquery_with_embedded_conditional_is_framed(self):
+        """The real bug found via design research, now fixed. A query
+        that itself isn't conditional at the top level, but decomposes
+        into a sub-query that IS conditional, must have that sub-query
+        framed correctly — not just routed as a plain HA query that
+        discards the consequence and any conditional framing entirely."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        # Use a side_effect function rather than a single return_value —
+        # detect_intent() is called for BOTH the weather sub-query AND
+        # (via the recursive conditional check) the extracted condition
+        # text "the back door is unlocked". A blunt return_value="forecast"
+        # answers both calls identically, masking the real routing behavior
+        # this test is meant to verify — the same class of test-fixture
+        # mistake as _looks_empty("") earlier this session: the mock must
+        # actually distinguish between distinct inputs, not blindly
+        # return one fixed value regardless of what's being routed.
+        def fake_detect_intent(query):
+            if "door" in query.lower():
+                return "ha"
+            return "forecast"
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["forecast"] = lambda q: "Today will be clear with a high of 94."
+        router_module.SOURCE_MAP["ha"] = lambda q: "Back Door: locked"
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.detect_intent", side_effect=fake_detect_intent):
+                result, source = route_with_source(
+                    "what is the weather and if the back door is unlocked, let me know",
+                    "auto"
+                )
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert "conditional question" in result.lower()
+        assert "not the case" in result.lower()
+        assert "back door: locked" in result.lower()
+        assert "clear" in result.lower()
+
+    def test_subquery_recursion_passes_extracted_condition_not_original_text(self):
+        """Regression test for the real bug found via testing. The
+        recursive call inside the decomposition loop must pass the
+        ALREADY-EXTRACTED condition text to route_with_source(), never
+        the original still-'if'-prefixed sub-query string — passing the
+        original string caused the recursive call's own conditional
+        detection to need re-firing, which an earlier _depth-based
+        design incorrectly blocked. Verified here by confirming the
+        condition is searched as plain text ('the back door is
+        unlocked'), not as the literal conditional sentence."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        searched_queries = []
+
+        def fake_ha_handler(q):
+            searched_queries.append(q)
+            return "Back Door: locked"
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["forecast"] = lambda q: "Clear."
+        router_module.SOURCE_MAP["ha"] = fake_ha_handler
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.detect_intent", side_effect=lambda q: "ha" if "door" in q.lower() else "forecast"):
+                route_with_source(
+                    "what is the weather and if the back door is unlocked, let me know",
+                    "auto"
+                )
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        # The HA handler should have been called with the bare condition,
+        # never with the full "if X, Y" sentence still attached
+        assert "the back door is unlocked" in searched_queries
+        assert not any(q.lower().startswith("if ") for q in searched_queries)
+
+    def test_normal_decomposition_unaffected_by_recursive_check(self):
+        """A query with NO embedded conditional anywhere must decompose
+        and route exactly as before — the recursive check should add
+        zero overhead or behavior change for the common case."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["forecast"] = lambda q: "Clear."
+        router_module.SOURCE_MAP["uptime"] = lambda q: "All up."
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.detect_intent", side_effect=["forecast", "uptime"]):
+                result, source = route_with_source(
+                    "what is the weather and are services up", "auto"
+                )
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert "conditional question" not in result.lower()
+        assert "clear" in result.lower()
+        assert "all up" in result.lower()

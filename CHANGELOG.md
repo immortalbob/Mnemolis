@@ -4,6 +4,58 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.16.0]
+
+### Added — Conditional Query Detection (Final Capability-Expansion Roadmap Item)
+The fifth and final item on the original capability-expansion roadmap, re-scoped after research into prior art (multi-agent query decomposition, conditional tool-use patterns, if-then semantic parsing) found that two of the original three planned pieces weren't actually justified by real evidence — see below.
+
+**What shipped — two genuinely useful, narrowly-scoped pieces:**
+
+1. **`detect_conditional()`** — recognizes a deliberately narrow leading `"if X, Y"` / `"should X, Y"` / `"in case X, Y"` structure. Scope is intentionally restricted to this exact form: "if" is genuinely ambiguous in English (conditional sense vs. "whether" sense, as in "check if the lights are on"), and the "whether" sense never appears at the very start of a sentence followed by a comma — so restricting to the leading-comma form sidesteps the ambiguity entirely rather than guessing at verb-based disambiguation, which runs into genuinely unresolvable cases ("let me know if X" could mean either "tell me the status" or "notify me if it changes," even to a human reader).
+
+2. **Honest, scoped yes/no interpretation** — `_interpret_yes_no()` only attempts to determine whether a condition holds for sources with a genuinely structured, binary signal: HA lock/door states (locked/unlocked), uptime status (up/down), and forecast precipitation (rain/clear) specifically. Subjective conditions ("hot enough" — no universal threshold) and open-ended free-text sources (Kiwix, web, news) are deliberately never interpreted — the response presents the real result honestly without fabricating a verdict it can't actually support. Wrong is worse than uncertain.
+
+**Recursive re-detection** — decomposed sub-queries are re-checked for their own embedded conditional structure, since the top-level check only ever runs once against the original full query. "What is the weather and if the back door is unlocked, let me know" doesn't start with "if," so decomposition runs normally — but the resulting sub-query "if the back door is unlocked, let me know" absolutely is conditional, and now gets correctly framed rather than silently routed as a plain free-text HA query.
+
+### Fixed — Three Real Bugs Found During Implementation and Testing
+- **Recursion design bug** — the first implementation recursed on the original `"if X, Y"` sub-query string with a manual depth counter meant to prevent runaway recursion. The counter incremented *before* the conditional was actually consumed, blocking the recursive call's own necessary re-detection of the same conditional. Fixed by extracting the condition/consequence directly and recursing on the already-extracted condition text only, which naturally never re-matches the leading pattern — no depth counter needed at all.
+- **Greedy consequence capture** — "if any services are down, let me know, and also whats the weather" originally captured "let me know, and also whats the weather" as one undifferentiated consequence, silently losing track of "whats the weather" as a real, separate, searchable intent. `detect_conditional()` now returns a 3-tuple including the split-off remainder, which gets searched independently and merged into the response.
+- **`[FUSION — FUSION]` double-header bug, second occurrence** — the exact same root-cause bug found and fixed earlier this session in the decomposition loop reappeared at the new remainder-merging call site: wrapping an already-self-headered fusion result in another header using the literal string `"fusion"`. Same fix applied: pass fusion results through unwrapped, only header genuinely single-source results.
+
+### Fixed — Proper-Noun-Pair Guard, Fourth Bug Found
+A deliberately hard megaquery test surfaced a fourth distinct bug in the proper-noun-pair protection mechanism (after the unbounded-scope, trailing-filler, and global-vs-local bugs found and fixed in 3.15.0/3.15.1): the single-conjunction-type split loop's skip logic, when protecting a pair like "Iran and Israel," reset the search position to just past the skipped occurrence — which also reset where the *next kept part* would start from, silently discarding all real text that preceded the pair ("also whats happening with Iran and" vanished entirely, leaving only "Israel, plus..."). Fixed by tracking where the current accumulating segment begins separately from where to resume searching for the next conjunction, so skipping a protected pair advances the search without discarding any preceding content.
+
+### Research — Scope Correction
+Two pieces from the original three-piece plan were dropped after research and testing showed they weren't justified: (1) "pass sibling-clause context to disambiguation" — both apparent motivating cases (Mercury, an "obscure" GPIO phrasing) turned out to be test-construction flaws with no real disambiguating signal present anywhere in the query, not genuine context-loss bugs; (2) true action/branching logic — Mnemolis has no reminder/trigger capability to act on a conditional's consequence at all, so framing the response honestly around the condition's real answer is the right scope, not attempting to simulate actions that don't exist.
+
+### Verified
+Extensively tested against real production data across more than a dozen hand-constructed adversarial queries, including: simple leading conditionals against all three structured sources (ha/uptime/forecast), honest abstention on subjective and open-ended conditions, two independent conditionals in one sentence, a conditional remainder containing a proper-noun pair, a conditional remainder containing a colloquial phrase, and a five-mechanism megaquery combining conditional detection, recursive re-detection, the discourse-framing bypass pattern, proper-noun-pair protection, and real technical content preservation all in one sentence.
+
+One known, deliberate scope boundary was re-confirmed (not a new bug): conditional phrasing without an explicit comma separating the condition and consequence ("if the front door is unlocked tell me" with no comma) is correctly not detected, since distinguishing this reliably from "whether" usage would require real grammatical parsing rather than pattern matching.
+
+### Added (Tests)
+- 30+ new regression tests across `detect_conditional()`, `_interpret_yes_no()`, `_frame_conditional_response()`, full `route_with_source()` integration, recursive sub-query re-detection, remainder extraction and merging, and the fourth proper-noun-pair guard fix
+
+### Changed
+- Version bumped to 3.16.0
+
+**Total test count: 845**
+
+### Roadmap
+**All five original capability-expansion items are now complete:**
+1. ✅ Configurable thresholds
+2. ✅ Kiwix search term disambiguation
+3. ✅ Multi-book Kiwix fusion
+4. ✅ Confidence-aware fusion with expanded ingest
+5. ✅ Conditional query detection (re-scoped from "recursive/conditional decomposition")
+
+**Known limitations carried forward:**
+- Discourse-framing routing bypass ("everyone's obsessed with" phrasing routing past Kiwix to news/web) — confirmed content quality varies by topic, still tracked for future deliberate design
+- Conditional phrasing without an explicit separating comma is intentionally not detected — a real grammatical-parsing problem, not a pattern-matching one
+- A decomposed segment containing two genuinely unrelated topics merged together (e.g. a proper-noun pair adjacent to unrelated technical content) routes to a single source that may not serve both topics well — an expected, minor side effect of the proper-noun-pair content-preservation fix, not a regression
+
+---
+
 ## [3.15.1]
 
 ### Fixed — Proper-Noun-Pair Guard Didn't Actually Work

@@ -202,6 +202,61 @@ Queries mixing multiple different conjunction types in one sentence ("X, and als
 
 **Known limitation:** a sub-query's own source selection (separate from decomposition) can occasionally route past Kiwix entirely for encyclopedic topics phrased with current-discourse framing — "what's the deal with that whole mercury retrograde thing everyone keeps talking about" resolves to a news/web fusion rather than reaching Kiwix's disambiguation logic, since "everyone keeps talking about" reads as a request for current discourse rather than an encyclopedia lookup. Decomposition itself correctly isolates the sub-query; the source-selection layer's interpretation is defensible but imperfect for queries genuinely intended as encyclopedic.
 
+### Conditional Query Detection
+
+```text
+   "if X, Y" / "should X, Y" / "in case X, Y"
+                    │
+                    ▼
+   Leading-comma pattern match
+   (deliberately narrow — see below)
+                    │
+            ┌───────┴───────┐
+            ▼               ▼
+        No match          Match
+            │               │
+    Route normally    Extract condition, consequence,
+    (decomposition,        and any remainder text
+     conditional check          │
+     re-applied to        Search ONLY the condition
+     each sub-query)            │
+            │           Source a structured,
+            │           binary signal?
+            │         (ha / uptime / forecast-rain)
+            │               │
+            │       ┌───────┴───────┐
+            │       ▼               ▼
+            │      No              Yes
+            │       │               │
+            │  Present real    State explicit verdict
+            │  result, note    ("It IS/IS NOT the
+            │  it's conditional    case that X...")
+            │       │               │
+            │       └───────┬───────┘
+            │               ▼
+            │      Remainder present?
+            │       (real intent that
+            │        followed the
+            │        conditional)
+            │               │
+            │       ┌───────┴───────┐
+            │       ▼               ▼
+            │      No              Yes
+            │       │               │
+            │   Return         Search remainder
+            │   framed         independently,
+            │   response       merge into response
+            └───────┬───────────────┘
+                    ▼
+              Final Response
+```
+
+Detection is deliberately narrow — only the leading `"if X, Y"` form with an explicit comma is recognized. "If" is genuinely ambiguous in English: it has both a conditional sense ("if it's raining, bring an umbrella") and a "whether" sense ("check if the lights are on" = "check whether the lights are on"). The whether sense never appears at the start of a sentence followed by a comma, so restricting to that form sidesteps the ambiguity entirely rather than guessing at verb-based disambiguation — phrasing like "let me know if X" is genuinely ambiguous even to a human reader (could mean "tell me the current status" or "notify me if it changes") and is intentionally not detected. Mid-sentence and trailing `"if"` ("remind me to bring an umbrella if it's raining") are also out of scope for the same reason.
+
+Mnemolis has no reminder, alert, or trigger capability — it cannot act on a conditional's consequence. Instead, the response is framed honestly around the condition's actual real answer. For structured, genuinely binary sources (HA lock/door states, uptime up/down, forecast rain/clear), the response states an explicit verdict: "It is NOT the case that the back door is unlocked — so the suggested action (let me know) may not apply." For open-ended or subjective conditions (encyclopedic facts, "is it hot enough"), no verdict is fabricated — the real result is presented honestly with a note that judgment is needed, since guessing wrong would actively mislead rather than just be unhelpful.
+
+Decomposed sub-queries are re-checked for their own embedded conditional structure, since the top-level check only ever runs once against the original full query — "what is the weather and if the back door is unlocked, let me know" doesn't start with "if," so the second decomposed sub-query needs its own re-detection, which happens automatically.
+
 ### Kiwix Internal Flow
 
 ```text
@@ -397,6 +452,8 @@ Mnemolis uses a local LLM backend in five ways:
 **Auto-fusion escalation** — `source="auto"` now detects multi-topic queries at the keyword level too. If a query matches triggers from multiple sources (e.g. "weather" + "services up"), fusion is triggered automatically without an LLM call.
 
 Routing decisions (including disambiguation candidates and alternate phrasings) are cached for 1 hour so repeated queries skip the LLM call entirely.
+
+Query decomposition and conditional detection (see [Query Decomposition](#query-decomposition) and [Conditional Query Detection](#conditional-query-detection) above) are deliberately pure pattern matching with no LLM involvement at all — they need to run on every single query before any LLM call happens at all, including when no LLM is configured.
 
 **Supported backends** via `LLM_API_TYPE`:
 - `ollama` — Ollama native API (default)
@@ -705,7 +762,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-813 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing with accurate fallback-source reporting, query decomposition with stop-word-based content detection/colloquial phrase handling/mixed-conjunction-type splitting/proper-noun-pair protection, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation with corrected eligibility checks/multi-book fusion, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection including colloquial patterns, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning and contraction normalization, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, application logging configuration, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
+845 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing with accurate fallback-source reporting, query decomposition with stop-word-based content detection/colloquial phrase handling/mixed-conjunction-type splitting/proper-noun-pair protection, conditional query detection with honest scoped yes/no interpretation and recursive sub-query re-detection, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation with corrected eligibility checks/multi-book fusion, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection including colloquial patterns, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning and contraction normalization, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, application logging configuration, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 
@@ -723,7 +780,7 @@ Mnemolis/
 ├── searxng/
 │   └── settings.yml               # SearXNG config with JSON enabled
 ├── tests/
-│   ├── test_router.py              # intent detection, cache, decomposition, time-window resolution
+│   ├── test_router.py              # intent detection, cache, decomposition, conditional detection, time-window resolution
 │   ├── test_routing_cache.py       # routing cache logic and corruption handling
 │   ├── test_cache_persistence.py   # cache eviction, disk persistence, .corrupt recovery
 │   ├── test_config.py              # settings defaults and env isolation
@@ -750,7 +807,7 @@ Mnemolis/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog/areas endpoints + API key auth
     ├── snapshots.py                # Snapshot engine — scheduler, diff logic, change detection
     ├── mcp_server.py               # MCP SSE server
-    ├── router.py                   # Intent detection, source routing, decomposition, caching
+    ├── router.py                   # Intent detection, source routing, decomposition, conditional detection, caching
     ├── llm.py                      # LLM client — Ollama native and OpenAI-compatible
     ├── scoring.py                  # Shared relevance scoring for web/news — keyword overlap, generic-result penalty
     ├── query_expansion.py          # Alternate query phrasing for web search multi-query expansion
