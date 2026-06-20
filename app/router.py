@@ -640,6 +640,15 @@ def _decompose(query: str) -> list[str]:
 
     Avoids splitting on conjunctions that are part of a comparison or
     single-concept query.
+
+    Tries every conjunction type and keeps whichever produces the most
+    meaningful sub-queries — a query can contain multiple different
+    conjunction words (e.g. "X, and also Y, and Z"), and the first
+    conjunction encountered isn't necessarily the one that splits the
+    query into its real intents. A query with one " also " and two
+    " and "s should split on " and " (3 correct parts), not stop early
+    on " also " just because it happens to produce >=2 technically-valid
+    parts first.
     """
     q = query.strip()
     q_lower = q.lower()
@@ -648,41 +657,86 @@ def _decompose(query: str) -> list[str]:
     if any(p in q_lower for p in _NOSPLIT_PATTERNS):
         return [q]
 
-    # Try each conjunction in order of specificity (longest first)
-    for conj in sorted(_CONJUNCTIONS, key=len, reverse=True):
-        if conj in q_lower:
-            # Find all split points
-            parts = []
-            remaining = q
-            remaining_lower = remaining.lower()
-            while conj in remaining_lower:
-                idx = remaining_lower.index(conj)
-                part = remaining[:idx].strip()
-                if part:
-                    parts.append(part)
-                remaining = remaining[idx + len(conj):]
-                remaining_lower = remaining.lower()
-            if remaining.strip():
-                parts.append(remaining.strip())
+    _INTENT_WORDS = {
+        "what", "whats", "how", "is", "are", "check", "show",
+        "tell", "get", "any", "anything", "which", "status", "give", "do",
+        "happen", "happened", "happening", "going", "deal", "thing",
+        # Source trigger nouns — valid standalone sub-queries
+        # Both singular and plural forms included — "back door" and "back
+        # doors" should both register as a real intent, not just the plural
+        "weather", "forecast", "news", "headlines", "service", "services",
+        "uptime", "light", "lights", "door", "doors", "lock", "locks",
+        "battery", "batteries", "temperature", "humidity", "motion",
+        "sensor", "sensors", "indoor", "outdoor", "outside", "power",
+        "consumption", "security", "rain", "raining",
+        # Network/connectivity — colloquial troubleshooting language, even
+        # though no dedicated "wifi status" source exists, these signal a
+        # real standalone intent that shouldn't be silently dropped
+        "wifi", "router", "network", "internet", "connection", "online",
+        "offline", "reboot", "restart", "down",
+    }
 
-            # Only split if all parts are meaningful — must be >3 chars
-            # AND contain at least one verb/question word to be a standalone intent
-            _INTENT_WORDS = {
-                "what", "whats", "how", "is", "are", "check", "show",
-                "tell", "get", "any", "which", "status", "give", "do",
-                # Source trigger nouns — valid standalone sub-queries
-                "weather", "forecast", "news", "headlines", "services",
-                "uptime", "lights", "doors", "locks", "battery", "batteries",
-                "temperature", "humidity", "motion", "sensors", "indoor",
-                "outdoor", "outside", "power", "consumption", "security",
-            }
-            meaningful = [
-                p for p in parts
-                if len(p) > 3 and any(w in p.lower().split() for w in _INTENT_WORDS)
-            ]
-            if len(meaningful) >= 2:
-                _LOGGER.info("Decomposed query into %d parts: %s", len(meaningful), meaningful)
-                return meaningful
+    # Colloquial question phrases — "what's the deal with X", "what's up
+    # with X" are real standalone intents regardless of what specific noun
+    # follows, so a sub-query containing one of these anywhere should
+    # always count as meaningful even if the trailing noun isn't itself
+    # in _INTENT_WORDS. This generalizes better than only ever growing the
+    # noun list, since any new topic word would otherwise need its own entry.
+    # Matched as a substring anywhere in the clause, not just at position
+    # zero — "and remind me what's up with X" has the marker mid-clause,
+    # since the clause itself still carries the leftover conjunction/filler
+    # word ("and remind me...") from wherever the split actually occurred.
+    _COLLOQUIAL_PHRASES = [
+        "what's the deal with", "whats the deal with",
+        "what's up with", "whats up with",
+        "what's this about", "whats this about",
+        "what's the story with", "whats the story with",
+    ]
+
+    best_split: list[str] | None = None
+
+    # Try every conjunction, keep whichever split has the most meaningful parts
+    for conj in sorted(_CONJUNCTIONS, key=len, reverse=True):
+        if conj not in q_lower:
+            continue
+
+        parts = []
+        remaining = q
+        remaining_lower = remaining.lower()
+        while conj in remaining_lower:
+            idx = remaining_lower.index(conj)
+            part = remaining[:idx].strip()
+            if part:
+                parts.append(part)
+            remaining = remaining[idx + len(conj):]
+            remaining_lower = remaining.lower()
+        if remaining.strip():
+            parts.append(remaining.strip())
+
+        # Only split if all parts are meaningful — must be >3 chars
+        # AND (contain at least one verb/question word to be a standalone
+        # intent, OR contain a colloquial question phrase that signals a
+        # real intent regardless of which specific noun follows it).
+        #
+        # Uses "contains" rather than "starts with" — phrasing like "and
+        # remind me what's up with X" or "can you tell me what's the deal
+        # with X" has the colloquial marker mid-clause, not at position
+        # zero, since the clause itself still starts with the leftover
+        # conjunction/filler word ("and remind me...") from the split.
+        meaningful = [
+            p for p in parts
+            if len(p) > 3 and (
+                any(w in p.lower().split() for w in _INTENT_WORDS)
+                or any(s in p.lower() for s in _COLLOQUIAL_PHRASES)
+            )
+        ]
+
+        if len(meaningful) >= 2 and (best_split is None or len(meaningful) > len(best_split)):
+            best_split = meaningful
+
+    if best_split:
+        _LOGGER.info("Decomposed query into %d parts: %s", len(best_split), best_split)
+        return best_split
 
     return [q]
 
@@ -726,9 +780,22 @@ def route(query: str, source: str = "auto", fusion_sources: list[str] | None = N
                         current_source, current_result = source, result
                 merged.append((current_source, current_result))
 
-                return "\n\n---\n\n".join(
-                    f"{fusion._format_header(source)}\n{result}" for source, result in merged
-                )
+                # A sub-query whose own intent resolved to internal fusion
+                # already contains its own per-source [SOURCE — DESC]
+                # headers (added by fusion.search() itself). Wrapping that
+                # block in another header at this outer level produced a
+                # nonsensical "[FUSION — FUSION]" label, since "fusion"
+                # isn't a real source with its own entry in
+                # _HEADER_LABELS — it's just self-headered content passing
+                # through. Only wrap genuinely single-source results here.
+                sections = []
+                for source, result in merged:
+                    if source == "fusion":
+                        sections.append(result)
+                    else:
+                        sections.append(f"{fusion._format_header(source)}\n{result}")
+
+                return "\n\n---\n\n".join(sections)
             # All sub-queries returned empty — fall through to single query routing
 
     if source == "auto":

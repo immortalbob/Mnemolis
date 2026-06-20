@@ -223,6 +223,37 @@ class TestAutoFusionEscalation:
             route("what is the weather tomorrow", "auto")
         assert not mock_fusion.called
 
+    def test_decomposed_subquery_resolving_to_fusion_not_double_headered(self):
+        """Regression test — the real bug found via real usage. When a
+        decomposed sub-query's own intent resolves to a list (triggering
+        internal fusion across multiple sources), fusion.search() already
+        returns content with its own per-source [SOURCE — DESC] headers.
+        The outer decomposition loop used to wrap that already-headered
+        block in ANOTHER header using the literal string "fusion" as the
+        source name — which has no entry in _HEADER_LABELS, producing a
+        nonsensical "[FUSION — FUSION]" wrapper around content that was
+        already correctly labeled internally."""
+        from app.router import route, clear_cache
+        import app.router as router_module
+        from unittest.mock import patch
+
+        clear_cache()
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.detect_intent", side_effect=[
+                     ["uptime", "ha"],  # first sub-query resolves to a fusion list
+                     "kiwix",            # second sub-query resolves to a single source
+                 ]), \
+                 patch("app.sources.fusion.search", return_value="[UPTIME — DESC]\nAll up.\n\n---\n\n[HA — DESC]\nAll locked."), \
+                 patch.object(router_module, "SOURCE_MAP", {**router_module.SOURCE_MAP, "kiwix": lambda q: "Sunspots are dark regions."}):
+                result = route("is anything down and what are sunspots", "auto")
+        finally:
+            pass
+
+        assert "[FUSION" not in result
+        assert "[UPTIME — DESC]" in result
+        assert "[HA — DESC]" in result
+
 
 class TestResolveChangesHours:
     """Tests for _resolve_changes_hours time-window phrase parsing."""
@@ -392,6 +423,111 @@ class TestDecompose:
     def test_battery_and_security(self):
         parts = self.decompose("battery status and security status")
         assert len(parts) == 2
+
+    def test_picks_best_split_not_first_conjunction_found(self):
+        """Regression test — the real bug found via real usage. A query
+        with one ' also ' and two ' and 's used to stop at the first
+        conjunction type encountered (sorted by length, ' also ' before
+        ' and ') even though splitting on ' and ' produced a better
+        (3-part, all genuinely separate intents) result. The function
+        must try every conjunction and keep whichever split has the
+        most meaningful parts, not just the first one that qualifies."""
+        query = (
+            "My raspberry pi keeps locking up whenever I mess with the GPIO "
+            "pins in python, whats going on with that, and also did anything "
+            "weird happen with the back door today, and is it gonna rain or nah"
+        )
+        parts = self.decompose(query)
+        assert len(parts) == 3
+        # Confirm each real intent landed in its own part
+        assert any("gpio" in p.lower() for p in parts)
+        assert any("door" in p.lower() for p in parts)
+        assert any("rain" in p.lower() for p in parts)
+
+    def test_singular_door_recognized_as_intent(self):
+        """Regression test — _INTENT_WORDS previously only had 'doors'
+        (plural), so 'back door' (singular) failed the intent-word check
+        and got silently dropped as a 'meaningless' sub-query fragment."""
+        parts = self.decompose("what is the weather and did anything happen with the back door")
+        assert len(parts) == 2
+        assert any("door" in p.lower() for p in parts)
+
+    def test_singular_light_recognized_as_intent(self):
+        parts = self.decompose("what is the forecast and is the light on")
+        assert len(parts) == 2
+
+    def test_singular_lock_recognized_as_intent(self):
+        parts = self.decompose("what is the news and is the lock engaged")
+        assert len(parts) == 2
+
+    def test_singular_sensor_recognized_as_intent(self):
+        parts = self.decompose("check services and what does the sensor say")
+        assert len(parts) == 2
+
+    def test_anything_happened_phrasing_recognized(self):
+        """Casual 'did anything happen with X' phrasing should register
+        as a real intent on its own, not just formal 'what is X' phrasing."""
+        parts = self.decompose("what is the weather and did anything happen today")
+        assert len(parts) == 2
+
+    def test_wifi_router_compound_query_with_colloquial_starter(self):
+        """Regression test — the real bug found via real usage. This query
+        has three genuine intents (wifi/router troubleshooting, door sensor
+        status, sunspots) but used to collapse to a single unsplit block
+        because: (1) 'wifi'/'router'/'reboot' weren't in _INTENT_WORDS at
+        all, and (2) the colloquial starter 'what's the deal with X' wasn't
+        recognized as a real intent regardless of what specific noun
+        followed it — both gaps had to be fixed together."""
+        query = (
+            "the wifi has been acting flaky all morning and I think the "
+            "router might need a reboot, also can you check if the front "
+            "door sensor is online, and what's the deal with sunspots anyway"
+        )
+        parts = self.decompose(query)
+        assert len(parts) == 3
+        assert any("wifi" in p.lower() for p in parts)
+        assert any("door" in p.lower() for p in parts)
+        assert any("sunspot" in p.lower() for p in parts)
+
+    def test_wifi_alone_recognized_as_intent(self):
+        parts = self.decompose("is the wifi down and what is the weather")
+        assert len(parts) == 2
+
+    def test_router_alone_recognized_as_intent(self):
+        parts = self.decompose("does the router need a restart and is it raining")
+        assert len(parts) == 2
+
+    def test_colloquial_starter_with_unrecognized_noun(self):
+        """The colloquial starter alone should be sufficient to count as
+        meaningful, even with a topic word ('sunspots') that has no entry
+        in _INTENT_WORDS and never will, since new topics are unbounded."""
+        parts = self.decompose("check the weather and what's the deal with sunspots")
+        assert len(parts) == 2
+        assert any("sunspot" in p.lower() for p in parts)
+
+    def test_whats_up_with_starter_recognized(self):
+        parts = self.decompose("check services and what's up with the stock market")
+        assert len(parts) == 2
+
+    def test_colloquial_phrase_matches_mid_clause_not_just_at_start(self):
+        """Regression test — the real bug found via real usage. Colloquial
+        phrase detection originally only matched at the very start of a
+        sub-query (.startswith()), missing real phrasing like 'and remind
+        me what's up with X' where the marker phrase is buried mid-clause
+        after leftover conjunction/filler words from the split point.
+        Changed to a substring check so it matches anywhere in the clause."""
+        parts = self.decompose(
+            "check the weather and remind me what's up with that sourdough starter"
+        )
+        assert len(parts) == 2
+        assert any("sourdough" in p.lower() for p in parts)
+
+    def test_colloquial_phrase_with_can_you_tell_me_prefix(self):
+        parts = self.decompose(
+            "what is the forecast and can you tell me what's the deal with cryptocurrency"
+        )
+        assert len(parts) == 2
+        assert any("cryptocurrency" in p.lower() for p in parts)
 
     def test_explicit_source_not_decomposed(self):
         from app.router import route, clear_cache

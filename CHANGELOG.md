@@ -4,6 +4,41 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.12.0]
+
+### Fixed — Colloquial Query Handling (Found via Real Open WebUI Usage)
+A deliberate stress-testing session running genuinely messy, multi-clause, colloquial questions through Open WebUI surfaced seven real bugs across decomposition, disambiguation, and fusion header composition — all verified against real production output before and after each fix, not just unit tests in isolation.
+
+**Kiwix search term extraction (`app/sources/kiwix.py`):**
+- **Apostrophe/contraction bug** — "what's" survived stop-word filtering as a stray `"what'"` token (the trailing "s" got stripped by stemming, leaving a dangling apostrophe that never matched the "what" stop word), polluting search terms and preventing disambiguation from ever triggering on colloquial phrasing. Fixed by normalizing contractions before stop-word matching.
+- **Colloquial definitional patterns missing** — `_is_definitional_query()` only recognized formal phrasing ("what is," "tell me about"). Added "what's the deal with," "what's up with," "what's this about," "what's the story with."
+- **Expanded `_STOP_WORDS`** — added colloquial filler ("deal," "thing," "stuff," "keep," "hearing," "up," "going") that previously survived filtering and polluted single-word disambiguation candidates.
+- **`_build_search_terms()` extracted** as its own standalone, directly-testable function — was previously inline inside `search()`, which meant a prior version of the test suite tested its own separate re-implementation of the logic rather than the real code path, and could have passed while the actual implementation had this exact bug.
+
+**Query decomposition (`app/router.py`):**
+- **Conjunction-priority bug** — `_decompose()` stopped at the first conjunction type (by length) that produced ≥2 "meaningful" sub-queries, rather than trying every conjunction and keeping whichever split actually produced the most genuine intents. A query with one `" also "` and two `" and "`s would incorrectly split on `" also "` even when `" and "` produced a better 3-way split.
+- **Missing singular intent words** — `_INTENT_WORDS` only contained plural forms ("doors," "lights," "locks," "sensors"), so clauses using the singular ("the back door," "the light," "the sensor") failed the meaningful-intent check and were silently dropped from decomposition entirely.
+- **Missing network/connectivity vocabulary** — "wifi," "router," "network," "reboot," "restart," "online," "offline," "down" weren't recognized as real intent signals at all.
+- **Colloquial phrase detection added** — "what's the deal with X" and similar now count as a real standalone intent regardless of what specific noun follows, generalizing better than an ever-growing noun list.
+- **Colloquial phrase position bug** — the detection above only matched via `.startswith()`, missing real phrasing like "and remind me what's up with X" where the marker phrase is mid-clause, not at position zero (the clause still carries leftover conjunction/filler words from wherever the split occurred). Changed to a substring check.
+
+**Fusion header composition (`app/router.py`):**
+- **`[FUSION — FUSION]` double-header bug** — when a decomposed sub-query's own intent resolved to internal fusion across multiple sources, `fusion.search()` already returns content with its own per-source `[SOURCE — DESC]` headers. The outer decomposition loop wrapped that already-headered block in another header using the literal string `"fusion"` as the source name — which has no entry in `_HEADER_LABELS` — producing a nonsensical double-wrapped header around content that was already correctly labeled internally. Fixed by passing fusion sub-results through unwrapped at the outer level.
+
+### Documented — Known Limitation (Not Yet Fixed)
+A query containing multiple different conjunction types (e.g. one `" and "` and one `" plus "`) only achieves a single-conjunction-type split, since `_decompose()` picks one best conjunction type for the whole query rather than splitting on mixed conjunction types within the same decomposition pass. True mixed-conjunction splitting is a harder problem than anything fixed this release — tracked for future consideration, not chased prematurely.
+
+### Added
+- 14 new regression tests across `test_kiwix.py` and `test_router.py`, each verified against the real (not approximated) implementation before being added, covering every fix above plus the position-bug follow-up
+
+### Changed
+- `tests/test_kiwix.py` — `TestSearchTermCleaning` previously duplicated the search term extraction logic locally rather than testing the real `search()` code path; now calls the extracted `_build_search_terms()` directly, closing a gap where the test suite could pass while the real implementation was broken
+- Version bumped to 3.12.0
+
+**Total test count: 787**
+
+---
+
 ## [3.11.1]
 
 ### Added — Documentation Accuracy Pass + Fresh Benchmarks

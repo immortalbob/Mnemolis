@@ -151,12 +151,22 @@ Fusion queries all specified sources concurrently, filters empty or failed resul
    source="auto"
         │
         ▼
- Conjunction scan
- "and", "also", "plus", "as well as"
-        │
-        ▼
  Nosplit check
  "compare", "vs", "between", etc.
+        │
+        ▼
+ Try every conjunction type
+ "and", "also", "plus", "as well as"
+ (not just the first one found —
+  keep whichever split produces
+  the most genuine sub-intents)
+        │
+        ▼
+ Each candidate sub-query must contain
+ either a recognized intent word/noun
+ OR a colloquial phrase anywhere in it
+ ("what's the deal with X",
+  "what's up with X", etc.)
         │
    ┌────┴────┐
    ▼         ▼
@@ -174,6 +184,9 @@ intent    intents
    │             │
    │    Same source? → Merge headers
    │    Different?  → Keep separate
+   │    Resolved to internal fusion?
+   │      → Pass through unwrapped
+   │        (already self-headered)
    │             │
    └─────────────┤
                  ▼
@@ -181,7 +194,7 @@ intent    intents
      with [SOURCE — DESCRIPTION] attribution
 ```
 
-Decomposition only applies to `source="auto"`. Explicit source requests (`source="kiwix"`) skip decomposition entirely. Consecutive results from the same source are merged under a single header — "indoor air quality and are the doors locked" returns one `[HA]` block, not two.
+Decomposition only applies to `source="auto"`. Explicit source requests (`source="kiwix"`) skip decomposition entirely. Consecutive results from the same source are merged under a single header — "indoor air quality and are the doors locked" returns one `[HA]` block, not two. Casual, colloquial phrasing ("the wifi has been acting flaky and also can you check the front door, and what's the deal with sunspots") decomposes the same way formal phrasing does — this was a real gap found and fixed through testing against genuinely messy real-world queries, not synthetic ones.
 
 ### Kiwix Internal Flow
 
@@ -685,7 +698,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-764 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation/multi-book fusion, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
+787 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition with colloquial phrase handling, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation/multi-book fusion, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection including colloquial patterns, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning and contraction normalization, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 

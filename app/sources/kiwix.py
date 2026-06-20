@@ -273,6 +273,11 @@ _STOP_WORDS = {
     "you", "your", "he", "she", "it", "they", "them", "their",
     "tell", "explain", "describe", "define", "give", "show", "find",
     "get", "how", "why", "when", "where",
+    # Colloquial filler — "what's the deal with X", "what's up with X thing",
+    # "X thing I keep hearing about" all reduce to the bare topic word once
+    # these are stripped, same as more formal phrasing already handles
+    "deal", "thing", "things", "stuff", "keep", "hearing", "hear", "heard",
+    "up", "going",
 }
 
 
@@ -306,6 +311,13 @@ def _is_definitional_query(query: str) -> bool:
         "how does", "how do", "how did",
         "who is", "who was", "who were",
         "history of", "overview of", "introduction to",
+        # Colloquial equivalents — "what's the deal with X", "what's up with
+        # X", "X thing I keep hearing about" are all definitional asks
+        # phrased casually rather than formally
+        "what's the deal with", "whats the deal with",
+        "what's up with", "whats up with",
+        "what's this about", "whats this about",
+        "what's the story with", "whats the story with",
     ]
     return any(q.startswith(p) or p in q for p in definitional_patterns)
 
@@ -462,6 +474,29 @@ def _should_disambiguate(query: str, search_terms: str, selected_books: list[str
     return True
 
 
+def _build_search_terms(query: str) -> str:
+    """
+    Strip stop words and stem remaining words to build Kiwix search terms.
+
+    Stemming fixes disambiguation — "galaxies" → "galaxy", "batteries" →
+    "battery" — so Kiwix's search engine finds the right articles instead
+    of brand name matches. The original query is kept separately for
+    scoring so context is preserved there.
+
+    Contractions are normalized before stop-word matching — "what's"
+    otherwise survives as "what'" (a stray apostrophe left over after
+    stemming strips the trailing "s"), which never matches the "what"
+    stop word and pollutes the search term with leftover punctuation.
+    """
+    normalized_words = [
+        re.sub(r"['']\w*$", "", w) for w in query.lower().split()
+    ]
+    return " ".join(
+        _stem(w) for w in normalized_words
+        if w not in _STOP_WORDS and len(w) > 1
+    ) or query
+
+
 def search(query: str) -> str:
     books = get_books()
 
@@ -478,14 +513,7 @@ def search(query: str) -> str:
     if not selected_books:
         return "Could not determine which Kiwix book to search."
 
-    # Strip stop words and stem remaining words before sending to Kiwix
-    # Stemming fixes disambiguation — "galaxies" → "galaxy", "batteries" → "battery"
-    # so Kiwix's search engine finds the right articles instead of brand name matches
-    # Keep original query for scoring so context is preserved
-    search_terms = " ".join(
-        _stem(w) for w in query.lower().split()
-        if w not in _STOP_WORDS and len(w) > 1
-    ) or query
+    search_terms = _build_search_terms(query)
 
     # For short definitional queries resolved to Wikipedia where the search
     # term is a single ambiguous word, try multiple disambiguation candidates

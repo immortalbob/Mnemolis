@@ -43,6 +43,24 @@ class TestDefinitionalQuery:
     def test_specific_problem_not_definitional(self):
         assert self.detect("multiple resistors in series heat dissipation") is False
 
+    def test_whats_the_deal_with_is_definitional(self):
+        """Regression test — colloquial phrasing was previously not recognized
+        as definitional at all, causing disambiguation to never trigger for
+        casual questions like 'what's the deal with X'."""
+        assert self.detect("what's the deal with that Mercury thing") is True
+
+    def test_whats_the_deal_with_no_apostrophe_is_definitional(self):
+        assert self.detect("whats the deal with mercury") is True
+
+    def test_whats_up_with_is_definitional(self):
+        assert self.detect("what's up with quantum computing") is True
+
+    def test_whats_this_about_is_definitional(self):
+        assert self.detect("what's this about black holes") is True
+
+    def test_whats_the_story_with_is_definitional(self):
+        assert self.detect("what's the story with cold fusion") is True
+
 
 class TestStem:
     """Tests for the _stem suffix-stripping function."""
@@ -81,45 +99,77 @@ class TestStem:
 
 
 class TestSearchTermCleaning:
-    """Tests for stop word stripping before Kiwix search."""
+    """Tests for stop word stripping and stemming before Kiwix search.
+
+    Calls the real _build_search_terms() function rather than a separate
+    re-implementation, so these tests actually exercise the same code
+    path search() uses — a prior version of this test class duplicated
+    the logic locally, which meant it could pass even while the real
+    implementation had a bug (the apostrophe/contraction handling bug
+    fixed below would have gone undetected under the old test setup).
+    """
 
     def setup_method(self):
-        from app.sources.kiwix import _STOP_WORDS
-        self.stop_words = _STOP_WORDS
-
-    def _clean(self, query: str) -> str:
-        """Replicate the search term cleaning logic from search()."""
-        return " ".join(
-            w for w in query.lower().split()
-            if w not in self.stop_words and len(w) > 1
-        ) or query
+        from app.sources.kiwix import _build_search_terms
+        self.clean = _build_search_terms
 
     def test_strips_what_is(self):
-        assert self._clean("what is molybdenum") == "molybdenum"
+        assert self.clean("what is molybdenum") == "molybdenum"
 
     def test_strips_how_do_i(self):
-        assert self._clean("how do I configure nginx") == "configure nginx"
+        result = self.clean("how do I configure nginx")
+        assert "configur" in result or "configure" in result
+        assert "nginx" in result
 
     def test_strips_tell_me_about(self):
-        assert self._clean("tell me about photosynthesis") == "photosynthesis"
+        assert self.clean("tell me about photosynthesis") == "photosynthesi"
 
     def test_strips_explain(self):
-        assert self._clean("explain the water cycle") == "water cycle"
+        result = self.clean("explain the water cycle")
+        assert "water" in result and "cycl" in result
 
     def test_preserves_meaningful_words(self):
-        assert self._clean("nginx reverse proxy configuration") == "nginx reverse proxy configuration"
+        result = self.clean("nginx reverse proxy configuration")
+        assert "nginx" in result
+        assert "reverse" in result
+        assert "proxy" in result
 
     def test_falls_back_to_original_if_all_stop_words(self):
         # Query that is entirely stop words should return original
-        result = self._clean("what is it")
+        result = self.clean("what is it")
         assert result == "what is it"
 
     def test_multi_word_query(self):
-        result = self._clean("what is the capital of France")
-        assert "france" in result
+        result = self.clean("what is the capital of France")
+        assert "franc" in result or "france" in result
         assert "what" not in result
         assert "is" not in result
         assert "the" not in result
+
+    def test_contraction_whats_does_not_leave_stray_apostrophe(self):
+        """Regression test — the actual bug found via real usage. 'what's'
+        used to survive stop-word filtering as a stray "what'" token
+        (apostrophe left over after _stem strips the trailing 's), which
+        never matched the 'what' stop word and polluted the search term."""
+        result = self.clean("what's the deal with mercury")
+        assert "'" not in result
+        assert result.strip() == "mercury"
+
+    def test_contraction_whats_up_with(self):
+        result = self.clean("what's up with quantum computing")
+        assert "'" not in result
+        assert "quantum" in result
+
+    def test_contraction_thats(self):
+        result = self.clean("what's that thing called")
+        assert "'" not in result
+
+    def test_colloquial_filler_words_stripped(self):
+        """'deal', 'thing', 'keep', 'hearing' are filler in casual phrasing
+        and should be stripped just like formal stop words, leaving only
+        the actual topic word(s)."""
+        result = self.clean("that mercury thing I keep hearing about")
+        assert result.strip() == "mercury"
 
 
 # ---------------------------------------------------------------------------
