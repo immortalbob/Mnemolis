@@ -276,6 +276,14 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `MORNING_START_HOUR` | Reference hour (0-23, local time) for resolving "this morning" in changes queries | `6` |
 | `WORK_START_HOUR` | Reference hour (0-23, local time) for resolving "while at work" in changes queries | `9` |
 | `API_KEYS` | Comma-separated list of valid API keys. Protects `POST /search` and `GET /changes`. | _(blank — auth disabled)_ |
+| `FORECAST_PRECIP_THRESHOLD_PCT` | Precipitation probability (%) above which the forecast mentions rain chance | `20` |
+| `FORECAST_WIND_THRESHOLD_MPH` | Wind speed (mph) above which the forecast mentions wind | `15` |
+| `FORECAST_TEMP_CHANGE_THRESHOLD` | Temperature shift (°) between snapshots that counts as a meaningful weather change | `5.0` |
+| `BATTERY_LOW_THRESHOLD_PCT` | Battery level (%) below which a snapshot diff reports "low" | `20.0` |
+| `FUSION_MAX_SOURCES` | Maximum number of sources allowed in a single fusion query | `4` |
+| `FUSION_MAX_CHARS_PER_SOURCE` | Characters per source result before truncation in fusion output | `1500` |
+| `FUSION_TIMEOUT_SECONDS` | Maximum time to wait for any single source in a fusion query | `15` |
+| `CACHE_MAX_SIZE` | Maximum result cache entries before oldest-eviction kicks in | `500` |
 
 ### FreshRSS API setup
 1. Enable API access: **Administration → Authentication → Allow API access**
@@ -602,7 +610,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-646 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection, definitional query detection, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning, FreshRSS authentication, forecast formatting and location attribution, uptime heartbeat parsing, fusion validation and header formatting, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
+665 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection, definitional query detection, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning, FreshRSS authentication, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 

@@ -138,6 +138,58 @@ class TestDiffNews:
         assert len(changes) <= 5
 
 
+class TestConfigurableSnapshotThresholds:
+    """Tests for configurable temp-change and battery-low thresholds."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._orig_temp = settings.forecast_temp_change_threshold
+        self._orig_battery = settings.battery_low_threshold_pct
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.forecast_temp_change_threshold = self._orig_temp
+        settings.battery_low_threshold_pct = self._orig_battery
+
+    def test_custom_temp_threshold_higher_suppresses_change(self):
+        from app.snapshots import _diff_forecast
+        from app.config import settings
+        settings.forecast_temp_change_threshold = 10.0
+        old = "Today will be clear with a high of about 90."
+        new = "Today will be clear with a high of about 95."  # only 5° diff
+        changes = _diff_forecast(old, new)
+        assert changes == []
+
+    def test_custom_temp_threshold_lower_detects_change(self):
+        from app.snapshots import _diff_forecast
+        from app.config import settings
+        settings.forecast_temp_change_threshold = 2.0
+        old = "Today will be clear with a high of about 90."
+        new = "Today will be clear with a high of about 93."  # 3° diff
+        changes = _diff_forecast(old, new)
+        assert len(changes) > 0
+
+    def test_custom_battery_threshold_higher_catches_earlier(self):
+        from app.snapshots import _diff_ha
+        from app.config import settings
+        import json
+        settings.battery_low_threshold_pct = 50.0
+        old = json.dumps([{"entity_id": "sensor.b1", "state": "60", "friendly_name": "B1", "device_class": "battery"}])
+        new = json.dumps([{"entity_id": "sensor.b1", "state": "40", "friendly_name": "B1", "device_class": "battery"}])
+        changes = _diff_ha(old, new)
+        assert len(changes) == 1
+
+    def test_custom_battery_threshold_lower_misses_earlier_drop(self):
+        from app.snapshots import _diff_ha
+        from app.config import settings
+        import json
+        settings.battery_low_threshold_pct = 10.0
+        old = json.dumps([{"entity_id": "sensor.b1", "state": "60", "friendly_name": "B1", "device_class": "battery"}])
+        new = json.dumps([{"entity_id": "sensor.b1", "state": "40", "friendly_name": "B1", "device_class": "battery"}])
+        changes = _diff_ha(old, new)
+        assert changes == []
+
+
 class TestDiffHA:
     """Tests for _diff_ha entity state change detection."""
 

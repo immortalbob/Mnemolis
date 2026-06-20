@@ -4,6 +4,35 @@ All notable changes to MiniSearch are documented here.
 
 ---
 
+## [3.8.2]
+
+### Added — Configurable Thresholds
+First step in the capability expansion roadmap. Eight previously hardcoded values are now deployment-configurable, with zero behavior change for anyone who doesn't touch them.
+
+- **`FORECAST_PRECIP_THRESHOLD_PCT`** (default 20) — precipitation probability above which the forecast mentions rain chance
+- **`FORECAST_WIND_THRESHOLD_MPH`** (default 15) — wind speed above which the forecast mentions wind
+- **`FORECAST_TEMP_CHANGE_THRESHOLD`** (default 5.0) — temperature shift between snapshots that counts as a meaningful weather change in `/changes`
+- **`BATTERY_LOW_THRESHOLD_PCT`** (default 20.0) — battery level below which a snapshot diff reports "low"
+- **`FUSION_MAX_SOURCES`** (default 4) — maximum sources allowed in a single fusion query
+- **`FUSION_MAX_CHARS_PER_SOURCE`** (default 1500) — characters per source result before truncation
+- **`FUSION_TIMEOUT_SECONDS`** (default 15) — maximum wait time for any single fusion source
+- **`CACHE_MAX_SIZE`** (default 500) — result cache entries before oldest-eviction kicks in, useful to lower on memory-constrained hardware
+
+Deliberately scoped to deployment-preference values, not algorithm-internal tuning weights (Kiwix scoring bonuses, fusion deduplication overlap threshold remain fixed — these aren't user preferences, they're tuned constants).
+
+### Changed
+- `app/sources/fusion.py` — `FUSION_TIMEOUT`, `FUSION_MAX_SOURCES`, `FUSION_MAX_CHARS_PER_SOURCE` module constants removed in favor of reading `settings` directly at call time, so changes take effect without a restart-triggering code change
+- `app/router.py` — `_CACHE_MAX_SIZE` now initializes from `settings.cache_max_size` instead of a hardcoded `500`
+- Version bumped to 3.8.2
+- README — all 8 new config vars documented in the Configuration table
+
+### Roadmap
+First of five capability-expansion items planned, in increasing difficulty: configurable thresholds (done), Kiwix search term disambiguation, multi-book Kiwix fusion, confidence-aware fusion with expanded ingest, recursive/conditional decomposition.
+
+**Total test count: 665**
+
+---
+
 ## [3.8.1]
 
 ### Fixed

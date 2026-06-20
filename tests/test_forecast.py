@@ -178,6 +178,76 @@ class TestLocationNamePrefix:
         assert result.startswith("Today will be")
 
 
+class TestConfigurableThresholds:
+    """Tests for configurable precipitation/wind thresholds."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._orig_precip = settings.forecast_precip_threshold_pct
+        self._orig_wind = settings.forecast_wind_threshold_mph
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.forecast_precip_threshold_pct = self._orig_precip
+        settings.forecast_wind_threshold_mph = self._orig_wind
+
+    def _mock_resp(self, precip=0, wind=0):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "daily": {
+                "weathercode": [0, 0, 0],
+                "temperature_2m_max": [90, 90, 90],
+                "temperature_2m_min": [70, 70, 70],
+                "precipitation_probability_max": [precip, precip, precip],
+                "windspeed_10m_max": [wind, wind, wind],
+                "winddirection_10m_dominant": [180, 180, 180],
+                "sunrise": ["2026-06-19T05:21:00"] * 3,
+                "sunset": ["2026-06-19T19:53:00"] * 3,
+                "time": ["2026-06-19", "2026-06-20", "2026-06-21"],
+            }
+        }
+        resp.raise_for_status.return_value = None
+        return resp
+
+    def test_custom_precip_threshold_higher_suppresses_mention(self):
+        from app.sources import forecast
+        from app.config import settings
+        from unittest.mock import patch
+        settings.forecast_precip_threshold_pct = 50
+        with patch("app.sources.forecast.requests.get", return_value=self._mock_resp(precip=30)):
+            result = forecast.search("weather")
+        assert "precipitation" not in result.lower()
+
+    def test_custom_precip_threshold_lower_includes_mention(self):
+        from app.sources import forecast
+        from app.config import settings
+        from unittest.mock import patch
+        settings.forecast_precip_threshold_pct = 5
+        with patch("app.sources.forecast.requests.get", return_value=self._mock_resp(precip=10)):
+            result = forecast.search("weather")
+        assert "precipitation" in result.lower()
+
+    def test_custom_wind_threshold_higher_suppresses_mention(self):
+        from app.sources import forecast
+        from app.config import settings
+        from unittest.mock import patch
+        settings.forecast_wind_threshold_mph = 50
+        with patch("app.sources.forecast.requests.get", return_value=self._mock_resp(wind=20)):
+            result = forecast.search("weather")
+        assert "winds" not in result.lower()
+
+    def test_custom_wind_threshold_lower_includes_mention(self):
+        from app.sources import forecast
+        from app.config import settings
+        from unittest.mock import patch
+        settings.forecast_wind_threshold_mph = 5
+        with patch("app.sources.forecast.requests.get", return_value=self._mock_resp(wind=10)):
+            result = forecast.search("weather")
+        assert "winds" in result.lower()
+
+
 class TestDegreesToCardinal:
     """Tests for _degrees_to_cardinal wind direction conversion."""
 

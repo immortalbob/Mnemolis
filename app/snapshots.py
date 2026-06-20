@@ -8,6 +8,7 @@ Phase 2: HA structured entity snapshots
 import sqlite3
 import logging
 import time
+from app.config import settings
 from datetime import datetime, timezone, timedelta
 
 _LOGGER = logging.getLogger(__name__)
@@ -148,11 +149,12 @@ def _diff_forecast(old: str, new: str) -> list[str]:
     old_low = extract_low(old)
     new_low = extract_low(new)
 
-    if old_high and new_high and abs(new_high - old_high) >= 5:
+    threshold = settings.forecast_temp_change_threshold
+    if old_high and new_high and abs(new_high - old_high) >= threshold:
         direction = "up" if new_high > old_high else "down"
         changes.append(f"Forecast high changed {direction} to {int(new_high)}°")
 
-    if old_low and new_low and abs(new_low - old_low) >= 5:
+    if old_low and new_low and abs(new_low - old_low) >= threshold:
         direction = "up" if new_low > old_low else "down"
         changes.append(f"Forecast low changed {direction} to {int(new_low)}°")
 
@@ -235,12 +237,13 @@ def _diff_ha(old: str, new: str) -> list[str]:
             state_label = "opened" if new_e["state"] == "on" else "closed"
             changes.append(f"{name} {state_label}")
 
-        # Battery crossing below 20%
+        # Battery crossing below configured threshold
         elif dc == "battery":
             try:
                 old_val = float(old_e["state"])
                 new_val = float(new_e["state"])
-                if old_val >= 20 and new_val < 20:
+                threshold = settings.battery_low_threshold_pct
+                if old_val >= threshold and new_val < threshold:
                     changes.append(f"{name} battery low: {new_val:.0f}%")
             except (ValueError, TypeError):
                 pass

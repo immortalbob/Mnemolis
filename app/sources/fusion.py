@@ -4,17 +4,9 @@ Queries multiple sources concurrently and merges results.
 """
 import logging
 import concurrent.futures
+from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
-
-# Maximum time to wait for any single source in a fusion query
-FUSION_TIMEOUT = 15  # seconds
-
-# Maximum number of sources allowed in a single fusion query
-FUSION_MAX_SOURCES = 4
-
-# Maximum characters per source result before truncation
-FUSION_MAX_CHARS_PER_SOURCE = 1500
 
 
 def _looks_empty(result: str) -> bool:
@@ -30,8 +22,11 @@ def _looks_empty(result: str) -> bool:
     return any(phrase in result_lower for phrase in empty_phrases)
 
 
-def _truncate(result: str, max_chars: int = FUSION_MAX_CHARS_PER_SOURCE) -> str:
-    """Truncate a result to max_chars, preserving whole lines."""
+def _truncate(result: str, max_chars: int | None = None) -> str:
+    """Truncate a result to max_chars, preserving whole lines.
+    Defaults to settings.fusion_max_chars_per_source when not specified."""
+    if max_chars is None:
+        max_chars = settings.fusion_max_chars_per_source
     if len(result) <= max_chars:
         return result
     truncated = result[:max_chars]
@@ -152,26 +147,28 @@ def search(query: str, sources: list[str] | None = None) -> str:
     if not valid:
         return "No valid sources specified for fusion query."
 
-    if len(valid) > FUSION_MAX_SOURCES:
+    max_sources = settings.fusion_max_sources
+    if len(valid) > max_sources:
         _LOGGER.warning(
             "Fusion request has %d sources, capping at %d",
-            len(valid), FUSION_MAX_SOURCES
+            len(valid), max_sources
         )
-        valid = valid[:FUSION_MAX_SOURCES]
+        valid = valid[:max_sources]
 
     _LOGGER.info("Fusion query: '%s' sources=%s", query[:50], valid)
 
     # Query all sources concurrently
+    fusion_timeout = settings.fusion_timeout_seconds
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(valid)) as executor:
         futures = {
             executor.submit(SOURCE_MAP[s], query): s
             for s in valid
         }
-        for future in concurrent.futures.as_completed(futures, timeout=FUSION_TIMEOUT):
+        for future in concurrent.futures.as_completed(futures, timeout=fusion_timeout):
             source = futures[future]
             try:
-                result = future.result(timeout=FUSION_TIMEOUT)
+                result = future.result(timeout=fusion_timeout)
                 results[source] = result
                 _LOGGER.info("Fusion: source '%s' returned %d chars", source, len(result))
             except concurrent.futures.TimeoutError:

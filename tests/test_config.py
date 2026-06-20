@@ -30,6 +30,10 @@ class TestDefaultValues:
             "UPTIME_KUMA_URL", "UPTIME_KUMA_USERNAME", "UPTIME_KUMA_PASSWORD",
             "HA_URL", "HA_TOKEN", "LLM_URL", "LLM_MODEL", "LLM_API_TYPE",
             "MORNING_START_HOUR", "WORK_START_HOUR", "API_KEYS",
+            "FORECAST_PRECIP_THRESHOLD_PCT", "FORECAST_WIND_THRESHOLD_MPH",
+            "FORECAST_TEMP_CHANGE_THRESHOLD", "BATTERY_LOW_THRESHOLD_PCT",
+            "FUSION_MAX_SOURCES", "FUSION_MAX_CHARS_PER_SOURCE",
+            "FUSION_TIMEOUT_SECONDS", "CACHE_MAX_SIZE",
         ]
         self._saved_env = {}
         for key in self._env_keys:
@@ -113,6 +117,38 @@ class TestDefaultValues:
     def test_api_keys_defaults_blank(self):
         s = self._bare_settings()
         assert s.api_keys == ""
+
+    def test_forecast_precip_threshold_default(self):
+        s = self._bare_settings()
+        assert s.forecast_precip_threshold_pct == 20
+
+    def test_forecast_wind_threshold_default(self):
+        s = self._bare_settings()
+        assert s.forecast_wind_threshold_mph == 15
+
+    def test_forecast_temp_change_threshold_default(self):
+        s = self._bare_settings()
+        assert s.forecast_temp_change_threshold == 5.0
+
+    def test_battery_low_threshold_default(self):
+        s = self._bare_settings()
+        assert s.battery_low_threshold_pct == 20.0
+
+    def test_fusion_max_sources_default(self):
+        s = self._bare_settings()
+        assert s.fusion_max_sources == 4
+
+    def test_fusion_max_chars_per_source_default(self):
+        s = self._bare_settings()
+        assert s.fusion_max_chars_per_source == 1500
+
+    def test_fusion_timeout_seconds_default(self):
+        s = self._bare_settings()
+        assert s.fusion_timeout_seconds == 15
+
+    def test_cache_max_size_default(self):
+        s = self._bare_settings()
+        assert s.cache_max_size == 500
 
 
 class TestSettingsConstructibility:

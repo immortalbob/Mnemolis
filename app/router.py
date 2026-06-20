@@ -281,7 +281,7 @@ NO_RESULT_PHRASES = [
 _cache: dict[str, tuple[str, float]] = {}
 _cache_dirty_count: int = 0
 _CACHE_SAVE_INTERVAL: int = 5   # save to disk every N writes
-_CACHE_MAX_SIZE: int = 500       # max entries before evicting oldest
+_CACHE_MAX_SIZE: int = settings.cache_max_size  # max entries before evicting oldest
 
 
 # ---------------------------------------------------------------------------

@@ -64,25 +64,25 @@ def search(query: str) -> str:
         s = f"In {settings.forecast_location_name}, today will be {_describe(daily['weathercode'][0])} with a high of about {round(daily['temperature_2m_max'][0])} and a low of {round(daily['temperature_2m_min'][0])}."
     else:
         s = f"Today will be {_describe(daily['weathercode'][0])} with a high of about {round(daily['temperature_2m_max'][0])} and a low of {round(daily['temperature_2m_min'][0])}."
-    if daily["precipitation_probability_max"][0] >= 20:
+    if daily["precipitation_probability_max"][0] >= settings.forecast_precip_threshold_pct:
         s += f" {daily['precipitation_probability_max'][0]}% chance of precipitation."
-    if daily["windspeed_10m_max"][0] >= 15:
+    if daily["windspeed_10m_max"][0] >= settings.forecast_wind_threshold_mph:
         s += f" Winds from the {_degrees_to_cardinal(daily['winddirection_10m_dominant'][0])} around {round(daily['windspeed_10m_max'][0])} miles per hour."
     s += f" Sunrise at {_fmt_time(daily['sunrise'][0])}, sunset at {_fmt_time(daily['sunset'][0])}."
     lines.append(s)
 
     # Tomorrow
     s = f"Tomorrow looks {_describe(daily['weathercode'][1])}, high of {round(daily['temperature_2m_max'][1])}, low of {round(daily['temperature_2m_min'][1])}."
-    if daily["precipitation_probability_max"][1] >= 20:
+    if daily["precipitation_probability_max"][1] >= settings.forecast_precip_threshold_pct:
         s += f" {daily['precipitation_probability_max'][1]}% chance of rain."
-    if daily["windspeed_10m_max"][1] >= 15:
+    if daily["windspeed_10m_max"][1] >= settings.forecast_wind_threshold_mph:
         s += f" Winds from the {_degrees_to_cardinal(daily['winddirection_10m_dominant'][1])} around {round(daily['windspeed_10m_max'][1])} miles per hour."
     lines.append(s)
 
     # Day 3
     day3 = datetime.fromisoformat(daily["time"][2]).strftime("%A")
     s = f"{day3} is looking {_describe(daily['weathercode'][2])}, high of {round(daily['temperature_2m_max'][2])}, low of {round(daily['temperature_2m_min'][2])}."
-    if daily["precipitation_probability_max"][2] >= 20:
+    if daily["precipitation_probability_max"][2] >= settings.forecast_precip_threshold_pct:
         s += f" {daily['precipitation_probability_max'][2]}% chance of precipitation."
     lines.append(s)
 

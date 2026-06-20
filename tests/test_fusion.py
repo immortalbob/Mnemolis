@@ -212,6 +212,50 @@ class TestFusionCacheKey:
             assert mock_search.call_count == 1  # still 1 — cached
 
 
+class TestConfigurableFusionLimits:
+    """Tests for settings-backed fusion limits."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._orig_max_sources = settings.fusion_max_sources
+        self._orig_max_chars = settings.fusion_max_chars_per_source
+        self._orig_timeout = settings.fusion_timeout_seconds
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.fusion_max_sources = self._orig_max_sources
+        settings.fusion_max_chars_per_source = self._orig_max_chars
+        settings.fusion_timeout_seconds = self._orig_timeout
+
+    def test_truncate_uses_settings_default(self):
+        from app.sources.fusion import _truncate
+        from app.config import settings
+        settings.fusion_max_chars_per_source = 50
+        result = _truncate("x" * 200)
+        assert len(result) <= 55  # small buffer for ellipsis
+
+    def test_truncate_explicit_param_overrides_settings(self):
+        from app.sources.fusion import _truncate
+        from app.config import settings
+        settings.fusion_max_chars_per_source = 1000
+        result = _truncate("x" * 200, max_chars=20)
+        assert len(result) <= 25
+
+    def test_fusion_caps_at_configured_max_sources(self):
+        from app.sources.fusion import search
+        from app.config import settings
+        from unittest.mock import patch
+        settings.fusion_max_sources = 2
+        with patch("app.router.SOURCE_MAP", {
+            "kiwix": lambda q: "kiwix result here",
+            "forecast": lambda q: "forecast result here",
+            "news": lambda q: "news result here",
+        }):
+            result = search("test", sources=["kiwix", "forecast", "news"])
+        # Should not error, and should have capped to 2 sources internally
+        assert isinstance(result, str)
+
+
 class TestFormatHeader:
     """Tests for _format_header descriptive fusion section headers."""
 

@@ -48,5 +48,24 @@ class Settings(BaseSettings):
     # Comma-separated list of valid keys, e.g. "key1,key2,key3"
     api_keys: str = ""
 
+    # Configurable thresholds — deployment-specific preferences, not algorithm tuning
+    # Forecast — when to mention precipitation/wind in the summary, and when a
+    # snapshot-to-snapshot temperature shift counts as a meaningful "change"
+    forecast_precip_threshold_pct: int = 20
+    forecast_wind_threshold_mph: int = 15
+    forecast_temp_change_threshold: float = 5.0
+
+    # Home Assistant — battery level (%) below which a snapshot diff reports "low"
+    battery_low_threshold_pct: float = 20.0
+
+    # Fusion — concurrency, payload size, and timeout limits
+    fusion_max_sources: int = 4
+    fusion_max_chars_per_source: int = 1500
+    fusion_timeout_seconds: int = 15
+
+    # Result cache — max entries before oldest-eviction kicks in.
+    # Lower this on memory-constrained hardware (e.g. an N100 with limited RAM).
+    cache_max_size: int = 500
+
 
 settings = Settings()
