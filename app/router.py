@@ -1,3 +1,4 @@
+import re
 import time
 import json
 import logging
@@ -649,6 +650,14 @@ def _decompose(query: str) -> list[str]:
     " and "s should split on " and " (3 correct parts), not stop early
     on " also " just because it happens to produce >=2 technically-valid
     parts first.
+
+    Also tries splitting on every conjunction occurrence at once,
+    regardless of type — queries can genuinely mix conjunction words
+    ("X, and also Y, plus Z, and W"), where no single conjunction type's
+    isolated split would ever separate every intent, since each type's
+    "leftover" half still contains the other conjunction words bundled
+    inside it. Whichever approach (single-type or combined) produces the
+    most meaningful parts wins.
     """
     q = query.strip()
     q_lower = q.lower()
@@ -695,7 +704,27 @@ def _decompose(query: str) -> list[str]:
 
     best_split: list[str] | None = None
 
-    # Try every conjunction, keep whichever split has the most meaningful parts
+    def _filter_meaningful(parts: list[str]) -> list[str]:
+        meaningful = []
+        for p in parts:
+            if len(p) <= 3:
+                continue
+            # Strip trailing 's/'t contractions before matching against
+            # _INTENT_WORDS — "internet's" otherwise never equals "internet"
+            # in a literal word-membership check, the same class of bug
+            # found and fixed in kiwix.py's stop-word stripping
+            normalized_words = [
+                re.sub(r"['']\w*$", "", w) for w in p.lower().split()
+            ]
+            if (
+                any(w in _INTENT_WORDS for w in normalized_words)
+                or any(s in p.lower() for s in _COLLOQUIAL_PHRASES)
+            ):
+                meaningful.append(p)
+        return meaningful
+
+    # Try every conjunction type in isolation, keep whichever single-type
+    # split has the most meaningful parts
     for conj in sorted(_CONJUNCTIONS, key=len, reverse=True):
         if conj not in q_lower:
             continue
@@ -713,24 +742,53 @@ def _decompose(query: str) -> list[str]:
         if remaining.strip():
             parts.append(remaining.strip())
 
-        # Only split if all parts are meaningful — must be >3 chars
-        # AND (contain at least one verb/question word to be a standalone
-        # intent, OR contain a colloquial question phrase that signals a
-        # real intent regardless of which specific noun follows it).
-        #
-        # Uses "contains" rather than "starts with" — phrasing like "and
-        # remind me what's up with X" or "can you tell me what's the deal
-        # with X" has the colloquial marker mid-clause, not at position
-        # zero, since the clause itself still starts with the leftover
-        # conjunction/filler word ("and remind me...") from the split.
-        meaningful = [
-            p for p in parts
-            if len(p) > 3 and (
-                any(w in p.lower().split() for w in _INTENT_WORDS)
-                or any(s in p.lower() for s in _COLLOQUIAL_PHRASES)
-            )
-        ]
+        meaningful = _filter_meaningful(parts)
+        if len(meaningful) >= 2 and (best_split is None or len(meaningful) > len(best_split)):
+            best_split = meaningful
 
+    # Also try splitting on EVERY conjunction occurrence at once, regardless
+    # of type — a query can genuinely mix conjunction words ("X, and also Y,
+    # plus Z, and W"), and no single conjunction type's isolated split would
+    # ever separate all of those intents, since each one's "leftover" half
+    # still contains the other conjunction words bundled inside it. Found
+    # via real usage: a 5-intent query mixing "and also", "plus", "and",
+    # "also" only ever produced 2 parts under the single-type approach,
+    # because every type's split left the other three conjunctions stuck
+    # together in one half or the other.
+    all_matches = []
+    for conj in _CONJUNCTIONS:
+        start = 0
+        while True:
+            idx = q_lower.find(conj, start)
+            if idx == -1:
+                break
+            all_matches.append((idx, idx + len(conj)))
+            start = idx + len(conj)
+    all_matches.sort()
+
+    if len(all_matches) > 1:
+        # Collapse adjacent/overlapping matches ("and also" = " and "
+        # immediately followed by " also ") into a single split point,
+        # otherwise the tiny gap between them becomes a near-empty fragment
+        collapsed = []
+        for start, end in all_matches:
+            if collapsed and start <= collapsed[-1][1]:
+                collapsed[-1] = (collapsed[-1][0], max(collapsed[-1][1], end))
+            else:
+                collapsed.append((start, end))
+
+        parts = []
+        last_end = 0
+        for start, end in collapsed:
+            part = q[last_end:start].strip()
+            if part:
+                parts.append(part)
+            last_end = end
+        remaining = q[last_end:].strip()
+        if remaining:
+            parts.append(remaining)
+
+        meaningful = _filter_meaningful(parts)
         if len(meaningful) >= 2 and (best_split is None or len(meaningful) > len(best_split)):
             best_split = meaningful
 

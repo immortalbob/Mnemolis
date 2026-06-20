@@ -4,6 +4,30 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.13.0]
+
+### Fixed — Mixed-Conjunction-Type Decomposition
+The known limitation documented at the end of the prior release — a query mixing multiple different conjunction types (e.g. one `" and "` and one `" plus "`) only ever achieved a single-conjunction-type split — is now fixed.
+
+- **`_decompose()` now also tries splitting on every conjunction occurrence at once, regardless of type**, in addition to the existing single-type-in-isolation approach, keeping whichever produces the most meaningful sub-queries. A query mixing "and also," "plus," "and," and "also" (5 genuine intents) previously collapsed to 2 parts under the single-type approach — every type's isolated split left the other conjunction words bundled inside whichever half didn't get split on. Splitting on all occurrences at once correctly separates all 5.
+- **Adjacent/overlapping conjunction matches are collapsed into one split point** — "and also" (two conjunctions back to back) produces one boundary, not an empty fragment between them.
+- **Possessive contraction bug in `_INTENT_WORDS` matching** — "internet's" (with the apostrophe) never matched the bare "internet" entry via exact word-membership comparison, the same class of bug previously found and fixed in `kiwix.py`'s stop-word stripping. Normalizing the apostrophe before the membership check fixes both the same way.
+- Verified against the real production query that surfaced this: a deliberately extreme 5-intent, 3-conjunction-type, colloquially-phrased test query now correctly decomposes into all 5 parts and routes each independently — internet/wifi troubleshooting, Mercury retrogade, front door/windows, AC/weather, and Raspberry Pi GPIO permissions all landed in separate, correctly-attributed sections.
+
+### Added
+- 5 new regression tests in `test_router.py`, including an exact reproduction of the real 5-intent failing query
+- 1 existing test corrected — the mixed-conjunction fix retroactively improved an earlier session's wifi/router/sunspots test case from a 3-way split to a genuinely better 4-way split (wifi and router are now correctly separated rather than merged under one "and"), so that test's expected count was updated to reflect the improved behavior
+
+### Changed
+- Version bumped to 3.13.0
+
+**Total test count: 791**
+
+### Roadmap — New Known Limitation Documented
+**Mercury-retrograde-style queries with current-events framing can route past Kiwix disambiguation entirely.** Found via real testing: "what's the deal with that whole mercury retrograde thing everyone keeps talking about" — decomposition correctly isolated this as its own clean sub-query, but the keyword/LLM source-selection layer (`detect_intent()`, separate from decomposition and separate from Kiwix's own internal disambiguation) resolved it to `web,news` fusion, never reaching Kiwix or its disambiguation logic at all. The phrase "everyone keeps talking about" reads as current-discourse framing to the router, which is a defensible interpretation, not a clear-cut bug — "fixing" it by biasing harder toward Kiwix risks misrouting genuinely news-flavored queries instead. Needs deliberate design (likely: detecting when a query contains both an encyclopedic noun phrase AND a discourse-framing phrase, and explicitly trying fusion across kiwix+news+web rather than picking only news+web) rather than a quick patch. Tracked for a future session.
+
+---
+
 ## [3.12.0]
 
 ### Fixed — Colloquial Query Handling (Found via Real Open WebUI Usage)

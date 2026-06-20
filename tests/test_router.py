@@ -472,20 +472,26 @@ class TestDecompose:
 
     def test_wifi_router_compound_query_with_colloquial_starter(self):
         """Regression test — the real bug found via real usage. This query
-        has three genuine intents (wifi/router troubleshooting, door sensor
-        status, sunspots) but used to collapse to a single unsplit block
-        because: (1) 'wifi'/'router'/'reboot' weren't in _INTENT_WORDS at
-        all, and (2) the colloquial starter 'what's the deal with X' wasn't
-        recognized as a real intent regardless of what specific noun
-        followed it — both gaps had to be fixed together."""
+        has at least three genuine intents (wifi troubleshooting, router
+        troubleshooting, door sensor status, sunspots) but used to collapse
+        to a single unsplit block because: (1) 'wifi'/'router'/'reboot'
+        weren't in _INTENT_WORDS at all, and (2) the colloquial starter
+        'what's the deal with X' wasn't recognized as a real intent
+        regardless of what specific noun followed it — both gaps had to be
+        fixed together. The mixed-conjunction-type fix (added later the
+        same session) further improved this from a 3-way split to a
+        genuinely better 4-way split, correctly separating wifi and router
+        into their own independent parts rather than merging them under
+        one " and "."""
         query = (
             "the wifi has been acting flaky all morning and I think the "
             "router might need a reboot, also can you check if the front "
             "door sensor is online, and what's the deal with sunspots anyway"
         )
         parts = self.decompose(query)
-        assert len(parts) == 3
+        assert len(parts) == 4
         assert any("wifi" in p.lower() for p in parts)
+        assert any("router" in p.lower() for p in parts)
         assert any("door" in p.lower() for p in parts)
         assert any("sunspot" in p.lower() for p in parts)
 
@@ -528,6 +534,60 @@ class TestDecompose:
         )
         assert len(parts) == 2
         assert any("cryptocurrency" in p.lower() for p in parts)
+
+    def test_mixed_conjunction_types_all_split(self):
+        """Regression test — the real bug found via real usage, documented
+        as a known limitation at the end of the prior session and fixed
+        properly here. A query mixing multiple different conjunction types
+        ("and also", "plus", "and", "also") used to only ever produce 2
+        parts under the single-conjunction-type approach, because each
+        type's isolated split left the OTHER conjunction words bundled
+        inside whichever half didn't get split. Splitting on every
+        conjunction occurrence at once, regardless of type, fixes this."""
+        query = (
+            "ok so my internet's been super flaky today and also whats the "
+            "deal with that whole mercury retrograde thing everyone keeps "
+            "talking about, plus did the front door or any of the windows "
+            "do anything weird while I was out, and is it gonna be hot "
+            "enough this week that I should finally fix the AC, also "
+            "remind me real quick whats up with raspberry pi gpio "
+            "permission stuff cause I keep getting locked out when I mess "
+            "with the pins in python"
+        )
+        parts = self.decompose(query)
+        assert len(parts) == 5
+        assert any("internet" in p.lower() for p in parts)
+        assert any("mercury" in p.lower() for p in parts)
+        assert any("door" in p.lower() for p in parts)
+        assert any("hot" in p.lower() or "ac" in p.lower().split() for p in parts)
+        assert any("gpio" in p.lower() for p in parts)
+
+    def test_adjacent_conjunctions_collapse_to_single_split_point(self):
+        """'and also' (two conjunctions back to back) should produce one
+        split point, not an empty/near-empty fragment between them."""
+        parts = self.decompose(
+            "what is the weather and also what is the news and is the door locked"
+        )
+        assert len(parts) == 3
+        # No fragment should be just leftover punctuation/whitespace
+        assert all(len(p.strip()) > 3 for p in parts)
+
+    def test_possessive_contraction_recognized_in_intent_check(self):
+        """Regression test — 'internet's' (possessive contraction) didn't
+        match the bare 'internet' entry in _INTENT_WORDS via exact word
+        membership, the same class of bug found and fixed in kiwix.py's
+        stop-word stripping. Normalizing the apostrophe before the
+        membership check fixes both the same way."""
+        parts = self.decompose("my internet's been flaky and what is the weather")
+        assert len(parts) == 2
+        assert any("internet" in p.lower() for p in parts)
+
+    def test_mixed_conjunctions_still_respects_nosplit(self):
+        """Mixed-conjunction splitting must not bypass the nosplit guard —
+        a comparison query with multiple conjunction types should still
+        never split at all."""
+        parts = self.decompose("compare Python and Rust, also what about Go")
+        assert len(parts) == 1
 
     def test_explicit_source_not_decomposed(self):
         from app.router import route, clear_cache
