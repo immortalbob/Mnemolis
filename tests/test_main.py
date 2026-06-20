@@ -23,6 +23,94 @@ def client():
     os.unlink(temp_db)
 
 
+class TestLoggingConfiguration:
+    """Tests for root logging setup at app import time.
+
+    Regression coverage for a real bug found via production debugging —
+    the root logger defaulted to WARNING with no attached handler, which
+    silently swallowed every _LOGGER.info() call across the entire
+    codebase (decomposition splits, disambiguation candidates, article
+    selection, snapshot jobs, etc). Only uvicorn's own access logger (a
+    separate logger with its own handler) was ever visible in container
+    logs, making it look like the app was processing requests with zero
+    diagnostic output — when in fact the info logs were firing, just
+    never reaching any output destination.
+
+    These tests call logging.basicConfig() directly with the same
+    arguments app/main.py uses, rather than relying on `import app.main`
+    to trigger it — app.main is already cached in sys.modules by the
+    time these tests run (the `client` fixture above imports it first),
+    so a second `import app.main` is a no-op and never re-executes the
+    module-level basicConfig() call. Testing the actual configuration
+    logic directly avoids depending on Python's one-time import behavior.
+    """
+
+    def setup_method(self):
+        import logging
+        # Snapshot real logging state so these tests don't leak changes
+        # into other tests that might check logger configuration
+        self._original_level = logging.getLogger().level
+        self._original_handlers = list(logging.getLogger().handlers)
+
+    def teardown_method(self):
+        import logging
+        logging.getLogger().setLevel(self._original_level)
+        logging.getLogger().handlers = self._original_handlers
+
+    def test_basicConfig_sets_info_level_by_default(self):
+        import logging
+        import os as os_module
+        from unittest.mock import patch
+
+        logging.getLogger().handlers = []
+        with patch.dict(os_module.environ, {}, clear=False):
+            os_module.environ.pop("LOG_LEVEL", None)
+            level_name = os_module.environ.get("LOG_LEVEL", "INFO").upper()
+            logging.basicConfig(
+                level=level_name,
+                format="%(asctime)s %(levelname)s:%(name)s: %(message)s",
+                force=True,
+            )
+        assert logging.getLogger().level == logging.INFO
+
+    def test_basicConfig_attaches_a_handler(self):
+        import logging
+        logging.getLogger().handlers = []
+        logging.basicConfig(
+            level="INFO",
+            format="%(asctime)s %(levelname)s:%(name)s: %(message)s",
+            force=True,
+        )
+        assert len(logging.getLogger().handlers) >= 1
+
+    def test_app_router_logger_inherits_info_level_when_configured(self):
+        import logging
+        logging.getLogger().handlers = []
+        logging.basicConfig(level="INFO", force=True)
+        assert logging.getLogger("app.router").getEffectiveLevel() <= logging.INFO
+
+    def test_log_level_env_var_respected(self):
+        import logging
+        import os as os_module
+        from unittest.mock import patch
+
+        with patch.dict(os_module.environ, {"LOG_LEVEL": "DEBUG"}):
+            level_name = os_module.environ.get("LOG_LEVEL", "INFO").upper()
+            assert level_name == "DEBUG"
+            assert logging.getLevelName(level_name) == logging.DEBUG
+
+    def test_main_module_source_calls_basicConfig_with_env_var(self):
+        """Confirm the actual source code in main.py reads LOG_LEVEL and
+        calls logging.basicConfig() — a static check that doesn't depend
+        on import timing, since we can't reliably re-trigger module-level
+        code in an already-imported module within the same test process."""
+        import inspect
+        import app.main as main_module
+        source = inspect.getsource(main_module)
+        assert "logging.basicConfig" in source
+        assert "LOG_LEVEL" in source
+
+
 class TestHealthEndpoint:
     """Tests for GET /health."""
 

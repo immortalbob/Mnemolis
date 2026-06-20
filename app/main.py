@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from app.router import (
     route,
+    route_with_source,
     SOURCE_MAP,
     detect_intent,
     check_cached,
@@ -38,6 +39,20 @@ from app.snapshots import (
     format_changes,
 )
 from app.config import settings
+
+# Configure logging at startup — without this, the root logger defaults to
+# WARNING with no attached handler, which silently swallows every
+# _LOGGER.info() call across the entire codebase (router.py's decomposition
+# logging, kiwix.py's disambiguation/article selection logging, snapshots.py's
+# job logging, etc). Only uvicorn's own access logger (a separate logger with
+# its own handler) was ever visible in `docker logs`, making it look like
+# requests were processed silently with no application-level diagnostic
+# output at all — found via real debugging where expected INFO log lines
+# never appeared despite the underlying code paths definitely running.
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s:%(name)s: %(message)s",
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -150,7 +165,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.13.0",
+    version="3.14.0",
     lifespan=lifespan,
 )
 
@@ -357,18 +372,23 @@ def search(request: SearchRequest):
     if request.source == "auto":
         intent = detect_intent(request.query)
         if isinstance(intent, list):
-            resolved_source = "fusion"
             was_cached = check_cached("fusion", f"fusion[{','.join(sorted(intent))}]:{request.query}")
         else:
-            resolved_source = intent
-            was_cached = check_cached(resolved_source, request.query)
+            was_cached = check_cached(intent, request.query)
     else:
-        resolved_source = request.source
-        was_cached = check_cached(resolved_source, request.query)
+        was_cached = check_cached(request.source, request.query)
 
     start = time.monotonic()
     try:
-        result = route(request.query, request.source, request.fusion_sources)
+        # route_with_source returns the ACTUAL source that produced the
+        # result, not just the originally-intended one — a query routed
+        # to 'kiwix' that returns nothing usable can silently fall back to
+        # 'web' internally, and source_used must reflect that real outcome
+        # rather than echoing back whatever intent detection guessed
+        # before route() ran. Found via real usage where a GPIO
+        # troubleshooting query's response claimed source_used="kiwix"
+        # while the actual content was a web search result.
+        result, resolved_source = route_with_source(request.query, request.source, request.fusion_sources)
         latency_ms = int((time.monotonic() - start) * 1000)
         _log_query(request.query, request.source, resolved_source, was_cached, True, latency_ms)
         return SearchResponse(
@@ -380,11 +400,11 @@ def search(request: SearchRequest):
         )
     except Exception as e:
         latency_ms = int((time.monotonic() - start) * 1000)
-        _log_query(request.query, request.source, resolved_source, was_cached, False, latency_ms)
+        _log_query(request.query, request.source, request.source, was_cached, False, latency_ms)
         _LOGGER.error("Search failed for query '%s': %s", request.query, e)
         return SearchResponse(
             query=request.query,
-            source_used=resolved_source,
+            source_used=request.source,
             result="",
             success=False,
             cached=False,

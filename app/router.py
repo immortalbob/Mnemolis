@@ -800,6 +800,30 @@ def _decompose(query: str) -> list[str]:
 
 
 def route(query: str, source: str = "auto", fusion_sources: list[str] | None = None) -> str:
+    """Backward-compatible wrapper around route_with_source() — returns
+    just the result string for callers that don't need to know which
+    source actually produced it (e.g. fusion.search() calling into
+    individual sources, existing tests written against this signature)."""
+    result, _actual_source = route_with_source(query, source, fusion_sources)
+    return result
+
+
+def route_with_source(query: str, source: str = "auto", fusion_sources: list[str] | None = None) -> tuple[str, str]:
+    """
+    Route a query to the appropriate source(s) and return both the result
+    and the source that ACTUALLY produced it.
+
+    This distinction matters because of fallback behavior — a query
+    routed to 'kiwix' that returns no usable result can silently fall
+    back to 'web', and the caller needs to know that happened rather than
+    reporting 'kiwix' as the source_used when 'web' is what actually
+    answered. Found via real usage: a GPIO troubleshooting query resolved
+    to kiwix, kiwix's search came back empty for the long colloquial
+    phrase, fell back to web, got good results — but the API response's
+    source_used field still said 'kiwix' because main.py independently
+    re-derived the intended source before calling route(), with no way
+    to learn that an internal fallback had actually occurred.
+    """
     # Query decomposition — only for auto routing
     if source == "auto":
         sub_queries = _decompose(query)
@@ -819,6 +843,14 @@ def route(query: str, source: str = "auto", fusion_sources: list[str] | None = N
                         sub_result = cached
                     elif handler:
                         sub_result = handler(sub_q)
+                        if _looks_empty(sub_result) and sub_source in FALLBACK_CHAIN:
+                            fallback_source = FALLBACK_CHAIN[sub_source]
+                            fallback_handler = SOURCE_MAP.get(fallback_source)
+                            if fallback_handler:
+                                fallback_result = fallback_handler(sub_q)
+                                if not _looks_empty(fallback_result):
+                                    sub_source = fallback_source
+                                    sub_result = fallback_result
                         if not _looks_empty(sub_result):
                             _set_cached(sub_source, sub_q, sub_result)
                     else:
@@ -847,13 +879,18 @@ def route(query: str, source: str = "auto", fusion_sources: list[str] | None = N
                 # _HEADER_LABELS — it's just self-headered content passing
                 # through. Only wrap genuinely single-source results here.
                 sections = []
-                for source, result in merged:
-                    if source == "fusion":
+                for src, result in merged:
+                    if src == "fusion":
                         sections.append(result)
                     else:
-                        sections.append(f"{fusion._format_header(source)}\n{result}")
+                        sections.append(f"{fusion._format_header(src)}\n{result}")
 
-                return "\n\n---\n\n".join(sections)
+                # Multiple decomposed sources merged — report "fusion" as
+                # the overall source if more than one distinct source
+                # contributed, otherwise report the single source used
+                distinct_sources = {s for s, _ in merged}
+                overall_source = "fusion" if len(distinct_sources) > 1 else next(iter(distinct_sources))
+                return "\n\n---\n\n".join(sections), overall_source
             # All sub-queries returned empty — fall through to single query routing
 
     if source == "auto":
@@ -877,19 +914,19 @@ def route(query: str, source: str = "auto", fusion_sources: list[str] | None = N
         cache_key_query = f"fusion[{fusion_key}]:{query}"
         cached = _get_cached("fusion", cache_key_query)
         if cached:
-            return cached
+            return cached, "fusion"
         result = fusion.search(query, fusion_sources)
         if not _looks_empty(result):
             _set_cached("fusion", cache_key_query, result)
-        return result
+        return result, "fusion"
 
     handler = SOURCE_MAP.get(source)
     if not handler:
-        return f"Unknown source '{source}'. Valid options: {', '.join(SOURCE_MAP.keys())}."
+        return f"Unknown source '{source}'. Valid options: {', '.join(SOURCE_MAP.keys())}.", source
 
     cached = _get_cached(source, query)
     if cached:
-        return cached
+        return cached, source
 
     result = handler(query)
 
@@ -900,15 +937,15 @@ def route(query: str, source: str = "auto", fusion_sources: list[str] | None = N
         if fallback_handler:
             cached_fallback = _get_cached(fallback_source, query)
             if cached_fallback:
-                return cached_fallback
+                return cached_fallback, fallback_source
             fallback_result = fallback_handler(query)
             if not _looks_empty(fallback_result):
                 _LOGGER.info("Fallback to '%s' succeeded", fallback_source)
                 _set_cached(fallback_source, query, fallback_result)
-                return fallback_result
+                return fallback_result, fallback_source
             _LOGGER.warning("Fallback to '%s' also returned empty result", fallback_source)
 
     if not _looks_empty(result):
         _set_cached(source, query, result)
 
-    return result
+    return result, source

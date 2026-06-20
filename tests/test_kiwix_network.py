@@ -458,6 +458,49 @@ class TestSearchMultiCandidateScoring:
         settings.llm_url = self._orig_url
         settings.llm_model = self._orig_model
 
+    def test_does_not_disambiguate_long_multi_word_technical_query(self):
+        """Regression test — the real bug found via real usage. search()
+        was checking disambiguation eligibility against primary_term (the
+        already-reduced single longest word) instead of the full
+        search_terms phrase. Since primary_term is ALWAYS exactly one word
+        by construction, the eligibility check was trivially always true —
+        meaning even genuinely long, specific, unambiguous queries like
+        "raspberry pi gpio permission errors in python" (5+ real content
+        words) still triggered single-word disambiguation on "permission"
+        alone, discarding all the surrounding context that made the query
+        unambiguous, and landing on an unrelated article (macOS disk
+        permissions instead of Raspberry Pi GPIO)."""
+        from app.sources import kiwix
+        from unittest.mock import patch
+
+        with patch.object(kiwix, "get_books", return_value=[{"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""}]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["wikipedia_en_all_maxi_2026-02"]), \
+             patch.object(kiwix, "_get_disambiguation_candidates") as mock_disambig, \
+             patch.object(kiwix, "_search_book", return_value=[{"title": "GPIO Permission Fix", "excerpt": "raspberry pi gpio permission", "url": "http://x/gpio", "book": "wikipedia_en_all_maxi_2026-02"}]), \
+             patch.object(kiwix, "_fetch_article", return_value="content"):
+            kiwix.search("remind me whats the deal with raspberry pi gpio permission errors in python")
+
+        # Disambiguation candidate generation should never be called for
+        # a query with this many real content words, regardless of how
+        # the LLM-selected book or definitional-phrase detection resolves
+        assert not mock_disambig.called
+
+    def test_still_disambiguates_genuinely_short_query(self):
+        """Confirm the fix didn't break the original working case — a
+        genuinely short, single-word-after-stemming query should still
+        trigger disambiguation exactly as before."""
+        from app.sources import kiwix
+        from unittest.mock import patch
+
+        with patch.object(kiwix, "get_books", return_value=[{"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""}]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["wikipedia_en_all_maxi_2026-02"]), \
+             patch.object(kiwix, "_get_disambiguation_candidates", return_value=["galaxy astronomy", "galaxy"]) as mock_disambig, \
+             patch.object(kiwix, "_search_book", return_value=[{"title": "Galaxy", "excerpt": "a galaxy is a system of stars", "url": "http://x/galaxy", "book": "wikipedia_en_all_maxi_2026-02"}]), \
+             patch.object(kiwix, "_fetch_article", return_value="content"):
+            kiwix.search("what are galaxies")
+
+        assert mock_disambig.called
+
     def test_searches_every_candidate_term(self):
         from app.sources import kiwix
         from unittest.mock import patch, MagicMock

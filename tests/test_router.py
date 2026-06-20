@@ -784,3 +784,142 @@ class TestLlmPickFusionSources:
             result = _llm_pick_fusion_sources("cached query")
         assert "forecast" in result
         assert "uptime" in result
+
+
+class TestRouteWithSource:
+    """Tests for route_with_source() — returns (result, actual_source_used).
+
+    Regression coverage for a real bug found via real usage: a query
+    routed to 'kiwix' that returned an empty/unusable result silently fell
+    back to 'web' internally, but the API response's source_used field
+    still reported 'kiwix' — main.py independently re-derived the intended
+    source before calling route(), with no way to learn an internal
+    fallback had occurred. route() itself only ever returned a plain
+    string with no source information at all.
+    """
+
+    def setup_method(self):
+        from app.router import clear_cache
+        clear_cache()
+
+    def test_route_still_returns_plain_string_for_backward_compatibility(self):
+        from app.router import route
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["kiwix"] = lambda q: "Kiwix result."
+        try:
+            with patch("app.router._get_cached", return_value=None):
+                result = route("what is nitrogen", "kiwix")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert isinstance(result, str)
+        assert result == "Kiwix result."
+
+    def test_route_with_source_returns_tuple(self):
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["kiwix"] = lambda q: "Kiwix result."
+        try:
+            with patch("app.router._get_cached", return_value=None):
+                result, source = route_with_source("what is nitrogen", "kiwix")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert result == "Kiwix result."
+        assert source == "kiwix"
+
+    def test_fallback_reports_the_actual_fallback_source(self):
+        """The exact real-world bug — kiwix returns empty, falls back to
+        web, and source_used must say 'web', not 'kiwix'."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        # _looks_empty() checks for specific known "no result" phrases —
+        # a bare "" doesn't match any of them and _looks_empty("") is
+        # actually False, so the mock must use a realistic failure message
+        # the same way a real source module reports finding nothing
+        router_module.SOURCE_MAP["kiwix"] = lambda q: "No results found in wikipedia_en_all_maxi."
+        router_module.SOURCE_MAP["web"] = lambda q: "Real web results here."
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.FALLBACK_CHAIN", {"kiwix": "web"}):
+                result, source = route_with_source("some query", "kiwix")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert source == "web"
+        assert "Real web results" in result
+
+    def test_no_fallback_needed_reports_original_source(self):
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["kiwix"] = lambda q: "Good kiwix result."
+        try:
+            with patch("app.router._get_cached", return_value=None):
+                result, source = route_with_source("what is nitrogen", "kiwix")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert source == "kiwix"
+
+    def test_fusion_reports_fusion_as_source(self):
+        from app.router import route_with_source
+        from unittest.mock import patch
+
+        with patch("app.sources.fusion.search", return_value="Fused result."), \
+             patch("app.router._get_cached", return_value=None):
+            result, source = route_with_source("test query", "fusion", ["forecast", "uptime"])
+        assert source == "fusion"
+
+    def test_unknown_source_reports_the_unknown_source_name(self):
+        from app.router import route_with_source
+        result, source = route_with_source("test query", "not_a_real_source")
+        assert source == "not_a_real_source"
+        assert "unknown source" in result.lower()
+
+    def test_decomposed_single_source_reports_that_source_not_fusion(self):
+        """When decomposition produces multiple sub-queries that all
+        happen to resolve to the SAME single source after merging,
+        overall_source should report that source, not 'fusion' — fusion
+        should only be reported when genuinely multiple distinct sources
+        contributed to the final merged response."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["ha"] = lambda q: "HA result for: " + q
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.detect_intent", return_value="ha"):
+                result, source = route_with_source(
+                    "are the doors locked and is the light on", "auto"
+                )
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert source == "ha"
+
+    def test_decomposed_multiple_sources_reports_fusion(self):
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["forecast"] = lambda q: "Sunny."
+        router_module.SOURCE_MAP["uptime"] = lambda q: "All up."
+        try:
+            with patch("app.router._get_cached", return_value=None), \
+                 patch("app.router.detect_intent", side_effect=["forecast", "uptime"]):
+                result, source = route_with_source(
+                    "what is the weather and are services up", "auto"
+                )
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+        assert source == "fusion"

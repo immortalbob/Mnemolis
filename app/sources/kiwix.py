@@ -519,8 +519,18 @@ def search(query: str) -> str:
     # term is a single ambiguous word, try multiple disambiguation candidates
     # and let real Kiwix results + scoring decide which one actually works —
     # rather than trusting a single blind LLM guess about Kiwix's index
+    #
+    # Eligibility is checked against the FULL search_terms, not primary_term
+    # — primary_term is always exactly one word by construction (it's the
+    # longest word picked OUT of search_terms), so checking its word count
+    # is trivially always true and defeats the entire point of restricting
+    # disambiguation to genuinely short/ambiguous queries. Found via real
+    # usage: "raspberry pi gpio permission errors in python" (5+ real
+    # content words, completely unambiguous) was still triggering
+    # disambiguation on "permission" alone, discarding "raspberry"/"pi"/
+    # "gpio"/"python" — landing on an unrelated macOS permissions article.
     primary_term = max(search_terms.split(), key=len) if search_terms else search_terms
-    if _should_disambiguate(query, primary_term, selected_books):
+    if _should_disambiguate(query, search_terms, selected_books):
         search_term_candidates = _get_disambiguation_candidates(query, primary_term)
     else:
         search_term_candidates = [search_terms]

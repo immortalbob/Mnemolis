@@ -4,6 +4,42 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.14.0]
+
+### Fixed — Application Logging Was Silently Disabled (Foundational)
+**The root cause behind why several of tonight's other bugs went undetected for as long as they did.** The root logger defaulted to Python's standard WARNING level with zero attached handlers, meaning every `_LOGGER.info()` call across the entire codebase — decomposition splits, disambiguation candidates, article selection scores, snapshot job activity — was silently swallowed. Only uvicorn's own access logger (a separate logger with its own handler) ever produced visible output, making `docker logs mnemolis` look like the app was processing requests with zero diagnostic detail, when in fact the logging calls were firing the whole time, just never reaching any output destination.
+
+- `logging.basicConfig()` now called explicitly at startup with a real formatter and handler
+- **`LOG_LEVEL`** config var added (default `INFO`) for adjusting verbosity without a code change
+- This single fix is what made every other discovery below possible to verify directly via logs instead of inferring indirectly through the routing cache
+
+### Fixed — Kiwix Disambiguation Eligibility Checked the Wrong Variable
+`_should_disambiguate()`'s "is this query short enough to be genuinely ambiguous" check was being called with `primary_term` (the already-reduced single longest word) instead of `search_terms` (the full extracted phrase). Since `primary_term` is *always* exactly one word by construction, the eligibility check was trivially always true — meaning even long, specific, completely unambiguous queries like "raspberry pi gpio permission errors in python" (5+ real content words) still triggered single-word disambiguation on "permission" alone, discarding "raspberry"/"pi"/"gpio"/"python" entirely and landing on an unrelated macOS disk-permissions article instead of real Raspberry Pi content. Found directly in logs once the logging fix above made the disambiguation candidate list visible for the first time.
+
+### Fixed — `source_used` Reported the Intended Source, Not the Actual One
+A query routed to `kiwix` that returned nothing usable could silently fall back to `web` internally and return genuinely good results — but the API response's `source_used` field still said `"kiwix"`, because `main.py` independently re-derived the intended source *before* calling `route()`, with no way to learn that an internal fallback had occurred. `route()` itself only ever returned a plain string with zero source information.
+
+- **`route_with_source()`** added — returns `(result, actual_source)`, threading the true source through every exit path: direct success, fallback success, fusion, decomposed multi-part responses, and unknown-source errors
+- **`route()`** remains a fully backward-compatible thin wrapper for existing callers that only need the result string
+- The decomposed sub-query path gained fallback capability it was missing entirely — previously, a decomposed sub-query landing on an empty result never attempted a fallback at all, unlike the top-level single-source path
+- `main.py`'s `/search` endpoint now reports the genuinely correct `source_used`
+
+### Verified
+Tested against the real production query that surfaced both bugs above: "remind me real quick whats the deal with raspberry pi gpio permission errors in python" now correctly skips disambiguation (full phrase preserved), falls back from kiwix to web when kiwix returns nothing useful, finds real GPIO permission troubleshooting threads, and correctly reports `"source_used": "web"`.
+
+### Added
+- 13 new regression tests across `test_main.py` and `test_router.py` (2 logging-configuration, 2 disambiguation-eligibility, 8 route_with_source, 1 corrected from a flawed test fixture caught mid-session — `_looks_empty("")` is actually `False`, since the function checks for known failure phrases rather than literal emptiness, so the original mock didn't trigger the fallback path it was meant to test)
+
+### Changed
+- Version bumped to 3.14.0
+
+**Total test count: 806**
+
+### Roadmap
+The Mercury/galaxy-style "everyone's obsessed with" routing-past-Kiwix limitation documented in 3.13.0 is now confirmed as a **general, reproducible pattern** rather than word-specific — verified with both "mercury retrograde" and "galaxy" producing the same news/web routing behavior. Still tracked as a deliberate-design item, not a quick patch — see 3.13.0's roadmap entry for the full diagnosis.
+
+---
+
 ## [3.13.0]
 
 ### Fixed — Mixed-Conjunction-Type Decomposition
