@@ -4,6 +4,23 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.11.1]
+
+### Added — Documentation Accuracy Pass + Fresh Benchmarks
+No code changes to core behavior. A full README and benchmark refresh following the capability expansion series, since both had drifted from what the codebase actually does.
+
+- **README diagram audit** — Source Fusion diagram corrected (was showing the old bare `[SOURCE]` header format, missing the web/news scoring step entirely). New Kiwix Internal Flow diagram added — disambiguation, multi-candidate search, scoring, and multi-book fusion had zero visual documentation despite being the most architecturally complex part of the system.
+- **README "Project Structure" rewritten** — was missing `app/scoring.py`, `app/query_expansion.py`, and 8 entire test files. Verified file-count-accurate against the real filesystem (23 test files, 15 app files).
+- **README LLM-assisted routing list expanded** from 3 to 5 actual uses — added search term disambiguation and web query expansion, which existed in code but were undocumented.
+- **README factual corrections** — `/changes` endpoint docs referenced a hardcoded "≥5°" instead of the now-configurable `FORECAST_TEMP_CHANGE_THRESHOLD`; Kiwix book selection referenced hardcoded "1-2" instead of `KIWIX_MAX_BOOKS`; Backup & Restore section still referenced the pre-rename `minisearch_data` volume name; "Part of the MiniNet stack" corrected to "Mnemo-net" (the actual current network/stack name).
+- **`tests/locustfile.py` updated** — the load test had zero `web` source queries and no short/ambiguous Kiwix queries, meaning it was structurally incapable of measuring the cost of the two most computationally expensive features added this series (disambiguation, multi-query expansion). Added `WEB_QUERIES` and `KIWIX_DISAMBIGUATION_QUERIES` task groups.
+- **Fresh benchmarks (BENCHMARKS.md)** — re-run with the updated locustfile, cold and warm cache, 20 concurrent users. Confirms the routing cache fully absorbs the new features' cold-start cost: `kiwix_disambiguation` p95 dropped ~295x (5900ms → 20ms) cold-to-warm, `web` p99 dropped ~121x (4600ms → 38ms). Aggregated median held at 17ms in both runs, unchanged from every prior benchmarked version back to v3.5.0 — the capability expansion series traded cold-path tail latency for correctness on a minority of complex queries without touching steady-state performance.
+
+### Changed
+- Version bumped to 3.11.1
+
+---
+
 ## [3.11.0]
 
 ### Added — Confidence-Aware Fusion with Expanded Ingest

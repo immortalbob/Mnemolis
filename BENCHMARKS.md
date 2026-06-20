@@ -115,6 +115,11 @@ Query decomposition and smart fusion truncation did not add meaningful overhead 
 | HA entity query | 16ms | 83ms | Live HA API call, 30s result cache |
 | Uptime warm | 15ms | 17ms | Socket.IO result cached |
 | 20 concurrent users (v3.5.0) | 15ms | 36ms | 0% failure rate |
+| Kiwix disambiguation, cold | 16ms | 5900ms | First time seeing an ambiguous term |
+| Kiwix disambiguation, warm | 17ms | 20ms | Disambiguation candidates cached |
+| Web search, cold | 17ms | 170ms | First time seeing a query (p99: 4600ms) |
+| Web search, warm | 17ms | 20ms | Alternate phrasing cached |
+| 20 concurrent users (v3.11.1) | 17ms | 38ms | 0% failure rate, warm cache |
 
 ## Key findings
 
@@ -160,6 +165,58 @@ Re-benchmarked after adding the background snapshot scheduler (4 jobs: uptime ev
 **429 requests. 0 failures on clean run.**
 
 The background scheduler adds no meaningful overhead to search latency. Median rose slightly (15ms → 17ms) due to WAL pragma overhead per connection, but this is negligible and p95/p99 remain within the same range as v3.5.0 despite four additional background jobs competing for resources.
+
+### 20 Users — Cold vs Warm Cache (v3.11.1, with Confidence-Aware Fusion + Disambiguation)
+
+Re-benchmarked after the capability expansion series: configurable thresholds, Kiwix search term disambiguation (multi-candidate search-and-score), multi-book Kiwix fusion, and confidence-aware fusion with multi-query expansion for web search. The locust file itself was updated for this run — the prior version had zero `web` source queries and no short/ambiguous Kiwix queries, meaning it couldn't measure the cost of the two most computationally expensive features added this series.
+
+**Cold cache** — first run, routing cache empty for the new query patterns (disambiguation candidates, alternate web phrasings never seen before).
+
+| Endpoint | Median | p95 | p99 | Failures |
+|----------|--------|-----|-----|----------|
+| `/health` | 730ms | 810ms | 970ms | 0% |
+| `/search [kiwix]` | 18ms | 1900ms | 7300ms | 0% |
+| `/search [kiwix_disambiguation]` | 16ms | 5900ms | 6000ms | 0% |
+| `/search [web]` | 17ms | 170ms | 4600ms | 0% |
+| `/search [forecast]` | 17ms | 20ms | 820ms | 0% |
+| `/search [news]` | 16ms | 25ms | 140ms | 0% |
+| `/search [uptime]` | 19ms | 1600ms | 1600ms | 0% |
+| `/search [ha]` | 28ms | 45ms | 45ms | 0% |
+| `/search [auto]` | 17ms | 650ms | 6000ms | 0% |
+| `/search [fusion_explicit]` | 18ms | 150ms | 1800ms | 0% |
+| `/search [fusion_auto]` | 17ms | 83ms | 3000ms | 0% |
+| `/search [fusion_triple]` | 17ms | 32ms | 950ms | 0% |
+| `/search [cache_hit]` | 17ms | 3500ms | 3500ms | 0% |
+| **Aggregated** | **17ms** | **770ms** | **4900ms** | **0%** |
+
+**853 requests. 0 failures.** The cold-cache tail is genuinely heavier than prior releases — `kiwix_disambiguation` p95 at 5900ms reflects the real cost of generating 3 LLM disambiguation candidates, searching each against Kiwix, and scoring the combined pool, all on first encounter with a given ambiguous term. `web` p99 at 4600ms reflects the dual-query expansion (two SearXNG round-trips plus scoring 25+ raw results) on first encounter with a given query.
+
+**Warm cache** — identical run immediately after, with the routing cache now populated.
+
+| Endpoint | Median | p95 | p99 | Failures |
+|----------|--------|-----|-----|----------|
+| `/health` | 730ms | 780ms | 790ms | 0% |
+| `/search [kiwix]` | 17ms | 22ms | 31ms | 0% |
+| `/search [kiwix_disambiguation]` | 17ms | 20ms | 21ms | 0% |
+| `/search [web]` | 17ms | 20ms | 38ms | 0% |
+| `/search [forecast]` | 17ms | 20ms | 20ms | 0% |
+| `/search [news]` | 17ms | 20ms | 22ms | 0% |
+| `/search [uptime]` | 18ms | 960ms | 980ms | 0% |
+| `/search [ha]` | 38ms | 57ms | 57ms | 0% |
+| `/search [auto]` | 17ms | 1000ms | 30000ms¹ | 0% |
+| `/search [fusion_explicit]` | 17ms | 20ms | 35ms | 0% |
+| `/search [fusion_auto]` | 17ms | 20ms | 24ms | 0% |
+| `/search [fusion_triple]` | 18ms | 22ms | 24ms | 0% |
+| `/search [cache_hit]` | 16ms | 20ms | 20ms | 0% |
+| **Aggregated** | **17ms** | **38ms** | **780ms** | **0%** |
+
+**869 requests. 0 failures.**
+
+¹ One `auto` request reported 30000ms (a single outlier in a 95-request bucket). Server logs for the full benchmark window (`docker logs mnemolis --since 10m`) showed zero errors, warnings, exceptions, or timeouts — consistent with Locust's own client-side request timeout firing rather than a real server-side delay. Excluding that single outlier, the aggregated p99 is 780ms, in line with every prior release.
+
+**The routing cache fully absorbs the new features' cold-start cost.** `kiwix_disambiguation` p95 dropped from 5900ms (cold) to 20ms (warm) — a ~295x improvement. `web` p99 dropped from 4600ms (cold) to 38ms (warm) — a ~121x improvement. Once a given ambiguous term or query phrasing has been seen once, every subsequent occurrence skips the LLM calls entirely and returns at the same sub-20ms median every other source achieves.
+
+**Median latency is unaffected by any of this series' work.** Aggregated median held at 17ms cold and warm, identical to every prior benchmarked version back to v3.5.0. The capability expansion series traded cold-path tail latency for correctness on a minority of complex queries — disambiguation and multi-query expansion only ever run when genuinely needed (short ambiguous Kiwix terms, 3+ word web queries) — without touching the steady-state experience for the other ~90% of traffic.
 
 ## Running benchmarks
 

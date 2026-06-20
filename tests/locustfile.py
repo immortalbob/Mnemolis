@@ -33,6 +33,24 @@ KIWIX_QUERIES = [
     "how does wifi work",
 ]
 
+# Short, single-word-after-stemming queries that trigger the disambiguation
+# path (definitional + single ambiguous word + Wikipedia selected) — the
+# original KIWIX_QUERIES above are all multi-word and never exercise this
+KIWIX_DISAMBIGUATION_QUERIES = [
+    "what is a galaxy",
+    "what is mercury",
+    "what are batteries",
+    "what is a server",
+]
+
+WEB_QUERIES = [
+    "best practices for home network security",
+    "how to reset a forgotten wifi router password",
+    "current mortgage interest rates explained",
+    "how to make sourdough bread starter from scratch",
+    "docker compose syntax",
+]
+
 AUTO_QUERIES = [
     "what is the weather this weekend",
     "are all my services up",
@@ -71,6 +89,15 @@ class MnemolisSingleSourceUser(HttpUser):
             "source": "kiwix"
         }, name="/search [kiwix]")
 
+    @task(2)
+    def kiwix_disambiguation(self):
+        """Short ambiguous queries — exercises the multi-candidate
+        disambiguation + scoring path, not just plain Kiwix lookup."""
+        self.client.post("/search", json={
+            "query": random.choice(KIWIX_DISAMBIGUATION_QUERIES),
+            "source": "kiwix"
+        }, name="/search [kiwix_disambiguation]")
+
     @task(3)
     def auto_routing(self):
         """Auto-routed queries — tests routing intelligence."""
@@ -78,6 +105,15 @@ class MnemolisSingleSourceUser(HttpUser):
             "query": random.choice(AUTO_QUERIES),
             "source": "auto"
         }, name="/search [auto]")
+
+    @task(3)
+    def web_search(self):
+        """Web search queries — exercises confidence-aware scoring and,
+        for 3+ word queries, multi-query expansion via SearXNG."""
+        self.client.post("/search", json={
+            "query": random.choice(WEB_QUERIES),
+            "source": "web"
+        }, name="/search [web]")
 
     @task(2)
     def forecast(self):
