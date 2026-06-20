@@ -633,34 +633,39 @@ _NOSPLIT_PATTERNS = [
 ]
 
 
-def _looks_like_proper_noun_pair(query: str, conj: str) -> bool:
+def _is_proper_noun_pair_at(query: str, idx: int, conj_len: int) -> bool:
     """
-    Detect "X and Y" where X and Y are short, capitalized, bare names —
-    "weather in Phoenix and Kingman", "what is happening with Iran and
-    Israel" — rather than two genuinely independent clauses joined by a
-    conjunction. The distinguishing signal is structural, not a fixed
-    list of known place/country names (which would need endless upkeep):
-    a real second intent reads as its own clause with verb/question
-    structure ("are my services up"), while a bare proper-noun pairing
-    is just a short capitalized name with no clause structure at all
-    ("Kingman").
+    Given a specific conjunction occurrence (its start index and length),
+    return True if THIS PARTICULAR occurrence looks like a bare
+    proper-noun pair ("Iran and Israel") rather than two independent
+    clauses — without making any judgment about the rest of the query.
 
-    Found via real usage: loosening the decomposition meaningful-check
-    from a fixed intent-word allowlist to "does any real content word
-    survive stop-word stripping" (needed to stop silently dropping real
-    technical content like GPIO/Python troubleshooting clauses) also
-    started incorrectly splitting "Iran and Israel" / "Phoenix and
-    Kingman" style proper-noun pairs that the old, stricter allowlist had
-    been blocking only by accident — neither "Iran" nor "Kingman" ever
-    matched any entry in that list. This restores that protection
-    explicitly and generally, without reintroducing a name list.
+    This is checked per-occurrence, not as a single global yes/no gate
+    for the whole query. Found via real usage: a query can contain both
+    a genuine proper-noun pair AND genuinely separate real intents in
+    the same sentence ("what's happening with Iran and Israel right
+    now, and also has anything weird happened with my back door, plus
+    I keep getting a numpy import error on my pi") — a global gate that
+    aborts ALL splitting the moment it finds ANY proper-noun pair
+    anywhere incorrectly discards the real, separate door/GPIO intents
+    too. Each conjunction occurrence must be judged on its own.
     """
-    q_lower = query.lower()
-    if conj not in q_lower:
-        return False
-    idx = q_lower.index(conj)
     before = query[:idx].strip()
-    after = query[idx + len(conj):].strip()
+    after_full = query[idx + conj_len:]
+
+    # Bound "after" to just the next clause — stop at the first comma or
+    # the start of any other conjunction, so we're comparing against the
+    # immediate next name, not the rest of a potentially long sentence
+    after_lower = after_full.lower()
+    cut_points = [after_lower.find(",")]
+    for other_conj in _CONJUNCTIONS:
+        p = after_lower.find(other_conj)
+        if p != -1:
+            cut_points.append(p)
+    cut_points = [p for p in cut_points if p != -1]
+    cut = min(cut_points) if cut_points else len(after_full)
+    after = after_full[:cut].strip()
+
     before_words = before.split()
     after_words = after.split()
     if not before_words or not after_words:
@@ -669,9 +674,18 @@ def _looks_like_proper_noun_pair(query: str, conj: str) -> bool:
     before_tail = before_words[-1]
     after_head = after_words[0].rstrip(",.;:")
 
+    # Only the word immediately after the conjunction matters for "is
+    # this a bare name" — "Israel right now" still starts with a bare
+    # proper noun even though trailing filler ("right now") follows
+    # within the same comma-bounded segment. The proper noun itself may
+    # be 1-2 words ("Israel" or "New York"), but the entire bounded
+    # segment doesn't need to be that short — trailing filler is fine.
     both_capitalized = before_tail[:1].isupper() and after_head[:1].isupper()
-    after_is_short = len(after_words) <= 2
-    return both_capitalized and after_is_short
+    after_name_is_short = (
+        len(after_words) == 1
+        or (len(after_words) >= 2 and after_words[1][:1].islower())
+    )
+    return both_capitalized and after_name_is_short
 
 
 def _decompose(query: str) -> list[str]:
@@ -680,9 +694,12 @@ def _decompose(query: str) -> list[str]:
     Returns a list with the original query if no meaningful split is found,
     or a list of 2+ sub-queries if the query contains independent intents.
 
-    Avoids splitting on conjunctions that are part of a comparison or
-    single-concept query, or that join a short proper-noun pair rather
-    than two independent clauses.
+    Avoids splitting at any specific conjunction occurrence that's part
+    of a comparison/single-concept query, or that joins a short
+    proper-noun pair rather than two independent clauses — checked per
+    occurrence, not as a single whole-query gate, since a long compound
+    query can contain both a genuine proper-noun pair AND genuinely
+    separate real intents in the same sentence.
 
     Tries every conjunction type and keeps whichever produces the most
     meaningful sub-queries — a query can contain multiple different
@@ -706,12 +723,6 @@ def _decompose(query: str) -> list[str]:
 
     # Don't split comparison queries
     if any(p in q_lower for p in _NOSPLIT_PATTERNS):
-        return [q]
-
-    # Don't split short proper-noun pairs joined by a conjunction —
-    # "Phoenix and Kingman", "Iran and Israel" — these are a single
-    # intent about two named entities, not two independent intents
-    if any(_looks_like_proper_noun_pair(q, conj) for conj in _CONJUNCTIONS if conj in q_lower):
         return [q]
 
     # Colloquial question phrases — "what's the deal with X", "what's up
@@ -781,13 +792,26 @@ def _decompose(query: str) -> list[str]:
         parts = []
         remaining = q
         remaining_lower = remaining.lower()
+        consumed = 0  # how much of the original query has been consumed so far
         while conj in remaining_lower:
             idx = remaining_lower.index(conj)
+            # Skip this specific occurrence if it's a bare proper-noun
+            # pair ("Iran and Israel") — don't split here, but keep
+            # scanning for the NEXT occurrence of this conjunction rather
+            # than aborting the whole split, since other occurrences in
+            # the same query may be genuinely independent intents
+            absolute_idx = consumed + idx
+            if _is_proper_noun_pair_at(q, absolute_idx, len(conj)):
+                remaining = remaining[idx + len(conj):]
+                remaining_lower = remaining.lower()
+                consumed += idx + len(conj)
+                continue
             part = remaining[:idx].strip()
             if part:
                 parts.append(part)
             remaining = remaining[idx + len(conj):]
             remaining_lower = remaining.lower()
+            consumed += idx + len(conj)
         if remaining.strip():
             parts.append(remaining.strip())
 
@@ -811,7 +835,11 @@ def _decompose(query: str) -> list[str]:
             idx = q_lower.find(conj, start)
             if idx == -1:
                 break
-            all_matches.append((idx, idx + len(conj)))
+            # Skip THIS occurrence if it's a bare proper-noun pair —
+            # other occurrences elsewhere in the same query are still
+            # checked independently and may be genuinely real intents
+            if not _is_proper_noun_pair_at(q, idx, len(conj)):
+                all_matches.append((idx, idx + len(conj)))
             start = idx + len(conj)
     all_matches.sort()
 

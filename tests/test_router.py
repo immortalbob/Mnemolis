@@ -641,6 +641,35 @@ class TestDecompose:
         parts = self.decompose("what is the weather and gpio")
         assert len(parts) == 2
 
+    def test_proper_noun_pair_guard_is_local_not_global(self):
+        """Regression test — the real, more serious bug found via real
+        usage immediately after the content-word fix shipped. The
+        proper-noun-pair guard was originally a single whole-query gate:
+        if ANY conjunction occurrence anywhere looked like a proper-noun
+        pair, decomposition aborted ENTIRELY, discarding genuinely
+        separate, real intents elsewhere in the same sentence. A query
+        can contain both a genuine proper-noun pair ('Iran and Israel')
+        AND completely unrelated real intents ('my back door', 'a numpy
+        import error on my pi') in the same breath — the guard must
+        protect only the SPECIFIC conjunction occurrence that's a
+        proper-noun pair, checked independently at every occurrence,
+        not abort splitting for the whole query the moment it finds one
+        anywhere."""
+        query = (
+            "whats happening with Iran and Israel right now, and also "
+            "has anything weird happened with my back door, plus I keep "
+            "getting a weird numpy import error on my raspberry pi, and "
+            "is it gonna be warm in Kingman and Phoenix this weekend"
+        )
+        parts = self.decompose(query)
+        assert len(parts) == 4
+        # Both proper-noun pairs must survive intact, not split apart
+        assert any("iran and israel" in p.lower() for p in parts)
+        assert any("kingman and phoenix" in p.lower() for p in parts)
+        # Both genuinely separate real intents must still be present
+        assert any("door" in p.lower() for p in parts)
+        assert any("numpy" in p.lower() for p in parts)
+
     def test_explicit_source_not_decomposed(self):
         from app.router import route, clear_cache
         import app.router as router_module
