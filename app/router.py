@@ -633,6 +633,47 @@ _NOSPLIT_PATTERNS = [
 ]
 
 
+def _looks_like_proper_noun_pair(query: str, conj: str) -> bool:
+    """
+    Detect "X and Y" where X and Y are short, capitalized, bare names —
+    "weather in Phoenix and Kingman", "what is happening with Iran and
+    Israel" — rather than two genuinely independent clauses joined by a
+    conjunction. The distinguishing signal is structural, not a fixed
+    list of known place/country names (which would need endless upkeep):
+    a real second intent reads as its own clause with verb/question
+    structure ("are my services up"), while a bare proper-noun pairing
+    is just a short capitalized name with no clause structure at all
+    ("Kingman").
+
+    Found via real usage: loosening the decomposition meaningful-check
+    from a fixed intent-word allowlist to "does any real content word
+    survive stop-word stripping" (needed to stop silently dropping real
+    technical content like GPIO/Python troubleshooting clauses) also
+    started incorrectly splitting "Iran and Israel" / "Phoenix and
+    Kingman" style proper-noun pairs that the old, stricter allowlist had
+    been blocking only by accident — neither "Iran" nor "Kingman" ever
+    matched any entry in that list. This restores that protection
+    explicitly and generally, without reintroducing a name list.
+    """
+    q_lower = query.lower()
+    if conj not in q_lower:
+        return False
+    idx = q_lower.index(conj)
+    before = query[:idx].strip()
+    after = query[idx + len(conj):].strip()
+    before_words = before.split()
+    after_words = after.split()
+    if not before_words or not after_words:
+        return False
+
+    before_tail = before_words[-1]
+    after_head = after_words[0].rstrip(",.;:")
+
+    both_capitalized = before_tail[:1].isupper() and after_head[:1].isupper()
+    after_is_short = len(after_words) <= 2
+    return both_capitalized and after_is_short
+
+
 def _decompose(query: str) -> list[str]:
     """Split a query into independent sub-queries on conjunction words.
 
@@ -640,7 +681,8 @@ def _decompose(query: str) -> list[str]:
     or a list of 2+ sub-queries if the query contains independent intents.
 
     Avoids splitting on conjunctions that are part of a comparison or
-    single-concept query.
+    single-concept query, or that join a short proper-noun pair rather
+    than two independent clauses.
 
     Tries every conjunction type and keeps whichever produces the most
     meaningful sub-queries — a query can contain multiple different
@@ -666,35 +708,21 @@ def _decompose(query: str) -> list[str]:
     if any(p in q_lower for p in _NOSPLIT_PATTERNS):
         return [q]
 
-    _INTENT_WORDS = {
-        "what", "whats", "how", "is", "are", "check", "show",
-        "tell", "get", "any", "anything", "which", "status", "give", "do",
-        "happen", "happened", "happening", "going", "deal", "thing",
-        # Source trigger nouns — valid standalone sub-queries
-        # Both singular and plural forms included — "back door" and "back
-        # doors" should both register as a real intent, not just the plural
-        "weather", "forecast", "news", "headlines", "service", "services",
-        "uptime", "light", "lights", "door", "doors", "lock", "locks",
-        "battery", "batteries", "temperature", "humidity", "motion",
-        "sensor", "sensors", "indoor", "outdoor", "outside", "power",
-        "consumption", "security", "rain", "raining",
-        # Network/connectivity — colloquial troubleshooting language, even
-        # though no dedicated "wifi status" source exists, these signal a
-        # real standalone intent that shouldn't be silently dropped
-        "wifi", "router", "network", "internet", "connection", "online",
-        "offline", "reboot", "restart", "down",
-    }
+    # Don't split short proper-noun pairs joined by a conjunction —
+    # "Phoenix and Kingman", "Iran and Israel" — these are a single
+    # intent about two named entities, not two independent intents
+    if any(_looks_like_proper_noun_pair(q, conj) for conj in _CONJUNCTIONS if conj in q_lower):
+        return [q]
 
     # Colloquial question phrases — "what's the deal with X", "what's up
     # with X" are real standalone intents regardless of what specific noun
     # follows, so a sub-query containing one of these anywhere should
     # always count as meaningful even if the trailing noun isn't itself
-    # in _INTENT_WORDS. This generalizes better than only ever growing the
-    # noun list, since any new topic word would otherwise need its own entry.
-    # Matched as a substring anywhere in the clause, not just at position
-    # zero — "and remind me what's up with X" has the marker mid-clause,
-    # since the clause itself still carries the leftover conjunction/filler
-    # word ("and remind me...") from wherever the split actually occurred.
+    # recognized as a content word. Matched as a substring anywhere in the
+    # clause, not just at position zero — "and remind me what's up with X"
+    # has the marker mid-clause, since the clause itself still carries the
+    # leftover conjunction/filler word ("and remind me...") from wherever
+    # the split actually occurred.
     _COLLOQUIAL_PHRASES = [
         "what's the deal with", "whats the deal with",
         "what's up with", "whats up with",
@@ -705,21 +733,42 @@ def _decompose(query: str) -> list[str]:
     best_split: list[str] | None = None
 
     def _filter_meaningful(parts: list[str]) -> list[str]:
+        """
+        A sub-query is meaningful if, after stripping stop words and
+        filler, at least one real content word remains — OR it contains
+        a recognized colloquial question phrase regardless of what
+        follows it.
+
+        This replaced a fixed allowlist of "intent words" (door, light,
+        wifi, router, etc.) that had to be hand-extended every time a new
+        domain came up — found via real usage that GPIO/Python/technical
+        troubleshooting clauses had zero coverage in that list at all,
+        silently dropping real content during decomposition ("Ive been
+        getting a python pigpio no permission to update GPIO error on my
+        pi" matched nothing and was discarded). Reusing kiwix.py's
+        already-hardened _STOP_WORDS set means ANY real noun/topic word
+        counts as meaningful, with no domain-specific list to maintain —
+        the same logic kiwix.py already uses to decide what's left of a
+        query once filler is stripped.
+        """
         meaningful = []
         for p in parts:
             if len(p) <= 3:
                 continue
-            # Strip trailing 's/'t contractions before matching against
-            # _INTENT_WORDS — "internet's" otherwise never equals "internet"
-            # in a literal word-membership check, the same class of bug
-            # found and fixed in kiwix.py's stop-word stripping
+            if any(s in p.lower() for s in _COLLOQUIAL_PHRASES):
+                meaningful.append(p)
+                continue
+            # Strip trailing 's/'t contractions before stop-word matching —
+            # "internet's" otherwise survives as "internet'" after a naive
+            # split, the same class of bug found and fixed in kiwix.py
             normalized_words = [
                 re.sub(r"['']\w*$", "", w) for w in p.lower().split()
             ]
-            if (
-                any(w in _INTENT_WORDS for w in normalized_words)
-                or any(s in p.lower() for s in _COLLOQUIAL_PHRASES)
-            ):
+            content_words = [
+                w for w in normalized_words
+                if w not in kiwix._STOP_WORDS and len(w) > 1
+            ]
+            if content_words:
                 meaningful.append(p)
         return meaningful
 

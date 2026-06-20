@@ -589,6 +589,58 @@ class TestDecompose:
         parts = self.decompose("compare Python and Rust, also what about Go")
         assert len(parts) == 1
 
+    def test_technical_troubleshooting_content_preserved(self):
+        """Regression test — the real bug found via real usage. The old
+        fixed _INTENT_WORDS allowlist had zero coverage for technical/
+        programming vocabulary (python, pigpio, gpio, permission, error,
+        compiler, etc), so a genuinely real, specific troubleshooting
+        clause was silently dropped during decomposition entirely —
+        the meaningful-content check failed it even though it contained
+        real, searchable content. Replaced the allowlist with a stop-word-
+        based check: any clause with at least one real content word
+        remaining after stripping filler now counts as meaningful, with
+        no domain-specific vocabulary list required."""
+        query = (
+            "is my back door locked right now, and also Ive been getting a "
+            "python pigpio no permission to update GPIO error on my pi, "
+            "plus whats the forecast looking like for tomorrow"
+        )
+        parts = self.decompose(query)
+        assert len(parts) == 3
+        assert any("door" in p.lower() for p in parts)
+        assert any("pigpio" in p.lower() or "gpio" in p.lower() for p in parts)
+        assert any("forecast" in p.lower() for p in parts)
+
+    def test_proper_noun_pair_not_split_phoenix_kingman(self):
+        """Regression test — loosening the meaningful-check from a fixed
+        allowlist to 'any content word survives' also started incorrectly
+        splitting bare proper-noun pairs that the old, stricter allowlist
+        had blocked only by accident (neither 'Phoenix' nor 'Kingman' ever
+        matched any entry in that list). Explicit structural detection
+        restores this without reintroducing a place-name list."""
+        assert len(self.decompose("weather in Phoenix and Kingman")) == 1
+
+    def test_proper_noun_pair_not_split_countries(self):
+        assert len(self.decompose("what is happening with Iran and Israel")) == 1
+
+    def test_proper_noun_pair_not_split_summarize_news(self):
+        assert len(self.decompose("summarize news about Iran and Israel")) == 1
+
+    def test_proper_noun_pair_guard_does_not_block_real_decomposition(self):
+        """The proper-noun-pair guard must be narrow enough that it never
+        blocks a genuine multi-intent split just because one clause
+        happens to start with a capitalized word."""
+        parts = self.decompose("Is it raining and are my services up")
+        assert len(parts) == 2
+
+    def test_single_real_content_word_is_sufficient(self):
+        """A clause needs only ONE real content word to count as
+        meaningful — no minimum word count beyond that, matching the
+        principle that any genuine topic, however short, deserves its
+        own search rather than being silently merged or dropped."""
+        parts = self.decompose("what is the weather and gpio")
+        assert len(parts) == 2
+
     def test_explicit_source_not_decomposed(self):
         from app.router import route, clear_cache
         import app.router as router_module

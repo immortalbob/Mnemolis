@@ -4,6 +4,37 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.15.0]
+
+### Fixed — Decomposition Silently Dropped Technical/Programming Content
+The real bug behind tonight's research into recursive/conditional decomposition. `_decompose()`'s meaningful-content check used a fixed allowlist (`_INTENT_WORDS`) of recognized topic nouns — door, light, wifi, router, weather, etc. — extended piecemeal each time a new domain came up. It had zero coverage for technical/programming vocabulary at all, so a genuinely real, specific sub-query like "Ive been getting a python pigpio no permission to update GPIO error on my pi" matched nothing in the list and was silently discarded during decomposition, vanishing from the final response entirely with no error or indication anything had gone wrong.
+
+- **Replaced the fixed allowlist with a general, stop-word-based check** — reuses `kiwix.py`'s already-hardened `_STOP_WORDS` set. A clause is now meaningful if at least one real content word survives stop-word stripping, with no domain-specific vocabulary list to maintain at all. Any future domain (cooking, finance, automotive, anything) is automatically covered without needing its own entry.
+- **`_looks_like_proper_noun_pair()` added** — the looser content-word check initially introduced a real regression: "weather in Phoenix and Kingman" and "what is happening with Iran and Israel" started incorrectly splitting into two parts, because the old strict allowlist had been blocking these only by accident (neither "Phoenix" nor "Iran" ever matched any list entry). Added explicit structural detection — short, capitalized, bare-name pairs joined by a conjunction are recognized and protected from splitting, without reintroducing a place/country name list.
+- Verified against real production content: a genuine GPIO troubleshooting query (with real, specific technical detail — not deliberately vague phrasing) now correctly survives decomposition, falls back from kiwix to web when needed, and finds the exact real Stack Exchange thread as the top result.
+
+### Research — Recursive/Conditional Decomposition Investigation
+Started researching the final capability-expansion roadmap item by reviewing prior art (multi-agent query decomposition literature, conditional tool-use patterns, if-then semantic parsing). Found that two of the evening's "disambiguation context loss" theories (Mercury, an "obscure" GPIO phrasing) were artifacts of deliberately vague test queries that never contained real disambiguating signal anywhere — not real product gaps. Correcting that assumption and re-testing with genuinely specific, realistic phrasing is what surfaced the real bug above. True conditional/branching logic (if X then Y as an action) remains out of scope — Mnemolis has no action/trigger layer to branch into, only search. The roadmap item is narrowed accordingly; see below.
+
+### Added
+- 7 new regression tests covering the content-word check, the proper-noun-pair guard (4 cases), and a guard-doesn't-overreach sanity test
+- 1 minimum-content sanity test confirming a single real content word is sufficient for a clause to count as meaningful
+
+### Changed
+- Version bumped to 3.15.0
+- `_decompose()`'s docstring updated to describe the proper-noun-pair guard
+
+**Total test count: 812**
+
+### Roadmap — Recursive/Conditional Decomposition, Re-scoped
+Based on tonight's research, narrowed to two concrete, lower-risk pieces rather than the original three-piece plan:
+1. **Conditional response framing** (not yet built) — detect "if X, [then] Y" phrasing and frame Y's answer as conditional on X's actual result in the synthesized response, without changing search behavior at all
+2. **One-level recursive sub-decomposition** (not yet built) — if a decomposed sub-query is itself still compound, decompose it one additional level, hard-capped at depth 1
+
+Dropped from scope entirely: true action/branching logic (no trigger layer exists in Mnemolis to act on), and "pass sibling-clause context to disambiguation" (no real evidence supports this — both apparent cases tonight were test-construction flaws, not product gaps).
+
+---
+
 ## [3.14.0]
 
 ### Fixed — Application Logging Was Silently Disabled (Foundational)
