@@ -67,5 +67,11 @@ class Settings(BaseSettings):
     # Lower this on memory-constrained hardware (e.g. an N100 with limited RAM).
     cache_max_size: int = 500
 
+    # Kiwix — results requested per book per search. Higher values give the
+    # scoring function more candidates to find the right answer among when
+    # common terms are crowded out by brand-name collisions (e.g. "galaxy"
+    # returning dozens of Samsung phone articles). Increases Kiwix request size.
+    kiwix_search_limit: int = 15
+
 
 settings = Settings()

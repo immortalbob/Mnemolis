@@ -75,37 +75,38 @@ ESP32 Voice Assistant
 ### Snapshot Engine
 
 ```text
-        Background Scheduler (APScheduler)
-                     │
-   ┌─────────┬───────┼───────┬─────────┐
-   ▼         ▼       ▼       ▼         │
-Uptime    Forecast  News    HA        │
-(2 min)   (30 min) (60 min) (5 min)    │
-   │         │       │       │         │
-   └─────────┴───────┴───────┘         │
-             │                          │
-             ▼                          │
-      Store snapshot                    │
-      (SQLite, JSON for HA)             │
-             │                          │
-   Retain last 288 per source ◄─────────┘
-             │
-             ▼
-      Diff consecutive snapshots
-   ┌─────────┬───────┬─────────┐
-   ▼         ▼       ▼         ▼
-Outages/   Temp Δ≥5°/ New     Lock/door/
-Recovery   Precip     headlines battery
-                                changes
-   └─────────┴───────┴─────────┘
-             │
-             ▼
-   GET /changes?hours=N
-   source="changes" (auto-routed)
-             │
-             ▼
-      Formatted summary
-   "what changed today?"
+              Background Scheduler (APScheduler)
+                            │
+        ┌──────────┬────────┬───────────┐
+        ▼          ▼        ▼           ▼
+     Uptime     Forecast   News         HA
+     (2 min)    (30 min)  (60 min)    (5 min)
+        │          │        │           │
+        └──────────┴────────┴───────────┘
+                          │
+                          ▼
+                  Store snapshot
+              (SQLite, JSON for HA)
+                          │
+              Retain last 288 per source
+                          │
+                          ▼
+              Diff consecutive snapshots
+        ┌──────────┬────────┬───────────┐
+        ▼          ▼        ▼           ▼
+    Outages/    Temp/      New        Lock/door/
+    Recovery    Precip   headlines     battery
+   (net change) changes               changes
+   (configurable thresholds)
+        └──────────┴────────┴───────────┘
+                          │
+                          ▼
+              GET /changes?hours=N
+           source="changes" (auto-routed)
+                          │
+                          ▼
+                Formatted summary
+             "what changed today?"
 ```
 
 ### Source Fusion
@@ -584,7 +585,7 @@ echo "COMPOSE_PROJECT_NAME=mnemolis" > .env
 docker compose down
 
 # Extract the backup into the data volume
-docker run --rm -v minisearch_data:/app/data -v $(pwd):/backup alpine \
+docker run --rm -v mnemolis_data:/app/data -v $(pwd):/backup alpine \
   sh -c "cd /app/data && tar xzf /backup/mnemolis-backup.tar.gz"
 
 # Restart
@@ -610,7 +611,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-665 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection, definitional query detection, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning, FreshRSS authentication, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
+685 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing, query decomposition, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation, definitional query detection, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning, FreshRSS authentication, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 

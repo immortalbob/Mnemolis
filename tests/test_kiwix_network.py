@@ -294,6 +294,255 @@ class TestPickBooksWithLLM:
         assert result == ["wikipedia_en_all_maxi_2026-02"]
 
 
+class TestShouldDisambiguate:
+    """Tests for _should_disambiguate() eligibility checks."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._orig_url = settings.llm_url
+        self._orig_model = settings.llm_model
+        settings.llm_url = "http://ollama:11434"
+        settings.llm_model = "qwen3:8b"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.llm_url = self._orig_url
+        settings.llm_model = self._orig_model
+
+    def test_false_when_llm_not_configured(self):
+        from app.sources.kiwix import _should_disambiguate
+        from app.config import settings
+        settings.llm_url = ""
+        result = _should_disambiguate("what are galaxies", "galaxy", ["wikipedia_en_all_maxi_2026-02"])
+        assert result is False
+
+    def test_false_for_non_definitional_query(self):
+        from app.sources.kiwix import _should_disambiguate
+        result = _should_disambiguate("galaxy power factor correction", "galaxy", ["wikipedia_en_all_maxi_2026-02"])
+        assert result is False
+
+    def test_false_when_not_wikipedia(self):
+        from app.sources.kiwix import _should_disambiguate
+        result = _should_disambiguate("what are galaxies", "galaxy", ["unix.stackexchange.com_en_all_2026-02"])
+        assert result is False
+
+    def test_false_for_multi_word_term(self):
+        from app.sources.kiwix import _should_disambiguate
+        result = _should_disambiguate("what is the capital of france", "capit franc", ["wikipedia_en_all_maxi_2026-02"])
+        assert result is False
+
+    def test_true_for_eligible_query(self):
+        from app.sources.kiwix import _should_disambiguate
+        result = _should_disambiguate("what are galaxies", "galaxy", ["wikipedia_en_all_maxi_2026-02"])
+        assert result is True
+
+
+class TestGetDisambiguationCandidates:
+    """Tests for _get_disambiguation_candidates() — multi-candidate generation."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._orig_url = settings.llm_url
+        self._orig_model = settings.llm_model
+        settings.llm_url = "http://ollama:11434"
+        settings.llm_model = "qwen3:8b"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.llm_url = self._orig_url
+        settings.llm_model = self._orig_model
+
+    def test_uses_routing_cache_when_available(self):
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns:
+            mock_get_routing = MagicMock(return_value="galaxy astronomy|galaxy spiral|galaxy")
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _get_disambiguation_candidates("what are galaxies", "galaxy")
+        assert result == ["galaxy astronomy", "galaxy spiral", "galaxy"]
+
+    def test_parses_pipe_separated_response(self):
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value="galaxy astronomy|galaxy spiral|galaxy"):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _get_disambiguation_candidates("what are galaxies", "galaxy")
+        assert len(result) == 3
+        assert "galaxy" in result
+
+    def test_always_includes_bare_original_term_as_fallback(self):
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value="galaxy astronomy|galaxy spiral"):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _get_disambiguation_candidates("what are galaxies", "galaxy")
+        assert "galaxy" in result
+
+    def test_filters_candidates_missing_original_word(self):
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value="samsung electronics|galaxy astronomy|galaxy"):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _get_disambiguation_candidates("what are galaxies", "galaxy")
+        assert "samsung electronics" not in result
+
+    def test_falls_back_to_original_term_when_all_candidates_invalid(self):
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value="completely unrelated garbage"):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _get_disambiguation_candidates("what are galaxies", "galaxy")
+        assert result == ["galaxy"]
+
+    def test_falls_back_when_llm_returns_none(self):
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value=None):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _get_disambiguation_candidates("what are galaxies", "galaxy")
+        assert result == ["galaxy"]
+
+    def test_caps_at_three_candidates(self):
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value="galaxy a|galaxy b|galaxy c|galaxy d|galaxy e"):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _get_disambiguation_candidates("what are galaxies", "galaxy")
+        assert len(result) <= 3
+
+    def test_rejects_overly_long_individual_candidates(self):
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value="galaxy this is way too many words|galaxy"):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _get_disambiguation_candidates("what are galaxies", "galaxy")
+        assert "galaxy this is way too many words" not in result
+
+
+class TestSearchMultiCandidateScoring:
+    """Integration tests confirming search() searches multiple candidates
+    and scoring picks the best result across all of them — not just
+    trusting whichever candidate the LLM happened to suggest first."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._orig_url = settings.llm_url
+        self._orig_model = settings.llm_model
+        settings.llm_url = "http://ollama:11434"
+        settings.llm_model = "qwen3:8b"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.llm_url = self._orig_url
+        settings.llm_model = self._orig_model
+
+    def test_searches_every_candidate_term(self):
+        from app.sources import kiwix
+        from unittest.mock import patch, MagicMock
+
+        searched_terms = []
+
+        def fake_search_book(term, book, limit=None):
+            searched_terms.append(term)
+            return []
+
+        with patch.object(kiwix, "get_books", return_value=[{"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""}]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["wikipedia_en_all_maxi_2026-02"]), \
+             patch.object(kiwix, "_get_disambiguation_candidates", return_value=["galaxy astronomy", "galaxy spiral", "galaxy"]), \
+             patch.object(kiwix, "_search_book", side_effect=fake_search_book):
+            kiwix.search("what are galaxies")
+
+        assert "galaxy astronomy" in searched_terms
+        assert "galaxy spiral" in searched_terms
+        assert "galaxy" in searched_terms
+
+    def test_picks_best_scoring_result_across_all_candidates(self):
+        from app.sources import kiwix
+        from unittest.mock import patch
+
+        def fake_search_book(term, book, limit=None):
+            if term == "galaxy astronomy":
+                return [{"title": "Radio Galaxy Zoo", "excerpt": "citizen science project", "url": "http://kiwix/rgz", "book": book}]
+            elif term == "galaxy":
+                return [{"title": "Galaxy", "excerpt": "a galaxy is a system of stars", "url": "http://kiwix/galaxy", "book": book}]
+            return []
+
+        with patch.object(kiwix, "get_books", return_value=[{"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""}]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["wikipedia_en_all_maxi_2026-02"]), \
+             patch.object(kiwix, "_get_disambiguation_candidates", return_value=["galaxy astronomy", "galaxy"]), \
+             patch.object(kiwix, "_search_book", side_effect=fake_search_book), \
+             patch.object(kiwix, "_fetch_article", return_value="A galaxy is a gravitationally bound system."):
+            result = kiwix.search("what are galaxies")
+
+        # The plain "Galaxy" article should score higher than "Radio Galaxy Zoo"
+        # for the query "what are galaxies" due to the exact stemmed title match
+        assert "Galaxy" in result
+        assert "Radio Galaxy Zoo" not in result
+
+    def test_deduplicates_results_across_candidates(self):
+        from app.sources import kiwix
+        from unittest.mock import patch
+
+        call_count = {"n": 0}
+
+        def fake_search_book(term, book, limit=None):
+            call_count["n"] += 1
+            # Same URL returned for every candidate term
+            return [{"title": "Galaxy", "excerpt": "test", "url": "http://kiwix/galaxy", "book": book}]
+
+        with patch.object(kiwix, "get_books", return_value=[{"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""}]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["wikipedia_en_all_maxi_2026-02"]), \
+             patch.object(kiwix, "_get_disambiguation_candidates", return_value=["galaxy astronomy", "galaxy spiral", "galaxy"]), \
+             patch.object(kiwix, "_search_book", side_effect=fake_search_book), \
+             patch.object(kiwix, "_fetch_article", return_value="content"):
+            result = kiwix.search("what are galaxies")
+
+        # All 3 candidates searched, but the duplicate URL only counted once
+        assert call_count["n"] == 3
+        assert result.count("# Galaxy") <= 1
+
+    def test_non_eligible_query_only_searches_once(self):
+        from app.sources import kiwix
+        from unittest.mock import patch
+
+        call_count = {"n": 0}
+
+        def fake_search_book(term, book, limit=None):
+            call_count["n"] += 1
+            return [{"title": "Result", "excerpt": "test", "url": "http://kiwix/r", "book": book}]
+
+        with patch.object(kiwix, "get_books", return_value=[{"name": "unix.stackexchange.com_en_all_2026-02", "title": "U", "summary": ""}]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["unix.stackexchange.com_en_all_2026-02"]), \
+             patch.object(kiwix, "_search_book", side_effect=fake_search_book), \
+             patch.object(kiwix, "_fetch_article", return_value="content"):
+            kiwix.search("how do I configure systemd")
+
+        # Non-Wikipedia, non-definitional or multi-word query — no disambiguation, single search
+        assert call_count["n"] == 1
+
+
 class TestSearchBook:
     """Tests for _search_book() HTML scraping of Kiwix search results."""
 
@@ -361,6 +610,25 @@ class TestSearchBook:
         with patch("app.sources.kiwix.requests.get", side_effect=req.exceptions.ConnectionError()):
             results = _search_book("test", "wikipedia_en_all_maxi_2026-02")
         assert results == []
+
+    def test_uses_configured_search_limit_by_default(self):
+        from app.sources.kiwix import _search_book
+        from app.config import settings
+        from unittest.mock import patch
+        html = '<div class="results"><li><a href="/viewer#wikipedia/A/Test">Test</a></li></div>'
+        with patch("app.sources.kiwix.requests.get", return_value=self._mock_html_response(html)) as mock_get:
+            _search_book("test", "wikipedia_en_all_maxi_2026-02")
+        params = mock_get.call_args.kwargs["params"]
+        assert params["limit"] == settings.kiwix_search_limit
+
+    def test_explicit_limit_overrides_settings_default(self):
+        from app.sources.kiwix import _search_book
+        from unittest.mock import patch
+        html = '<div class="results"><li><a href="/viewer#wikipedia/A/Test">Test</a></li></div>'
+        with patch("app.sources.kiwix.requests.get", return_value=self._mock_html_response(html)) as mock_get:
+            _search_book("test", "wikipedia_en_all_maxi_2026-02", limit=3)
+        params = mock_get.call_args.kwargs["params"]
+        assert params["limit"] == 3
 
     def test_book_field_set_correctly(self):
         from app.sources.kiwix import _search_book

@@ -196,7 +196,9 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int = 2) -> l
 # Search and fetch
 # ---------------------------------------------------------------------------
 
-def _search_book(query: str, book: str, limit: int = 5) -> list:
+def _search_book(query: str, book: str, limit: int | None = None) -> list:
+    if limit is None:
+        limit = settings.kiwix_search_limit
     try:
         response = requests.get(
             f"{settings.kiwix_url}/search",
@@ -372,6 +374,91 @@ def _score_result(result: dict, query: str, primary_book: str) -> int:
     return score
 
 
+def _get_disambiguation_candidates(query: str, search_terms: str) -> list[str]:
+    """
+    Ask the LLM for 2-3 candidate disambiguation terms for an ambiguous word.
+    Returns just the candidate word lists — actual searching and scoring
+    happens in the caller, since blind LLM term selection has proven
+    unreliable (it can't see Kiwix's actual index, so it guesses wrong
+    in unpredictable ways — broad terms get drowned by unrelated category
+    pages, narrow terms can collide with completely different topics).
+
+    Result is cached in the routing cache so repeated queries skip the LLM call.
+    """
+    from app.llm import complete
+
+    get_routing, set_routing = _get_routing_fns()
+    cache_key = f"disambig_candidates:{search_terms}"
+    cached = get_routing(cache_key)
+    if cached:
+        candidates = [c.strip() for c in cached.split("|") if c.strip()]
+        if candidates:
+            _LOGGER.info("Routing cache hit for disambiguation candidates: '%s' -> %s", search_terms, candidates)
+            return candidates
+
+    prompt = (
+        f"The word '{search_terms}' could refer to multiple unrelated things. "
+        f"Given the full question \"{query}\", list 3 different candidate search "
+        f"phrases that might find the article the user actually means — each "
+        f"phrase should be the original word plus ONE additional clarifying word, "
+        f"and the 3 candidates should try genuinely different angles (e.g. a broad "
+        f"field name, a more specific synonym, and the word alone with no qualifier). "
+        f"Respond with ONLY the 3 phrases separated by '|', no explanation. "
+        f"Example for 'galaxy': 'galaxy astronomy|galaxy spiral|galaxy'\n\n"
+        f"Candidates for '{search_terms}':"
+    )
+
+    raw = complete(prompt, max_tokens=40) or ""
+    candidates = [c.strip().strip(".").strip('"') for c in raw.split("|") if c.strip()]
+
+    # Always include the bare original term as a guaranteed fallback candidate
+    if search_terms not in candidates:
+        candidates.append(search_terms)
+
+    # Sanity filter — drop any candidate that's empty, too long, or doesn't
+    # contain the original word at all
+    original_word = search_terms.lower()
+    valid_candidates = []
+    for c in candidates:
+        if not c or len(c.split()) > 3:
+            continue
+        if original_word not in c.lower():
+            continue
+        valid_candidates.append(c)
+
+    if not valid_candidates:
+        valid_candidates = [search_terms]
+
+    # Cap at 3 candidates to bound the number of extra Kiwix searches
+    valid_candidates = valid_candidates[:3]
+
+    set_routing(cache_key, "|".join(valid_candidates))
+    _LOGGER.info("Disambiguation candidates for '%s': %s", search_terms, valid_candidates)
+    return valid_candidates
+
+
+def _should_disambiguate(query: str, search_terms: str, selected_books: list[str]) -> bool:
+    """
+    Decide whether a query is eligible for multi-candidate disambiguation.
+
+    Only triggers when:
+    - The query is definitional ("what is X", "tell me about X")
+    - Wikipedia was the selected book (encyclopedic ambiguity, not Q&A)
+    - The search term is a single word — multi-word terms already carry
+      enough context to disambiguate themselves
+    - An LLM backend is configured
+    """
+    if not settings.llm_url or not settings.llm_model:
+        return False
+    if not _is_definitional_query(query):
+        return False
+    if not any("wikipedia" in b for b in selected_books):
+        return False
+    if len(search_terms.split()) != 1:
+        return False
+    return True
+
+
 def search(query: str) -> str:
     books = get_books()
 
@@ -397,16 +484,28 @@ def search(query: str) -> str:
         if w not in _STOP_WORDS and len(w) > 1
     ) or query
 
-    _LOGGER.info("Kiwix search terms: '%s' (from query: '%s')", search_terms, query[:50])
+    # For short definitional queries resolved to Wikipedia where the search
+    # term is a single ambiguous word, try multiple disambiguation candidates
+    # and let real Kiwix results + scoring decide which one actually works —
+    # rather than trusting a single blind LLM guess about Kiwix's index
+    primary_term = max(search_terms.split(), key=len) if search_terms else search_terms
+    if _should_disambiguate(query, primary_term, selected_books):
+        search_term_candidates = _get_disambiguation_candidates(query, primary_term)
+    else:
+        search_term_candidates = [search_terms]
 
-    # Search each selected book, collect results, deduplicate by URL
+    _LOGGER.info("Kiwix search term candidates: %s (from query: '%s')", search_term_candidates, query[:50])
+
+    # Search each selected book with each candidate term, collect all results,
+    # deduplicate by URL — scoring below picks the actual winner across everything
     all_results = []
     seen_urls = set()
     for book in selected_books:
-        for r in _search_book(search_terms, book, limit=5):
-            if r["url"] not in seen_urls:
-                seen_urls.add(r["url"])
-                all_results.append(r)
+        for term in search_term_candidates:
+            for r in _search_book(term, book):
+                if r["url"] not in seen_urls:
+                    seen_urls.add(r["url"])
+                    all_results.append(r)
 
     if not all_results:
         return f"No results found in {', '.join(selected_books)}."

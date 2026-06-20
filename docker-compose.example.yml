@@ -107,7 +107,7 @@ services:
 
   # ---------------------------------------------------------------------------
   # Note: Open-Meteo (weather forecast) is an external API — no container needed.
-  # It requires no API key and is the only external call MiniSearch makes.
+  # It requires no API key and is the only external call Mnemolis makes.
   # ---------------------------------------------------------------------------
 
 volumes:

@@ -1,4 +1,4 @@
-# SearXNG settings for MiniSearch integration
+# SearXNG settings for Mnemolis integration
 # Place this file at ./searxng/settings.yml relative to your docker-compose.yml
 # Full settings reference: https://docs.searxng.org/admin/settings/settings.html
 
@@ -12,7 +12,7 @@ search:
   safe_search: 0
   autocomplete: ""
   default_lang: "en"
-  # JSON format MUST be enabled for MiniSearch to query SearXNG
+  # JSON format MUST be enabled for Mnemolis to query SearXNG
   formats:
     - html
     - json

@@ -1,6 +1,32 @@
 # Changelog
 
-All notable changes to MiniSearch are documented here.
+All notable changes to Mnemolis are documented here.
+
+---
+
+## [3.9.0]
+
+### Added — Kiwix Search Term Disambiguation (Multi-Candidate, Score-and-Verify)
+Solves the long-tracked "galaxy returns Samsung phones, battery returns military fortifications" known limitation — a problem that survived three single-guess prompting attempts before landing on the right architecture.
+
+- **`_should_disambiguate()`** — eligibility check: definitional query, Wikipedia selected, single-word search term, LLM configured
+- **`_get_disambiguation_candidates()`** — asks the LLM for 3 candidate disambiguation terms taking genuinely different angles (broad field name, specific synonym, bare word with no qualifier), rather than trusting one blind guess
+- **`search()` rewritten** — searches every candidate term against the selected book(s), merges and deduplicates results by URL, and lets the existing `_score_result()` scoring function pick the actual winner from the combined pool — grounded in real Kiwix results rather than LLM speculation about an index it can't see
+- Verified against the exact production failures: "what are galaxies" now correctly returns the **Galaxy** astronomy article (was: Samsung Galaxy J7 phone). "How do batteries work" now correctly returns the **AA battery** article (was: military fortifications, then Electric vehicle battery)
+- **3 attempted single-term prompting strategies were tried and discarded before this architecture**, documented here for anyone revisiting this problem: (1) broad category hint ("galaxy astronomy") — the disambiguation word itself dominated the search, surfacing dozens of unrelated astronomy portal pages instead of the target article; (2) rare/specific qualifier ("galaxy celestial") — collided with an entirely unrelated topic (Marvel Comics characters who happen to share thematic vocabulary with the target domain); (3) abandoning word-injection for scoring-only fixes was considered but rejected as insufficiently general. The working fix required searching multiple candidates and verifying against real results, not guessing better.
+
+### Fixed
+- **Real bug** — the single-word disambiguation term builder was including incidental content words ("how do batteries **work**" → disambiguating "battery work" as one phrase) due to picking the longest word from the full search_terms string without isolating it correctly in an earlier iteration. Now correctly isolates the single longest stemmed word before passing it to candidate generation.
+- **Misaligned Snapshot Engine diagram in README** — column branches didn't line up under their labels. Redrawn with corrected alignment and updated the stale "Temp Δ≥5°" reference to reflect the now-configurable threshold.
+
+### Changed
+- Version bumped to 3.9.0
+- 18 new tests — `TestShouldDisambiguate` (5), `TestGetDisambiguationCandidates` (8), `TestSearchMultiCandidateScoring` (5) — replacing the single-candidate disambiguation tests from the abandoned approaches
+
+**Total test count: 685**
+
+### Roadmap
+Second of five capability-expansion items complete: configurable thresholds (done), Kiwix search term disambiguation (done). Remaining: multi-book Kiwix fusion, confidence-aware fusion with expanded ingest, recursive/conditional decomposition.
 
 ---
 
