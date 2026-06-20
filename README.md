@@ -701,34 +701,46 @@ Mnemolis/
 ├── searxng/
 │   └── settings.yml               # SearXNG config with JSON enabled
 ├── tests/
-│   ├── test_router.py              # intent detection, cache, fallback logic
-│   ├── test_routing_cache.py       # routing cache logic
-│   ├── test_kiwix.py               # scoring and search term cleaning
-│   ├── test_freshrss.py            # general query detection, article scoring
+│   ├── test_router.py              # intent detection, cache, decomposition, time-window resolution
+│   ├── test_routing_cache.py       # routing cache logic and corruption handling
+│   ├── test_cache_persistence.py   # cache eviction, disk persistence, .corrupt recovery
+│   ├── test_config.py              # settings defaults and env isolation
+│   ├── test_kiwix.py               # scoring, stemming, search term cleaning (pure logic)
+│   ├── test_kiwix_network.py       # catalog parsing, book selection, disambiguation, multi-book fusion
+│   ├── test_freshrss.py            # general query detection, recency bonus
 │   ├── test_freshrss_network.py    # FreshRSS network calls via mocking
-│   ├── test_forecast.py            # forecast parsing and thresholds via mocking
-│   ├── test_searxng.py             # SearXNG search and guard via mocking
+│   ├── test_forecast.py            # forecast parsing, location attribution, configurable thresholds
+│   ├── test_searxng.py             # SearXNG search, query expansion, scoring integration
+│   ├── test_scoring.py             # shared web/news relevance scoring, generic-result penalty, URL normalization
+│   ├── test_query_expansion.py     # alternate phrasing generation and sanity checks
 │   ├── test_uptime_kuma.py         # Uptime Kuma status parsing via mocking
-│   ├── test_fusion.py              # fusion merging, truncation, deduplication, same-source merging
-│   ├── test_home_assistant.py      # HA entity filtering, exclusions, formatting
-│   ├── test_main.py                # FastAPI endpoint tests
-│   ├── test_snapshots.py            # snapshot diff engine tests
+│   ├── test_fusion.py              # fusion merging, truncation, deduplication, header formatting
+│   ├── test_home_assistant.py      # HA entity filtering, area detection, the core matching engine
+│   ├── test_main.py                # FastAPI endpoint tests, API key auth, catalog/areas endpoints
+│   ├── test_llm.py                 # Ollama/OpenAI-compatible LLM client behavior
+│   ├── test_mcp_server.py          # MCP tool schema and call dispatch
+│   ├── test_snapshots.py           # snapshot diff engines, net-change collapsing
+│   ├── test_snapshot_jobs.py       # scheduled snapshot job functions
+│   ├── test_security.py            # SQL injection, path traversal, fuzz, concurrency
+│   ├── test_property.py            # Hypothesis property-based fuzz testing
 │   └── locustfile.py               # Locust load testing suite
 └── app/
-    ├── main.py                     # FastAPI app + MCP mount + cache/catalog endpoints
+    ├── main.py                     # FastAPI app + MCP mount + cache/catalog/areas endpoints + API key auth
     ├── snapshots.py                # Snapshot engine — scheduler, diff logic, change detection
     ├── mcp_server.py               # MCP SSE server
-    ├── router.py                   # Intent detection, source routing, and caching
+    ├── router.py                   # Intent detection, source routing, decomposition, caching
     ├── llm.py                      # LLM client — Ollama native and OpenAI-compatible
+    ├── scoring.py                  # Shared relevance scoring for web/news — keyword overlap, generic-result penalty
+    ├── query_expansion.py          # Alternate query phrasing for web search multi-query expansion
     ├── config.py                   # Settings via environment variables
     └── sources/
-        ├── kiwix.py                # Offline knowledge base — dynamic catalog + LLM routing
+        ├── kiwix.py                # Offline knowledge base — catalog, disambiguation, multi-book fusion
         ├── forecast.py             # Open-Meteo weather forecast
-        ├── freshrss.py             # FreshRSS RSS reader
-        ├── searxng.py              # SearXNG web search
+        ├── freshrss.py             # FreshRSS RSS reader with confidence-aware scoring
+        ├── searxng.py              # SearXNG web search with multi-query expansion
         ├── uptime_kuma.py          # Uptime Kuma service monitoring
-        ├── home_assistant.py       # Home Assistant entity state summaries
-        └── fusion.py               # Multi-source concurrent fusion
+        ├── home_assistant.py       # Home Assistant entity state summaries, area awareness
+        └── fusion.py               # Multi-source concurrent fusion with descriptive headers
 ```
 
 ## Philosophy
