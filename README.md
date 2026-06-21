@@ -488,7 +488,8 @@ environment:
 ```
 
 ### API key authentication (optional)
-By default, Mnemolis has no authentication — anyone on your network can query it. This matches the trust model of a homelab where Mnemolis sits behind your own firewall.
+
+**By default, Mnemolis has no authentication at all — anyone who can reach it on your network can query it, with no key required.** This matches the trust model of a homelab where Mnemolis sits behind your own firewall and isn't reachable from the open internet. If Mnemolis is ever exposed beyond a fully trusted local network — a VPN with split tunneling, a reverse proxy, a port forward — set `API_KEYS` before doing so, not after.
 
 To require an API key for `POST /search` and `GET /changes`:
 
@@ -512,6 +513,8 @@ curl -X POST http://your-host:8888/search \
   -H "Content-Type: application/json" \
   -d '{"query": "what is nitrogen", "source": "kiwix"}'
 ```
+
+**Setting `API_KEYS` only protects `POST /search` and `GET /changes` — every other endpoint stays unauthenticated regardless of this setting**, including `/health`, `/cache`, `/logs`, `/backup`, and `/areas`. This is intentional, not an oversight: it keeps monitoring tools and discovery requests from being blocked, but it means `API_KEYS` is not a substitute for actual network-level access control if any of that other data (query logs, cache contents, a full backup of Mnemolis's state) would be sensitive in your specific deployment.
 
 All other endpoints (`/health`, `/areas`, `/backup`, `/cache`, etc.) remain unauthenticated regardless of this setting, so monitoring tools and discovery requests aren't blocked.
 
