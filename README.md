@@ -55,12 +55,13 @@ ESP32 Voice Assistant
                            Mnemolis
                                 │
                           Smart Routing
-              ┌─────────────────┼─────────────────┐
-              ▼                 ▼                 ▼
-        Single Source     Auto-Fusion       Decomposition
-       (keyword or LLM) (multi-keyword/LLM) (conjunction split)
-              │                 │                 │
-              └─────────────────┴─────────────────┘
+        ┌───────────────┬───────────────┬───────────────┐
+        ▼               ▼               ▼               ▼
+  Single Source    Auto-Fusion    Decomposition   Conditional
+ (keyword or LLM) (multi-keyword  (conjunction      Detection
+                       /LLM)         split)      ("if X, Y")
+        │               │               │               │
+        └───────────────┴───────────────┴───────────────┘
                                 │
                            ┌────┴────┐
                            ▼         ▼
@@ -706,7 +707,8 @@ This doesn't apply to FreshRSS, which fetches and locally re-scores your existin
 1. Create `app/sources/your_source.py` with a `search(query: str) -> str` function
 2. Add any config vars to `app/config.py` and `docker-compose.yml`
 3. Import and register it in `app/router.py` — add to `SOURCE_MAP`, `INTENT_MAP`, `SOURCE_DESCRIPTIONS`, and `CACHE_TTL`
-4. Rebuild: `docker compose up -d --build`
+4. Optionally add an entry to `FALLBACK_CHAIN` if your source should fall back to another (e.g. `kiwix` falls back to `web`) when it returns nothing useful — this is tracked and surfaced in `/health` and `/logs/stats`, so a source with a real, well-matched fallback target gets the same visibility as the built-in ones
+5. Rebuild: `docker compose up -d --build`
 
 The new source is automatically available via both REST and MCP — and immediately fusable with any other source.
 
