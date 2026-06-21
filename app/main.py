@@ -14,7 +14,6 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from app.router import (
-    route,
     route_with_source,
     SOURCE_MAP,
     FALLBACK_CHAIN,
@@ -185,7 +184,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.18.1",
+    version="3.18.2",
     lifespan=lifespan,
 )
 
@@ -575,17 +574,6 @@ def backup_info():
         else:
             info[name] = {"exists": False}
     return {"files": info}
-def logs_clear():
-    """Clear all query log entries."""
-    try:
-        con = _connect(_LOG_DB)
-        cur = con.execute("DELETE FROM query_log")
-        count = cur.rowcount
-        con.commit()
-        con.close()
-        return {"status": "cleared", "entries_removed": count}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
 
 
 @app.get("/areas")
@@ -637,17 +625,6 @@ def trigger_snapshots():
         ]
         concurrent.futures.wait(futures)
     return {"status": "ok", "snapshots_triggered": ["uptime", "forecast", "news", "ha"]}
-def logs_clear():
-    """Clear all query log entries."""
-    try:
-        con = _connect(_LOG_DB)
-        cur = con.execute("DELETE FROM query_log")
-        count = cur.rowcount
-        con.commit()
-        con.close()
-        return {"status": "cleared", "entries_removed": count}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
 
 
 @app.get("/logs/stats")

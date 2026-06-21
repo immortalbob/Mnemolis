@@ -1,7 +1,6 @@
 """
 Tests for app/scoring.py — shared relevance scoring for web and news results.
 """
-import pytest
 
 
 class TestNormalizeUrl:

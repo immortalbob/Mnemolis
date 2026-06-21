@@ -6,7 +6,6 @@ These guard real-world-relevant behavior: malformed cache file recovery
 (the .corrupt rename pattern we've actually seen trigger in production),
 eviction at capacity, and stats reporting accuracy.
 """
-import pytest
 import json
 import os
 import tempfile

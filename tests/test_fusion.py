@@ -2,7 +2,6 @@
 Tests for app/sources/fusion.py — multi-source concurrent search.
 Uses unittest.mock to avoid real network calls.
 """
-import pytest
 from unittest.mock import patch, MagicMock
 
 

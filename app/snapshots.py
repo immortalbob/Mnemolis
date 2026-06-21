@@ -7,7 +7,6 @@ Phase 2: HA structured entity snapshots
 """
 import sqlite3
 import logging
-import time
 from app.config import settings
 from datetime import datetime, timezone, timedelta
 

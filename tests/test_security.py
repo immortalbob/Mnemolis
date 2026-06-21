@@ -10,7 +10,6 @@ Covers:
 - Fuzz testing with extreme input (very long, unicode, null bytes, pure punctuation)
 """
 import pytest
-import sqlite3
 import tempfile
 import os
 import threading
@@ -168,7 +167,6 @@ class TestFuzzInput:
 
     def test_repeated_conjunctions_do_not_cause_infinite_loop(self):
         from app.router import _decompose
-        import signal
 
         result = _decompose("and and and and and and weather and services")
         # Should terminate — test passes simply by not hanging

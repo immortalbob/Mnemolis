@@ -5,7 +5,6 @@ This module backs every routing decision in the system (source selection,
 Kiwix book selection, fusion source selection), so correctness here matters
 disproportionately relative to its small size.
 """
-import pytest
 from unittest.mock import patch, MagicMock
 import requests as req
 

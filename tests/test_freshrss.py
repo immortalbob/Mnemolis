@@ -2,7 +2,6 @@
 Tests for app/sources/freshrss.py — general query detection and article scoring.
 No network calls required.
 """
-import pytest
 
 
 # ---------------------------------------------------------------------------

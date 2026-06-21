@@ -7,7 +7,7 @@ meaningfully and is effectively a thin wrapper around the MCP SDK.
 """
 import pytest
 import asyncio
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 class TestListTools:

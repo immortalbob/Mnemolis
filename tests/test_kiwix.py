@@ -2,7 +2,6 @@
 Tests for app/sources/kiwix.py — scoring and search term cleaning.
 No network calls required.
 """
-import pytest
 
 
 # ---------------------------------------------------------------------------

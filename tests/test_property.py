@@ -9,7 +9,6 @@ crash, regardless of input — decomposition, stemming, scoring, diffing,
 and HA query filtering.
 """
 import json
-import pytest
 from hypothesis import given, strategies as st, settings, HealthCheck
 
 

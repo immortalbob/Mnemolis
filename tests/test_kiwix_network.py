@@ -7,7 +7,6 @@ All HTTP calls are mocked. These complement test_kiwix.py, which covers
 the pure scoring/stemming logic; this file covers the OPDS catalog parsing,
 HTML scraping, and LLM book-selection dispatch.
 """
-import pytest
 from unittest.mock import patch, MagicMock
 import requests as req
 
@@ -503,7 +502,7 @@ class TestSearchMultiCandidateScoring:
 
     def test_searches_every_candidate_term(self):
         from app.sources import kiwix
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
 
         searched_terms = []
 
@@ -810,7 +809,7 @@ class TestSearchMultiBookFusionIntegration:
 
     def test_single_book_never_triggers_fusion_path(self):
         from app.sources import kiwix
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
 
         with patch.object(kiwix, "get_books", return_value=[{"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""}]), \
              patch.object(kiwix, "_pick_books_with_llm", return_value=["wikipedia_en_all_maxi_2026-02"]), \

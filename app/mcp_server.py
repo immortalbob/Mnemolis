@@ -13,7 +13,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.requests import Request
 
-from app.router import route, SOURCE_MAP
+from app.router import route
 
 _LOGGER = logging.getLogger(__name__)
 

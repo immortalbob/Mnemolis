@@ -3,7 +3,6 @@ Tests for app/router.py — intent detection, cache logic, fallback detection.
 No network calls required.
 """
 import time
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -183,9 +182,7 @@ class TestAutoFusionEscalation:
     """Tests for auto routing escalating to fusion on multi-topic queries."""
 
     def test_multi_topic_query_decomposes(self):
-        from app.router import route, _decompose
-        from unittest.mock import patch
-        from app.sources import forecast, uptime_kuma
+        from app.router import _decompose
 
         # Multi-topic query should decompose into sub-queries rather than fuse
         parts = _decompose("what is the weather and are my services up")
@@ -194,7 +191,7 @@ class TestAutoFusionEscalation:
         assert any("services" in p for p in parts)
 
     def test_multi_topic_query_routes_independently(self):
-        from app.router import route, clear_cache, clear_routing_cache
+        from app.router import route, clear_cache
         import app.router as router_module
         from unittest.mock import patch, MagicMock
 
@@ -208,7 +205,7 @@ class TestAutoFusionEscalation:
             with patch("app.router._get_cached", return_value=None), \
                  patch("app.router._keyword_detect", return_value=None), \
                  patch("app.router._llm_detect", side_effect=["forecast", "uptime"]):
-                result = route("what is the weather and are my services up", "auto")
+                route("what is the weather and are my services up", "auto")
         finally:
             router_module.SOURCE_MAP.update(original_map)
         assert mock_forecast.called
@@ -1017,7 +1014,7 @@ class TestRoutingCacheEviction:
         """Confirm eviction actually removes the OLDEST entry by
         timestamp, not an arbitrary one — the same correctness property
         the result cache's _evict_oldest() already guarantees."""
-        from app.router import _ROUTING_CACHE_MAX_SIZE, _set_routing, _get_routing, _routing_cache
+        from app.router import _ROUTING_CACHE_MAX_SIZE, _set_routing, _get_routing
         import time as time_module
         from unittest.mock import patch
 

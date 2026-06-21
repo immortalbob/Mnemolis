@@ -63,7 +63,7 @@ def _complete_ollama(prompt: str, max_tokens: int, temperature: float) -> str | 
     raw = data.get("response", "").strip()
     if not raw:
         thinking = data.get("thinking", "")
-        lines = [l.strip() for l in thinking.splitlines() if l.strip()]
+        lines = [line.strip() for line in thinking.splitlines() if line.strip()]
         raw = lines[-1] if lines else ""
 
     return raw.strip(".").strip() or None

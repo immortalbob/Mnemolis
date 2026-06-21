@@ -2,7 +2,6 @@
 Tests for app/snapshots.py — snapshot engine diff logic.
 Tests diff functions directly without requiring a running scheduler or DB.
 """
-import pytest
 
 
 class TestDiffUptime:

@@ -2,7 +2,6 @@
 Tests for app/sources/searxng.py
 Uses unittest.mock to avoid real network calls.
 """
-import pytest
 from unittest.mock import patch, MagicMock
 
 

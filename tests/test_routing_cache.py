@@ -6,7 +6,6 @@ No network calls required.
 """
 import time
 import json
-import pytest
 
 
 class TestRoutingCacheBasics:
@@ -140,7 +139,7 @@ class TestLoadRoutingCache:
         clear_routing_cache()
 
     def test_loads_valid_entries(self, tmp_path):
-        from app.router import load_routing_cache, _routing_cache, ROUTING_CACHE_TTL
+        from app.router import load_routing_cache, _routing_cache
         import app.router as router_module
 
         cache_file = tmp_path / "routing_cache.json"

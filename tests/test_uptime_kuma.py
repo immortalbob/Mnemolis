@@ -2,7 +2,6 @@
 Tests for app/sources/uptime_kuma.py
 Uses unittest.mock to avoid real Socket.IO connections.
 """
-import pytest
 from unittest.mock import patch, MagicMock
 
 

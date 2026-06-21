@@ -1,7 +1,6 @@
 """
 Tests for app/query_expansion.py — alternate query phrasing for web search.
 """
-import pytest
 from unittest.mock import patch, MagicMock
 
 

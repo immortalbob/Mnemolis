@@ -5,7 +5,6 @@ These tests guard against accidental default value regressions (a typo
 in a default silently changes behavior with no obvious error) and confirm
 the settings object is constructible and env-overridable.
 """
-import pytest
 
 
 class TestDefaultValues:

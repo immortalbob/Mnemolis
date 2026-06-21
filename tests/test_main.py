@@ -331,7 +331,6 @@ class TestFallbackDetection:
 
     def setup_method(self):
         from app.main import _LOG_DB
-        import sqlite3
         con = sqlite3.connect(_LOG_DB)
         con.execute("DELETE FROM query_log")
         con.commit()
@@ -340,7 +339,6 @@ class TestFallbackDetection:
     def test_explicit_source_fallback_is_detected(self, client):
         """An explicit source='kiwix' request that internally falls back
         to web must be logged with fallback_occurred=1."""
-        from unittest.mock import patch
         import app.router as router_module
 
         original_map = dict(router_module.SOURCE_MAP)
@@ -367,7 +365,6 @@ class TestFallbackDetection:
     def test_no_fallback_is_not_flagged(self, client):
         """A request that succeeds on its intended source (no fallback
         needed at all) must be logged with fallback_occurred=0."""
-        from unittest.mock import patch
         import app.router as router_module
 
         original_map = dict(router_module.SOURCE_MAP)
