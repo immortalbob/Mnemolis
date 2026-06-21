@@ -4,6 +4,34 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.18.2]
+
+### Added — GitHub Wiki (Documentation Restructuring Complete)
+29 wiki pages covering every Core Concept, both Kiwix and Web/News deep dives, Operations, four full Design History narratives (the real bug-hunting stories — proper-noun-pair guard's four sequential bugs, the two-part discourse-framing fix, the SearXNG config-vs-running-process lesson, the conditional-detection recursion bug), Reference material (Roadmap, the verified Open WebUI System Prompt Guide, Contributing), and the remaining Getting Started pages (About, First-Time Setup, Home Assistant Integration, Configuration Reference, Troubleshooting).
+
+Every numeric claim (scoring weights, thresholds, TTLs) verified against actual running code rather than assumed from memory or docstrings — caught one real docstring/code discrepancy in Kiwix's list-article scoring bonus along the way. Every internal link cross-checked against the page map; six broken anchor links (an em-dash-to-double-hyphen slugification mistake, repeated several times before the pattern was fully internalized) found and fixed through systematic full-wiki audits rather than one-off spot checks. One page (`Configuration Reference`) originally promised on the map was found missing entirely only by checking the map against the filesystem directly at the end — written and added before considering the wiki complete.
+
+### Changed — README Restructured to Reference the Wiki
+Replaced extensive design-rationale prose, exact scoring breakdowns, and bug-history narrative with short summaries and direct wiki links — applied to Query Decomposition, Conditional Query Detection, Multi-Book Fusion, Confidence-Aware Fusion, Query Expansion, Caching, the SearXNG timeout note, and the Backup & Restore volume-naming note. Architecture diagrams, the REST API reference, and all actionable setup/config steps were deliberately kept in full — only the "why," not the "how" or "what," moved to the wiki. 15 wiki links added across the README, each verified against a real, existing page before shipping.
+
+### Added — CI Infrastructure
+- **Test workflow** (`.github/workflows/tests.yml`) — runs the full 883-test suite on every push and pull request to `main`. Verified with a real local dry run in a bare environment (no Docker, no homelab network access) before shipping — confirmed every test is genuinely network-independent and properly mocked, not just claimed to be in file headers.
+- **Lint workflow** (`.github/workflows/lint.yml`) — runs `ruff` on every push and PR.
+- **Docker build verification** (`.github/workflows/docker-build.yml`) — builds the real `Dockerfile` on every push and PR, catching a class of failure (broken `COPY` paths, dependency issues specific to the slim image, Dockerfile syntax errors) the Python-only test suite can't see at all.
+- **Dependabot** (`.github/dependabot.yml`) — weekly automated PRs for `pip` dependency updates and GitHub Actions version updates.
+- **Stale issue/PR check** (`.github/workflows/stale.yml`) — flags issues and PRs with 60+ days of inactivity, closes after 14 more days of continued silence. `pinned` and `security` labels are exempt.
+- **`.gitignore`** added — `.pytest_cache/`, `.hypothesis/`, local `data/`, `.env`, and the personal (non-template) `docker-compose.yml` are no longer tracked going forward.
+- Three new status badges added to the README (Tests, Lint, Docker Build).
+
+### Fixed — Two Dead, Duplicate Functions Removed
+Setting up the lint workflow surfaced a real, pre-existing issue unrelated to lint *style*: `logs_clear()` was defined three separate times in `app/main.py`, byte-for-byte identical, with only the first carrying the actual `@app.post("/logs/clear")` decorator. The other two were genuinely dead code — never registered as routes, silently shadowed, sitting orphaned directly after unrelated functions with no separating blank line (a clear sign of an old copy-paste accident). Removed both; `/logs/clear` itself is unaffected, since the real, decorated definition was untouched. Verified via full test suite re-run before and after (883 passed, identical, both times) and via `ruff check` reporting zero remaining issues.
+
+A separate ambiguous variable name (`l` in `app/llm.py`, easily misread as `1` or `I`) and one genuinely unused test variable were also fixed — both real, if minor, and both caught only because the linter was being verified against the actual codebase before being shipped as a required CI check, rather than assumed clean.
+
+**Total test count: 883** (unchanged — this release added no new application logic, only removed dead code with zero behavior change)
+
+---
+
 ## [3.18.1]
 
 ### Added — Background Snapshot Job Health (Third and Final Operational Maturity Item)

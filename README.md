@@ -1,6 +1,8 @@
 # Mnemolis
 
 [![Tests](https://github.com/immortalbob/Mnemolis/actions/workflows/tests.yml/badge.svg)](https://github.com/immortalbob/Mnemolis/actions/workflows/tests.yml)
+[![Lint](https://github.com/immortalbob/Mnemolis/actions/workflows/lint.yml/badge.svg)](https://github.com/immortalbob/Mnemolis/actions/workflows/lint.yml)
+[![Docker Build](https://github.com/immortalbob/Mnemolis/actions/workflows/docker-build.yml/badge.svg)](https://github.com/immortalbob/Mnemolis/actions/workflows/docker-build.yml)
 
 A unified local knowledge search API for self-hosted homelabs. Mnemolis runs as a Docker container on your internal network and routes queries to the appropriate backend — offline knowledge, weather forecast, RSS news, live web search, service monitoring, or multiple sources concurrently — via a single endpoint.
 
