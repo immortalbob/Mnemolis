@@ -4,6 +4,8 @@ A unified local knowledge search API for self-hosted homelabs. Mnemolis runs as 
 
 Exposes both a **REST API** and an **MCP server** so any client can connect to it.
 
+This README covers what it is, installation, and the API reference. For deep-dive mechanism detail, exact scoring weights, and the real bugs found and fixed along the way, see the **[Wiki](https://github.com/immortalbob/Mnemolis/wiki)**.
+
 ## Architecture
 
 ### Voice Assistant Flow
@@ -110,6 +112,8 @@ ESP32 Voice Assistant
              "what changed today?"
 ```
 
+Full mechanics, including why outage/weather changes are collapsed to net change while news/HA events are reported individually: **[Snapshot Engine & Changes](https://github.com/immortalbob/Mnemolis/wiki/Snapshot-Engine-and-Changes)**.
+
 ### Source Fusion
 
 ```text
@@ -144,7 +148,7 @@ ESP32 Voice Assistant
                Single Response
 ```
 
-Fusion queries all specified sources concurrently, filters empty or failed results, and merges the remainder with descriptive source attribution headers (e.g. `[FORECAST — WEATHER FORECAST FOR YOUR CONFIGURED HOME LOCATION]`) so the LLM reading the fused response can't mistakenly infer facts across unrelated sections. If only one source returns results, it is returned directly without headers.
+Fusion queries all specified sources concurrently, filters empty or failed results, and merges the remainder with descriptive source attribution headers (e.g. `[FORECAST — WEATHER FORECAST FOR YOUR CONFIGURED HOME LOCATION]`) so the LLM reading the fused response can't mistakenly infer facts across unrelated sections. If only one source returns results, it is returned directly without headers. Full mechanics: **[Fusion](https://github.com/immortalbob/Mnemolis/wiki/Fusion)**.
 
 ### Query Decomposition
 
@@ -195,15 +199,7 @@ intent    intents
      with [SOURCE — DESCRIPTION] attribution
 ```
 
-Decomposition only applies to `source="auto"`. Explicit source requests (`source="kiwix"`) skip decomposition entirely. Consecutive results from the same source are merged under a single header — "indoor air quality and are the doors locked" returns one `[HA]` block, not two. Casual, colloquial phrasing ("the wifi has been acting flaky and also can you check the front door, and what's the deal with sunspots") decomposes the same way formal phrasing does — this was a real gap found and fixed through testing against genuinely messy real-world queries, not synthetic ones.
-
-A clause counts as a real, independent intent if any genuine content word survives stop-word stripping — there's no fixed list of recognized topics to maintain, so technical/programming vocabulary ("pigpio," "gpio," "compiler") is handled the same as home/network vocabulary, with no per-domain extension required. Bare proper-noun pairs joined by a conjunction ("weather in Phoenix and Kingman," "what's happening with Iran and Israel") are protected from being mistaken for two separate intents — checked at each conjunction occurrence independently, so a single sentence can contain both a genuine proper-noun pair and other, completely unrelated real intents without one being mistaken for the other.
-
-Queries mixing multiple different conjunction types in one sentence ("X, and also Y, plus Z, and W") are also handled — Mnemolis tries every conjunction type in isolation as well as splitting on every conjunction occurrence at once, and keeps whichever approach produces the most genuine sub-intents.
-
-Queries phrased with current-discourse framing ("what's the deal with that whole mercury retrograde thing everyone keeps talking about") are detected explicitly and biased toward including Kiwix in the routing decision — these phrasings previously routed past Kiwix to news/web entirely, since the LLM router's news/web descriptions matched this kind of phrasing almost word-for-word while Kiwix's description gave no signal that an evergreen topic can also be currently trending in public conversation. The discourse-framing phrase itself is also stripped before Kiwix's search terms are built, so words like "everyone" and "obsessed" never pollute the actual search.
-
-**Known limitation:** a single, genuinely ambiguous bare word (e.g. "galaxy," with both astronomy and pop-culture senses in the corpus) can still land on a thematically-related but imprecise match — this is a search-relevance question distinct from the routing bypass described above, since it persists even when Kiwix is correctly included and search terms are clean.
+Decomposition only applies to `source="auto"`. It handles casual, colloquial phrasing the same as formal phrasing, protects bare proper-noun pairs ("Iran and Israel") from being mistaken for two separate intents, and biases discourse-framing queries ("everyone keeps talking about X") toward including Kiwix rather than letting them route past it entirely. Full mechanics, including the real bugs found and fixed in this logic: **[Query Decomposition](https://github.com/immortalbob/Mnemolis/wiki/Query-Decomposition)** and **[The Proper-Noun-Pair Saga](https://github.com/immortalbob/Mnemolis/wiki/The-Proper-Noun-Pair-Saga)**.
 
 ### Conditional Query Detection
 
@@ -254,11 +250,7 @@ Queries phrased with current-discourse framing ("what's the deal with that whole
               Final Response
 ```
 
-Detection is deliberately narrow — only the leading `"if X, Y"` form with an explicit comma is recognized. "If" is genuinely ambiguous in English: it has both a conditional sense ("if it's raining, bring an umbrella") and a "whether" sense ("check if the lights are on" = "check whether the lights are on"). The whether sense never appears at the start of a sentence followed by a comma, so restricting to that form sidesteps the ambiguity entirely rather than guessing at verb-based disambiguation — phrasing like "let me know if X" is genuinely ambiguous even to a human reader (could mean "tell me the current status" or "notify me if it changes") and is intentionally not detected. Mid-sentence and trailing `"if"` ("remind me to bring an umbrella if it's raining") are also out of scope for the same reason.
-
-Mnemolis has no reminder, alert, or trigger capability — it cannot act on a conditional's consequence. Instead, the response is framed honestly around the condition's actual real answer. For structured, genuinely binary sources (HA lock/door states, uptime up/down, forecast rain/clear), the response states an explicit verdict: "It is NOT the case that the back door is unlocked — so the suggested action (let me know) may not apply." For open-ended or subjective conditions (encyclopedic facts, "is it hot enough"), no verdict is fabricated — the real result is presented honestly with a note that judgment is needed, since guessing wrong would actively mislead rather than just be unhelpful.
-
-Decomposed sub-queries are re-checked for their own embedded conditional structure, since the top-level check only ever runs once against the original full query — "what is the weather and if the back door is unlocked, let me know" doesn't start with "if," so the second decomposed sub-query needs its own re-detection, which happens automatically.
+Detection is deliberately narrow — only a leading `"if X, Y"` / `"should X, Y"` / `"in case X, Y"` form with an explicit comma is recognized, since "if" is genuinely ambiguous in English and this form sidesteps that ambiguity entirely. Mnemolis has no reminder or trigger capability, so the response is framed honestly around the condition's real answer rather than pretending to act on the consequence — a genuine verdict for structured sources (HA locks, uptime, forecast rain), an honest "you'll need to judge" for everything else. Full design rationale and the real recursion bug found while building this: **[Conditional Query Detection](https://github.com/immortalbob/Mnemolis/wiki/Conditional-Query-Detection)** and **[The Recursion Design Bug](https://github.com/immortalbob/Mnemolis/wiki/The-Recursion-Design-Bug)**.
 
 ### Kiwix Internal Flow
 
@@ -307,7 +299,7 @@ Decomposed sub-queries are re-checked for their own embedded conditional structu
   article           fusion response
 ```
 
-This is the layer that fixed the "galaxy returns Samsung phones, battery returns military fortifications" problem — rather than trusting one LLM guess about which search term will work, Mnemolis tries several candidates and verifies against real Kiwix results, scored the same way regardless of which term found them.
+This is the layer that fixed the "galaxy returns Samsung phones, battery returns military fortifications" problem — rather than trusting one LLM guess about which search term will work, Mnemolis tries several candidates and verifies against real Kiwix results, scored the same way regardless of which term found them. Full mechanics and exact scoring weights: **[Kiwix Disambiguation](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Disambiguation)** and **[Kiwix Scoring](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Scoring)**.
 
 ## Integrations
 
@@ -446,9 +438,7 @@ openssl rand -hex 32
 
 ### SearXNG request timeout
 
-SearXNG's default `request_timeout` is `3.0` seconds — too short for several real, commonly-used engines (Google, Wikipedia, Startpage, DuckDuckGo have all been observed taking 15-25+ seconds to respond under normal conditions, not just when rate-limited). With the default timeout, these requests get killed before they have a chance to succeed, which surfaces in Mnemolis as `"Error reaching SearXNG: connection failed."` even though SearXNG itself is healthy and the network path is fine — the actual cause is visible in SearXNG's own logs (`docker logs searxng`) as `HTTP requests timeout (search duration : 20.5s, timeout: 3.0s)`, not in anything Mnemolis logs.
-
-If you see this error, check SearXNG's own logs first before assuming a Mnemolis or network problem. Raise the timeout in your SearXNG `settings.yml`:
+SearXNG's default `request_timeout` (3.0s) is too short for several real, commonly-used engines, which can take 15-25+ seconds to respond under normal conditions. If you see `"Error reaching SearXNG: connection failed"`, raise it in your SearXNG `settings.yml`:
 
 ```yaml
 outgoing:
@@ -456,9 +446,7 @@ outgoing:
   max_request_timeout: 20.0
 ```
 
-`max_request_timeout` is commented out by default — uncomment it, since some individual engines (e.g. `360search`, shipped already configured for `timeout: 20.0` in the default SearXNG config) need more time than the global default, and the maximum acts as a ceiling on those per-engine overrides. Restart SearXNG after changing this (`docker restart searxng` or `docker compose restart searxng`, depending on how it's deployed).
-
-Separately, real per-engine rate limiting (e.g. Brave returning `SearxEngineTooManyRequestsException: Too many request (suspended_time=180)`) is a different, normal occurrence under heavy query volume — SearXNG self-recovers after the suspension window without intervention.
+Restart SearXNG after changing this. If the error persists after the change, **verify SearXNG actually picked it up** — a correctly-edited config file doesn't help if the container was never restarted. Full story, including how this was diagnosed: **[The SearXNG Timeout Lesson](https://github.com/immortalbob/Mnemolis/wiki/The-SearXNG-Timeout-Lesson)**.
 
 ### LLM-assisted routing
 Mnemolis uses a local LLM backend in five ways:
@@ -638,7 +626,7 @@ Fallback statistics are reported as `fallback_by_target` rather than by original
 
 ## Caching
 
-Mnemolis caches results in memory and persists them to disk so the cache survives container restarts. TTLs are set per source:
+Results are cached in memory and persisted to disk, with per-source TTLs:
 
 | Source | TTL |
 |--------|-----|
@@ -650,7 +638,7 @@ Mnemolis caches results in memory and persists them to disk so the cache survive
 | `uptime` | 1 minute |
 | `ha` | 30 seconds |
 
-Routing decisions (which source, Kiwix books, and fusion source sets to use) are cached separately for 1 hour.
+Routing decisions are cached separately for 1 hour. Both caches are size-bounded (`CACHE_MAX_SIZE`, `ROUTING_CACHE_MAX_SIZE`) with oldest-entry eviction. Full mechanics, including why the two caches exist separately and a real gap found and fixed in routing cache bounding, are in the wiki: **[Caching](https://github.com/immortalbob/Mnemolis/wiki/Caching)**.
 
 ## MCP
 
@@ -690,17 +678,11 @@ Popular ZIMs for a homelab stack:
 
 ### Multi-book fusion
 
-When a query genuinely spans multiple books — "python raspberry pi gpio setup" touching both Python and Raspberry Pi Stack Exchange — Mnemolis merges the best result from each relevant book instead of returning only the single highest-scoring article. Fusion only triggers when a second or third book's top result scores within 50% of the leading book's score, so an LLM book-selection misfire doesn't inject an irrelevant book into an otherwise clean answer.
-
-Raise `KIWIX_MAX_BOOKS` (default 2) to let the LLM select more books per query for broader multi-book fusion — useful if you have the GPU headroom for more concurrent Kiwix requests per search.
+When a query genuinely spans multiple books — "python raspberry pi gpio setup" touching both Python and Raspberry Pi Stack Exchange — Mnemolis merges results from more than one book instead of returning only the single highest-scoring article. Raise `KIWIX_MAX_BOOKS` (default 2) for broader multi-book fusion. Full mechanics: **[Multi-Book Fusion](https://github.com/immortalbob/Mnemolis/wiki/Multi-Book-Fusion)**.
 
 ## Confidence-aware fusion (web & news)
 
-Unlike Kiwix, the web (SearXNG) and news (FreshRSS) sources don't have a built-in relevance ranking worth trusting on its own. Mnemolis scores every result against the query using stemmed keyword overlap, penalizes homepage/about-page results that describe a site rather than containing an actual article, and drops anything scoring at or below `WEB_NEWS_SCORE_THRESHOLD` before capping the survivors at `WEB_NEWS_TOP_N`.
-
-For web search specifically, Mnemolis also tries a second, differently-phrased version of longer queries (3+ words) when an LLM is configured — merging results from both searches and scoring everything against your original query, not the alternate phrasing. This catches results that one specific wording of a question would have missed. Duplicate articles reached via slightly different URLs (`www.` vs not, trailing slash, query string) are recognized as the same result and merged.
-
-This doesn't apply to FreshRSS, which fetches and locally re-scores your existing feed items rather than issuing a remote query — there's no alternate phrasing to act on there.
+Web (SearXNG) and news (FreshRSS) results are scored against the query and filtered before being returned — not trusted at face value just because they came back. For web search specifically, longer queries also get a second, differently-phrased search merged in. Full scoring weights and the query-expansion mechanism: **[Confidence-Aware Fusion](https://github.com/immortalbob/Mnemolis/wiki/Confidence-Aware-Fusion)** and **[Query Expansion](https://github.com/immortalbob/Mnemolis/wiki/Query-Expansion)**.
 
 ## Adding a New Source
 
@@ -709,6 +691,8 @@ This doesn't apply to FreshRSS, which fetches and locally re-scores your existin
 3. Import and register it in `app/router.py` — add to `SOURCE_MAP`, `INTENT_MAP`, `SOURCE_DESCRIPTIONS`, and `CACHE_TTL`
 4. Optionally add an entry to `FALLBACK_CHAIN` if your source should fall back to another (e.g. `kiwix` falls back to `web`) when it returns nothing useful — this is tracked and surfaced in `/health` and `/logs/stats`, so a source with a real, well-matched fallback target gets the same visibility as the built-in ones
 5. Rebuild: `docker compose up -d --build`
+
+Why registration is explicit rather than auto-discovered, and what a new source does/doesn't inherit automatically: **[Adding a New Source](https://github.com/immortalbob/Mnemolis/wiki/Adding-a-New-Source)**.
 
 The new source is automatically available via both REST and MCP — and immediately fusable with any other source.
 
@@ -736,9 +720,7 @@ Automate it with cron:
 
 ### A note on volume naming
 
-Docker Compose automatically prefixes named volumes with your **project name**, which defaults to the name of the folder `docker-compose.yml` lives in. If your folder is `minisearch/`, a volume named `mnemolis_data` in the YAML actually gets created as `minisearch_mnemolis_data` — not `mnemolis_data`.
-
-This matters when restoring or migrating data manually with `docker run -v`. Always check the real volume name first:
+Docker Compose automatically prefixes named volumes with your **project name** — the folder `docker-compose.yml` lives in, by default. A volume named `mnemolis_data` in the YAML doesn't necessarily get created with that exact name; check first:
 
 ```bash
 docker volume ls | grep data
@@ -746,7 +728,7 @@ docker volume ls | grep data
 docker inspect mnemolis --format '{{json .Mounts}}' | python3 -m json.tool
 ```
 
-Use the exact name Docker reports — not the bare name written in `docker-compose.yml` — in any manual `docker run -v` commands. Set `COMPOSE_PROJECT_NAME` in a `.env` file alongside `docker-compose.yml` if you want a stable, predictable volume prefix regardless of folder name:
+Use the exact name Docker reports in any manual `docker run -v` command. Set `COMPOSE_PROJECT_NAME` in a `.env` file for a stable, predictable prefix regardless of folder name:
 
 ```bash
 echo "COMPOSE_PROJECT_NAME=mnemolis" > .env
@@ -847,7 +829,7 @@ Mnemolis/
 
 ## Philosophy
 
-Local-first, privacy-preserving, subscription-free. Mnemolis is designed for homelabs where the data stays home. Open-Meteo is the only external network call — every other source (Kiwix, FreshRSS, SearXNG, Uptime Kuma, Home Assistant) runs on your own infrastructure.
+Local-first, privacy-preserving, subscription-free. Mnemolis is designed for homelabs where the data stays home. Open-Meteo is the only external network call — every other source (Kiwix, FreshRSS, SearXNG, Uptime Kuma, Home Assistant) runs on your own infrastructure. More on what this project is and isn't: **[About Mnemolis](https://github.com/immortalbob/Mnemolis/wiki/About)**.
 
 ## Contributing
 
