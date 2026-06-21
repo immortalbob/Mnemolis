@@ -280,6 +280,47 @@ _STOP_WORDS = {
     "up", "going",
 }
 
+# Phrases signaling that a query frames its (possibly encyclopedic) topic
+# as current public discourse rather than a pure knowledge lookup — "what's
+# the deal with X everyone keeps talking about". This is the CANONICAL
+# definition; app/router.py imports this list rather than keeping its own
+# copy, since router.py uses it to decide WHICH sources to route to
+# (adding kiwix to a fusion decision that would otherwise exclude it), while
+# this module uses it to decide what to STRIP before building search terms.
+#
+# Found via real usage, in two separate passes: first, these phrasings
+# reproducibly routed past kiwix to news/web entirely (fixed in router.py
+# by detecting the pattern and biasing routing toward fusion). Then, even
+# once kiwix was correctly included, "everyone", "obsessed", "talking",
+# "keep" all survived _STOP_WORDS untouched and were sent to Kiwix as
+# literal search terms — "what whole bitcoin everyone obsessed" matched
+# scattered, irrelevant content ("Howard Wolowitz") far more than the
+# actual topic word ("bitcoin") could win against that noise. Stripping
+# the whole matched PHRASE (not just adding individual words to
+# _STOP_WORDS) is more surgical — it only affects queries that actually
+# contain this exact discourse-framing pattern, rather than risking
+# "everyone" or "keep" being treated as filler in some other, unrelated
+# query where they might carry real meaning.
+DISCOURSE_FRAMING_PATTERNS = [
+    "everyone keeps talking about", "everyone's talking about", "everyones talking about",
+    "everyone is talking about", "everyone keeps talking",
+    "everyone's obsessed with", "everyones obsessed with", "everyone is obsessed with",
+]
+
+
+def _strip_discourse_framing(query: str) -> str:
+    """Remove any matched discourse-framing phrase from the query before
+    building search terms, so words like "everyone" and "obsessed" never
+    reach Kiwix as literal search noise. See DISCOURSE_FRAMING_PATTERNS."""
+    result = query
+    result_lower = result.lower()
+    for phrase in DISCOURSE_FRAMING_PATTERNS:
+        idx = result_lower.find(phrase)
+        if idx != -1:
+            result = result[:idx] + result[idx + len(phrase):]
+            result_lower = result.lower()
+    return result
+
 
 def _stem(word: str) -> str:
     """Reduce a word to its approximate stem by stripping common suffixes.
@@ -487,7 +528,17 @@ def _build_search_terms(query: str) -> str:
     otherwise survives as "what'" (a stray apostrophe left over after
     stemming strips the trailing "s"), which never matches the "what"
     stop word and pollutes the search term with leftover punctuation.
+
+    Discourse-framing phrases ("everyone keeps talking about", "everyone's
+    obsessed with") are stripped as whole units before tokenizing — found
+    via real usage: once router.py was fixed to correctly include kiwix
+    for these phrasings, the words "everyone", "obsessed", "talking",
+    "keep" still survived stop-word stripping as literal search terms,
+    polluting the actual query enough that Kiwix matched scattered noise
+    ("Howard Wolowitz") far more readily than the real topic word
+    ("bitcoin") could compete against.
     """
+    query = _strip_discourse_framing(query)
     normalized_words = [
         re.sub(r"['']\w*$", "", w) for w in query.lower().split()
     ]

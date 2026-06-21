@@ -171,6 +171,45 @@ class TestSearchTermCleaning:
         result = self.clean("that mercury thing I keep hearing about")
         assert result.strip() == "mercury"
 
+    def test_discourse_framing_phrase_stripped_bitcoin(self):
+        """Regression test — the real bug found via real usage. Once
+        router.py was fixed to correctly route discourse-framing queries
+        ("everyone's obsessed with X") to include kiwix, the words
+        "everyone", "obsessed", "talking", "keep" still survived
+        _STOP_WORDS untouched and were sent to Kiwix as literal search
+        terms — "what whole bitcoin everyone obsessed" matched scattered,
+        irrelevant content ("Howard Wolowitz") far more readily than the
+        real topic word ("bitcoin") could compete against. Stripping the
+        whole matched discourse-framing PHRASE before tokenizing (rather
+        than adding individual words to _STOP_WORDS, which risks treating
+        "everyone" or "keep" as filler in some unrelated query where they
+        carry real meaning) fixes this surgically."""
+        result = self.clean("whats the deal with that whole bitcoin thing everyone is obsessed with")
+        assert "everyone" not in result
+        assert "obsessed" not in result
+        assert "bitcoin" in result
+
+    def test_discourse_framing_phrase_stripped_galaxy(self):
+        result = self.clean("whats the deal with that whole galaxy thing everyones obsessed with right now")
+        assert "everyone" not in result
+        assert "obsessed" not in result
+        assert "galaxy" in result
+
+    def test_discourse_framing_phrase_stripped_black_holes(self):
+        result = self.clean("whats the deal with that whole black hole thing everyone keeps talking about")
+        assert "everyone" not in result
+        assert "talking" not in result
+        assert "keep" not in result
+        assert "black" in result
+        assert "hole" in result
+
+    def test_no_discourse_framing_is_unaffected(self):
+        """A query with no discourse-framing language at all should be
+        completely unaffected by the stripping logic — confirms it's not
+        accidentally removing unrelated content."""
+        result = self.clean("what is the capital of France")
+        assert "franc" in result or "france" in result
+
 
 # ---------------------------------------------------------------------------
 # Result scoring

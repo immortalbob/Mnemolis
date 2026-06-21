@@ -745,6 +745,156 @@ class TestDetectIntent:
             settings.llm_url = original
 
 
+class TestDiscourseFramingDetection:
+    """Tests for _has_discourse_framing() — detects phrasing that frames
+    a topic as current public discourse ("everyone keeps talking about
+    X") rather than a pure knowledge lookup.
+
+    Found via extensive real-usage testing this session: queries like
+    "what's the deal with that whole mercury retrograde thing everyone
+    keeps talking about" reproducibly routed past kiwix to news/web,
+    because the LLM router's source descriptions for news/web ("current
+    events", "recent information") matched this phrasing almost
+    word-for-word, while kiwix's description ("factual, encyclopedic, or
+    technical questions") gave no signal that it ALSO covers evergreen
+    topics phrased as current discourse."""
+
+    def has_framing(self, query):
+        from app.router import _has_discourse_framing
+        return _has_discourse_framing(query)
+
+    def test_everyone_keeps_talking_about(self):
+        assert self.has_framing(
+            "whats the deal with that whole mercury retrograde thing everyone keeps talking about"
+        ) is True
+
+    def test_everyones_obsessed_with(self):
+        assert self.has_framing(
+            "whats the deal with that whole galaxy thing everyone's obsessed with right now"
+        ) is True
+
+    def test_everyone_is_obsessed_with(self):
+        assert self.has_framing(
+            "whats the deal with that whole bitcoin thing everyone is obsessed with"
+        ) is True
+
+    def test_everyones_talking_about(self):
+        assert self.has_framing(
+            "whats the deal with that whole black hole thing everyone's talking about"
+        ) is True
+
+    def test_plain_factual_query_no_framing(self):
+        assert self.has_framing("what is the capital of france") is False
+
+    def test_colloquial_phrase_without_discourse_framing(self):
+        """'whats the deal with X' alone, with no discourse-framing
+        language attached, should NOT trigger this — it's a perfectly
+        normal definitional question handled by the existing colloquial
+        pattern detection, not evidence of a routing bias problem."""
+        assert self.has_framing("whats the deal with sunspots") is False
+
+    def test_tell_me_about_no_framing(self):
+        assert self.has_framing("tell me about mercury") is False
+
+
+class TestDiscourseFramingRoutingBias:
+    """Tests confirming _llm_detect() actually applies the discourse-
+    framing bias — kiwix is added (escalating to fusion) when discourse-
+    framing language is present and kiwix wasn't already part of the
+    LLM's chosen source(s), across all four real code paths: fresh
+    single-source, fresh multi-source, cached single-source, and cached
+    multi-source. The cached paths matter because a routing cache entry
+    written before this fix existed (or before kiwix happened to be
+    chosen) would otherwise silently bypass the bias for the remainder
+    of its TTL, since the cache check returns before the bias logic
+    further down in the function ever runs."""
+
+    def setup_method(self):
+        from app.router import clear_routing_cache
+        clear_routing_cache()
+
+    def test_fresh_single_source_gets_kiwix_added(self):
+        from app.router import _llm_detect
+        from unittest.mock import patch
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="web"):
+            result = _llm_detect(
+                "whats the deal with that whole mercury retrograde thing everyone keeps talking about"
+            )
+        assert isinstance(result, list)
+        assert "web" in result
+        assert "kiwix" in result
+
+    def test_fresh_multi_source_gets_kiwix_added(self):
+        from app.router import _llm_detect
+        from unittest.mock import patch
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="news, web"):
+            result = _llm_detect(
+                "whats the deal with that whole bitcoin thing everyone is obsessed with"
+            )
+        assert "news" in result
+        assert "web" in result
+        assert "kiwix" in result
+
+    def test_already_kiwix_is_not_duplicated_or_escalated(self):
+        from app.router import _llm_detect
+        from unittest.mock import patch
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="kiwix"):
+            result = _llm_detect(
+                "whats the deal with that whole mercury retrograde thing everyone keeps talking about"
+            )
+        assert result == "kiwix"
+
+    def test_no_discourse_framing_is_unaffected(self):
+        from app.router import _llm_detect
+        from unittest.mock import patch
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="web"):
+            result = _llm_detect("what is happening in the news today")
+        assert result == "web"
+
+    def test_cached_single_source_decision_still_gets_bias_applied(self):
+        """Regression coverage for the cache-bypass risk found during
+        design — a cached decision from BEFORE this fix existed (or
+        before kiwix happened to be chosen) must not silently skip the
+        bias for the rest of its TTL."""
+        from app.router import _llm_detect, _set_routing
+        from unittest.mock import patch
+
+        query = "whats the deal with that whole galaxy thing everyone's obsessed with right now"
+        _set_routing(f"source:{query}", "web")  # simulate a pre-fix cached decision
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete") as mock_complete:
+            result = _llm_detect(query)
+
+        assert not mock_complete.called  # cache hit — should not call the LLM again
+        assert "web" in result
+        assert "kiwix" in result
+
+    def test_cached_fusion_decision_still_gets_bias_applied(self):
+        from app.router import _llm_detect, _set_routing
+        from unittest.mock import patch
+
+        query = "whats the deal with that whole bitcoin thing everyone is obsessed with"
+        _set_routing(f"source:{query}", "news,web")  # simulate a pre-fix cached fusion decision
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete") as mock_complete:
+            result = _llm_detect(query)
+
+        assert not mock_complete.called
+        assert "news" in result
+        assert "web" in result
+        assert "kiwix" in result
+
+
 # ---------------------------------------------------------------------------
 # Cache logic
 # ---------------------------------------------------------------------------

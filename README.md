@@ -200,7 +200,9 @@ A clause counts as a real, independent intent if any genuine content word surviv
 
 Queries mixing multiple different conjunction types in one sentence ("X, and also Y, plus Z, and W") are also handled — Mnemolis tries every conjunction type in isolation as well as splitting on every conjunction occurrence at once, and keeps whichever approach produces the most genuine sub-intents.
 
-**Known limitation:** a sub-query's own source selection (separate from decomposition) can occasionally route past Kiwix entirely for encyclopedic topics phrased with current-discourse framing — "what's the deal with that whole mercury retrograde thing everyone keeps talking about" resolves to a news/web fusion rather than reaching Kiwix's disambiguation logic, since "everyone keeps talking about" reads as a request for current discourse rather than an encyclopedia lookup. Decomposition itself correctly isolates the sub-query; the source-selection layer's interpretation is defensible but imperfect for queries genuinely intended as encyclopedic.
+Queries phrased with current-discourse framing ("what's the deal with that whole mercury retrograde thing everyone keeps talking about") are detected explicitly and biased toward including Kiwix in the routing decision — these phrasings previously routed past Kiwix to news/web entirely, since the LLM router's news/web descriptions matched this kind of phrasing almost word-for-word while Kiwix's description gave no signal that an evergreen topic can also be currently trending in public conversation. The discourse-framing phrase itself is also stripped before Kiwix's search terms are built, so words like "everyone" and "obsessed" never pollute the actual search.
+
+**Known limitation:** a single, genuinely ambiguous bare word (e.g. "galaxy," with both astronomy and pop-culture senses in the corpus) can still land on a thematically-related but imprecise match — this is a search-relevance question distinct from the routing bypass described above, since it persists even when Kiwix is correctly included and search terms are clean.
 
 ### Conditional Query Detection
 
@@ -443,7 +445,7 @@ openssl rand -hex 32
 ### LLM-assisted routing
 Mnemolis uses a local LLM backend in five ways:
 
-1. **Source selection** — when `auto` is used and no keyword matches, the LLM picks the best source based on the query. For complex multi-topic queries it returns multiple sources, triggering fusion automatically.
+1. **Source selection** — when `auto` is used and no keyword matches, the LLM picks the best source based on the query. For complex multi-topic queries it returns multiple sources, triggering fusion automatically. If the query frames its topic as current public discourse ("everyone keeps talking about X," "everyone's obsessed with X"), Kiwix is added to the decision when it would otherwise be excluded — this pattern reproducibly routed encyclopedic topics past Kiwix to news/web alone, since news/web's descriptions naturally match this kind of phrasing more closely than Kiwix's does.
 2. **Book selection** — once routed to Kiwix, the LLM picks the best books from your catalog for the query, up to `KIWIX_MAX_BOOKS` (default 2)
 3. **Search term disambiguation** — for short, definitional Kiwix queries (e.g. "what is a galaxy"), the LLM generates 3 candidate disambiguation terms to break brand-name/homonym collisions. Each candidate is actually searched and scored against real Kiwix results rather than trusting a single guess — see [Kiwix Internal Flow](#kiwix-internal-flow).
 4. **Fusion source selection** — when `fusion` is used without specifying sources, the LLM picks the best 2-3 sources for the query
@@ -762,7 +764,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-845 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing with accurate fallback-source reporting, query decomposition with stop-word-based content detection/colloquial phrase handling/mixed-conjunction-type splitting/proper-noun-pair protection, conditional query detection with honest scoped yes/no interpretation and recursive sub-query re-detection, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation with corrected eligibility checks/multi-book fusion, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection including colloquial patterns, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning and contraction normalization, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, application logging configuration, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
+862 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing with accurate fallback-source reporting and discourse-framing routing bias, query decomposition with stop-word-based content detection/colloquial phrase handling/mixed-conjunction-type splitting/proper-noun-pair protection, conditional query detection with honest scoped yes/no interpretation and recursive sub-query re-detection, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation with corrected eligibility checks/multi-book fusion/discourse-framing phrase stripping, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection including colloquial patterns, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning and contraction normalization, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, application logging configuration, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 
@@ -784,7 +786,7 @@ Mnemolis/
 │   ├── test_routing_cache.py       # routing cache logic and corruption handling
 │   ├── test_cache_persistence.py   # cache eviction, disk persistence, .corrupt recovery
 │   ├── test_config.py              # settings defaults and env isolation
-│   ├── test_kiwix.py               # scoring, stemming, search term cleaning (pure logic)
+│   ├── test_kiwix.py               # scoring, stemming, search term cleaning, discourse-framing phrase stripping (pure logic)
 │   ├── test_kiwix_network.py       # catalog parsing, book selection, disambiguation, multi-book fusion
 │   ├── test_freshrss.py            # general query detection, recency bonus
 │   ├── test_freshrss_network.py    # FreshRSS network calls via mocking
@@ -813,7 +815,7 @@ Mnemolis/
     ├── query_expansion.py          # Alternate query phrasing for web search multi-query expansion
     ├── config.py                   # Settings via environment variables
     └── sources/
-        ├── kiwix.py                # Offline knowledge base — catalog, disambiguation, multi-book fusion
+        ├── kiwix.py                # Offline knowledge base — catalog, disambiguation, multi-book fusion, discourse-framing phrase stripping
         ├── forecast.py             # Open-Meteo weather forecast
         ├── freshrss.py             # FreshRSS RSS reader with confidence-aware scoring
         ├── searxng.py              # SearXNG web search with multi-query expansion

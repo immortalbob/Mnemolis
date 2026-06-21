@@ -443,6 +443,48 @@ def clear_cache() -> int:
 # Intent detection
 # ---------------------------------------------------------------------------
 
+# Phrases signaling that a query frames its (possibly encyclopedic) topic
+# as current public discourse rather than a pure knowledge lookup — "what's
+# the deal with X everyone keeps talking about" reads to a small local LLM
+# almost word-for-word onto news/web's own descriptions ("current events",
+# "recent information"), since kiwix's description ("factual, encyclopedic,
+# or technical questions") gives no signal that an evergreen topic can
+# ALSO be currently trending in public conversation. Found via extensive
+# real-usage testing: "mercury retrogade", "galaxy", "bitcoin", and "black
+# holes" all reproducibly routed past kiwix to news/web when phrased this
+# way, even though several of these are genuinely encyclopedic topics
+# kiwix's disambiguation-backed search is well suited to answer.
+#
+# Rather than editing SOURCE_DESCRIPTIONS to nudge the LLM's free-text
+# judgment (an indirect, unverifiable lever), this is detected explicitly
+# and biases the routing decision directly: if discourse-framing language
+# is present and kiwix wasn't already part of the LLM's chosen source(s),
+# kiwix is added and the result escalated to fusion. This doesn't override
+# or discard whatever the LLM found useful (web/news content was often
+# genuinely relevant in testing) — it guarantees kiwix gets a real chance
+# to contribute its disambiguation-backed encyclopedic answer alongside it,
+# rather than being silently excluded for these specific phrasings.
+#
+# kiwix.py is the canonical source of this list — it ALSO uses these
+# patterns to strip the discourse-framing phrase before building Kiwix
+# search terms, since "everyone"/"obsessed"/"talking"/"keep" surviving as
+# literal search noise was found to matter just as much as the routing
+# decision itself (kiwix matching "Howard Wolowitz" for a bitcoin query
+# because the search string was "what whole bitcoin everyone obsessed").
+# Importing from kiwix.py rather than duplicating avoids drift between
+# the two — router.py safely imports FROM kiwix (it already does, via
+# `from app.sources import kiwix`), the reverse would be circular.
+_DISCOURSE_FRAMING_PATTERNS = kiwix.DISCOURSE_FRAMING_PATTERNS
+
+
+def _has_discourse_framing(query: str) -> bool:
+    """Return True if the query frames its topic as current public
+    discourse ("everyone keeps talking about X") rather than a pure
+    knowledge lookup. See _DISCOURSE_FRAMING_PATTERNS for the rationale."""
+    q = query.lower()
+    return any(p in q for p in _DISCOURSE_FRAMING_PATTERNS)
+
+
 def _keyword_detect(query: str) -> str | list[str] | None:
     """Fast keyword-based intent detection.
 
@@ -494,9 +536,23 @@ def _llm_detect(query: str) -> str | list[str]:
         if "," in cached:
             sources = [s.strip() for s in cached.split(",") if s.strip() in SOURCE_MAP and s.strip() != "fusion"]
             if sources:
+                if _has_discourse_framing(query) and "kiwix" not in sources:
+                    sources.append("kiwix")
                 _LOGGER.info("Routing cache hit (fusion): '%s' -> %s", query[:50], sources)
                 return sources
         elif cached in SOURCE_MAP:
+            # Apply the same discourse-framing bias to a cached decision —
+            # otherwise a routing cache entry written before this fix
+            # existed (or before kiwix was added) would silently bypass it
+            # for up to its full TTL, since the cache check above returns
+            # before the bias logic further down ever runs.
+            if _has_discourse_framing(query) and cached != "kiwix":
+                sources = [cached, "kiwix"]
+                _LOGGER.info(
+                    "Routing cache hit but discourse-framing detected — escalating '%s' to fusion: %s",
+                    query[:50], sources
+                )
+                return sources
             _LOGGER.info("Routing cache hit: '%s' -> %s", query[:50], cached)
             return cached
 
@@ -531,6 +587,9 @@ def _llm_detect(query: str) -> str | list[str]:
             if candidate in SOURCE_MAP and candidate != "fusion" and candidate not in sources:
                 sources.append(candidate)
         if len(sources) >= 2:
+            if _has_discourse_framing(query) and "kiwix" not in sources:
+                _LOGGER.info("Discourse-framing detected, adding kiwix to fusion sources for: '%s'", query[:50])
+                sources.append("kiwix")
             _LOGGER.info("LLM escalated to fusion: '%s' -> %s", query[:50], sources)
             _set_routing(f"source:{query}", ",".join(sources))
             return sources
@@ -539,6 +598,14 @@ def _llm_detect(query: str) -> str | list[str]:
     # Single source response
     chosen = raw.strip(".").strip()
     if chosen in SOURCE_MAP and chosen != "fusion":
+        if _has_discourse_framing(query) and chosen != "kiwix":
+            sources = [chosen, "kiwix"]
+            _LOGGER.info(
+                "Discourse-framing detected — escalating '%s' to fusion: %s",
+                query[:50], sources
+            )
+            _set_routing(f"source:{query}", ",".join(sources))
+            return sources
         _LOGGER.info("LLM intent: '%s' -> %s", query[:50], chosen)
         _set_routing(f"source:{query}", chosen)
         return chosen

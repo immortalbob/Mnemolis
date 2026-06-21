@@ -4,6 +4,36 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.17.0]
+
+### Fixed — Discourse-Framing Routing Bypass (Longest-Standing Known Limitation, Resolved)
+Queries phrased with current-discourse framing ("what's the deal with that whole mercury retrograde thing everyone keeps talking about") reproducibly routed past Kiwix to news/web entirely, even for genuinely encyclopedic topics Kiwix's disambiguation-backed search is well suited to answer. Root cause traced precisely: the LLM router's news/web descriptions ("current events," "recent information") matched this phrasing almost word-for-word, while Kiwix's description ("factual, encyclopedic, or technical questions") gave no signal that an evergreen topic can also be currently trending in public conversation.
+
+Fixed in two parts, both required — the first alone wasn't sufficient, found through continued real-production testing after it shipped:
+
+1. **Routing bias** — `_has_discourse_framing()` detects the pattern explicitly and biases the routing decision directly: when present and Kiwix wasn't already part of the LLM's chosen source(s), Kiwix is added and the result escalated to fusion. Applied consistently across all four real code paths (fresh single-source, fresh multi-source, cached single-source, cached multi-source) — the cached paths matter because a routing cache entry written before this fix existed would otherwise silently bypass it for the remainder of its TTL.
+2. **Search term cleanup** — even with Kiwix correctly included, the words "everyone," "obsessed," "talking," "keep" still survived `_STOP_WORDS` untouched and were sent to Kiwix as literal search terms. "What whole bitcoin everyone obsessed" matched scattered, irrelevant content (a sitcom character, score 2) far more readily than the real topic word could compete against. `_strip_discourse_framing()` removes the whole matched phrase as a unit before tokenizing — more surgical than adding individual words to `_STOP_WORDS`, since it only affects queries that actually contain this exact pattern rather than risking "everyone" or "keep" being treated as filler in some unrelated query where they carry real meaning.
+
+The pattern list (`DISCOURSE_FRAMING_PATTERNS`) lives in `kiwix.py` as the single canonical source — `router.py` imports it from there rather than keeping an independent copy, since `kiwix.py` needs it for search-term stripping and `router.py` needs it for the routing bias, and the import direction (`router.py` → `kiwix.py`) avoids a circular dependency that the reverse direction would create.
+
+**Verified against real production data, before and after both halves of the fix:** "bitcoin" went from a nonsensical match (a sitcom character, score 2) to the correct, exact Bitcoin Wikipedia article (score 32). "Black holes" went from a Thai horror film (score 7) to a genuine historical "Black Hole" topic (Black Hole of Calcutta, score 22) — not the astrophysics article one might expect for this specific bare-word query, but a legitimate, defensible match rather than a nonsensical one. "Galaxy" improved (from a movie reference to a thematically-related literary reference) but didn't fully resolve, since "galaxy" alone remains genuinely ambiguous in the corpus between astronomy and pop-culture senses — tracked as a smaller, separate disambiguation-quality question rather than evidence this fix didn't work.
+
+### Added (Tests)
+- 17 new regression tests across `_has_discourse_framing()`, the four-code-path routing bias, and `_strip_discourse_framing()`'s search-term cleanup
+
+### Changed
+- Version bumped to 3.17.0
+
+**Total test count: 862**
+
+### Roadmap
+**Known limitations carried forward:**
+- Single ambiguous bare words (e.g. "galaxy") can still land on a thematically-related but imprecise match when the corpus contains multiple genuinely distinct senses of the same word — a search-relevance question distinct from the discourse-framing routing bypass fixed above, since this persists even when Kiwix is correctly included and search terms are clean
+- Conditional phrasing without an explicit separating comma is intentionally not detected — a real grammatical-parsing problem, not a pattern-matching one
+- A decomposed segment containing two genuinely unrelated topics merged together (e.g. a proper-noun pair adjacent to unrelated technical content) routes to a single source that may not serve both topics well — an expected, minor side effect of the proper-noun-pair content-preservation fix, not a regression
+
+---
+
 ## [3.16.0]
 
 ### Added — Conditional Query Detection (Final Capability-Expansion Roadmap Item)
@@ -48,11 +78,6 @@ One known, deliberate scope boundary was re-confirmed (not a new bug): condition
 3. ✅ Multi-book Kiwix fusion
 4. ✅ Confidence-aware fusion with expanded ingest
 5. ✅ Conditional query detection (re-scoped from "recursive/conditional decomposition")
-
-**Known limitations carried forward:**
-- Discourse-framing routing bypass ("everyone's obsessed with" phrasing routing past Kiwix to news/web) — confirmed content quality varies by topic, still tracked for future deliberate design
-- Conditional phrasing without an explicit separating comma is intentionally not detected — a real grammatical-parsing problem, not a pattern-matching one
-- A decomposed segment containing two genuinely unrelated topics merged together (e.g. a proper-noun pair adjacent to unrelated technical content) routes to a single source that may not serve both topics well — an expected, minor side effect of the proper-noun-pair content-preservation fix, not a regression
 
 ---
 
