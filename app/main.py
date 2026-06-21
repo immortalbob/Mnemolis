@@ -4,13 +4,14 @@ import os
 import sqlite3
 import time
 import requests
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
+from starlette.routing import Mount
 from pydantic import BaseModel
 
 from app.router import (
@@ -27,7 +28,7 @@ from app.router import (
     get_routing_cache_stats,
     clear_routing_cache,
 )
-from app.mcp_server import mcp_app
+from app.mcp_server import mcp_app, get_mcp_app
 from app.sources.kiwix import get_books, refresh_catalog
 from app.snapshots import (
     init_snapshot_db,
@@ -152,39 +153,81 @@ def _log_query(query: str, source_requested: str, source_used: str, cached: bool
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load Kiwix catalog, cache, and start snapshot scheduler on startup."""
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, get_books)
-    await loop.run_in_executor(None, load_cache)
-    await loop.run_in_executor(None, load_routing_cache)
-    await loop.run_in_executor(None, _init_log_db)
-    await loop.run_in_executor(None, init_snapshot_db)
+    """Load Kiwix catalog, cache, and start snapshot scheduler on startup.
 
-    # Start snapshot scheduler
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(snapshot_uptime, "interval", minutes=2, id="snapshot_uptime")
-    scheduler.add_job(snapshot_forecast, "interval", minutes=30, id="snapshot_forecast")
-    scheduler.add_job(snapshot_news, "interval", minutes=60, id="snapshot_news")
-    scheduler.add_job(snapshot_ha, "interval", minutes=5, id="snapshot_ha")
-    scheduler.start()
-    _LOGGER.info("Snapshot scheduler started")
+    Also rebuilds and re-mounts the MCP Streamable HTTP app fresh on every
+    startup, then enters its lifespan — a real, currently-open issue
+    across the broader MCP/FastMCP ecosystem (not specific to how
+    Mnemolis is built) made this more involved than a simple "enter the
+    sub-app's lifespan too":
 
-    # Take immediate snapshots on startup so /changes has data right away
-    await loop.run_in_executor(None, snapshot_uptime)
-    await loop.run_in_executor(None, snapshot_forecast)
-    await loop.run_in_executor(None, snapshot_news)
-    await loop.run_in_executor(None, snapshot_ha)
+    `FastMCP.streamable_http_app()` lazily creates ONE session manager
+    and caches it on the FastMCP instance — calling it again still
+    returns the same cached manager wrapped in a NEW Starlette app, but
+    `StreamableHTTPSessionManager.run()` can only ever be entered once
+    per instance. A module-level `mcp_app` built once at import time
+    means every independent app lifecycle (every container restart in
+    production; every `with TestClient(app) as client:` block in this
+    test suite) tries to re-run the same already-exhausted session
+    manager, raising a hard RuntimeError on the second attempt — this
+    surfaced as several `test_security.py` tests failing only when run
+    after `test_main.py`, since both files spin up their own TestClient
+    against the same imported `app`.
 
-    yield
+    Verified the first attempt at fixing this was genuinely incomplete:
+    resetting `mcp._session_manager` to None before calling
+    `streamable_http_app()` again does create a fresh session manager,
+    but the ALREADY-MOUNTED route from module-import time still holds a
+    reference to the OLD app object's lifespan closure and request
+    handler — resetting the FastMCP instance's cached attribute doesn't
+    retroactively change what an already-built Starlette app's router
+    closure points to. The real fix rebuilds the app fresh AND finds the
+    actual `/mcp` Mount route in app.router.routes to reassign its `.app`
+    reference, so the object whose lifespan gets entered is genuinely the
+    same object that serves real requests during that lifecycle — not
+    two different objects that happen to share an FastMCP instance.
+    """
+    fresh_mcp_app = get_mcp_app()
+    for r in app.router.routes:
+        if isinstance(r, Mount) and r.path == "/mcp":
+            r.app = fresh_mcp_app
+            break
 
-    scheduler.shutdown()
-    _LOGGER.info("Snapshot scheduler stopped")
+    async with AsyncExitStack() as stack:
+        await stack.enter_async_context(fresh_mcp_app.router.lifespan_context(fresh_mcp_app))
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, get_books)
+        await loop.run_in_executor(None, load_cache)
+        await loop.run_in_executor(None, load_routing_cache)
+        await loop.run_in_executor(None, _init_log_db)
+        await loop.run_in_executor(None, init_snapshot_db)
+
+        # Start snapshot scheduler
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(snapshot_uptime, "interval", minutes=2, id="snapshot_uptime")
+        scheduler.add_job(snapshot_forecast, "interval", minutes=30, id="snapshot_forecast")
+        scheduler.add_job(snapshot_news, "interval", minutes=60, id="snapshot_news")
+        scheduler.add_job(snapshot_ha, "interval", minutes=5, id="snapshot_ha")
+        scheduler.start()
+        _LOGGER.info("Snapshot scheduler started")
+
+        # Take immediate snapshots on startup so /changes has data right away
+        await loop.run_in_executor(None, snapshot_uptime)
+        await loop.run_in_executor(None, snapshot_forecast)
+        await loop.run_in_executor(None, snapshot_news)
+        await loop.run_in_executor(None, snapshot_ha)
+
+        yield
+
+        scheduler.shutdown()
+        _LOGGER.info("Snapshot scheduler stopped")
 
 
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.18.2",
+    version="3.19.0",
     lifespan=lifespan,
 )
 

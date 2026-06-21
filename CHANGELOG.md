@@ -4,6 +4,40 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.19.0]
+
+### Changed — MCP Transport Migrated from SSE to Streamable HTTP
+Prompted by an external MCP audit (a community-run tool, opened as a GitHub issue against the project) flagging the old transport's use of `request._send`, a private Starlette attribute. Initial research confirmed that pattern genuinely matches the official MCP Python SDK's own low-level reference examples — not a Mnemolis-specific shortcut — but deeper research surfaced two more substantive findings: an official, higher-level integration pattern exists (`FastMCP.streamable_http_app()`) that avoids touching private internals in application code at all, and SSE transport itself is explicitly being superseded — official FastMCP docs state it "exists only for backward compatibility and shouldn't be used in new projects."
+
+**Breaking change for existing MCP client connections:** the endpoint moved from `/mcp/sse` to `/mcp`. Update `claude_desktop_config.json` or any other MCP client configuration accordingly.
+
+- Rewrote `app/mcp_server.py` from the low-level `mcp.server.Server` class with a hand-written JSON Schema dict, to `mcp.server.fastmcp.FastMCP` with a decorator-based `@mcp.tool()` registration.
+- **Deliberate, documented schema tradeoff** — the `source` parameter is now a plain `str`, not an `Enum`/`Literal` with a JSON Schema `enum` constraint. FastMCP's tool decorator currently has no supported way to register a fully custom inputSchema (open upstream SDK issue, no workaround), and `Enum`/`Literal` types generate a `$ref`/`$defs`-based schema with a separate, real, open compatibility bug affecting at least one real MCP client (a `$ref` resolution failure that gets the tool rejected outright). Valid source values are now documented in the tool's docstring instead, at the honest cost of losing schema-level enforcement.
+
+### Fixed — A Real, Currently-Open Ecosystem Bug Found During Migration
+`FastMCP.streamable_http_app()` lazily creates and caches **one** `StreamableHTTPSessionManager` on the FastMCP instance — calling it again returns a new app object wrapping the *same* cached, already-`.run()` session manager, which can only ever be entered once per instance. A module-level `mcp_app` built once at import time meant every independent app lifecycle (every container restart; every test file's own `TestClient`) tried to reuse an already-exhausted session manager, raising `RuntimeError: StreamableHTTPSessionManager .run() can only be called once per instance` on the second attempt.
+
+Confirmed this is a real, currently-open issue across the broader MCP/FastMCP ecosystem, not specific to Mnemolis — multiple independent reports describe the identical error in both test suites and real production deployments under certain conditions.
+
+**The first attempted fix was itself genuinely incomplete** — resetting the FastMCP instance's cached session manager reference and rebuilding the app worked when tested in isolation (three consecutive fresh app objects, each independently entered and exited cleanly), but failed against the real, actual scenario: `main.py` mounts the MCP app **once**, at module-import time, and the already-mounted route held a reference to the *original* app object's lifespan closure and request handler regardless of what the module-level `mcp_app` variable was reassigned to afterward. The complete fix (`get_mcp_app()` plus rewiring the actual `Mount` route's `.app` attribute in `main.py`'s lifespan function) was verified by directly tracing through the precise failure with real debug introspection — checking `_has_started` state directly, confirming a plain `Mount()` never runs a sub-app's lifespan at all (ruling out one hypothesis), then reproducing the exact `main.py`-shaped failure precisely before fixing it.
+
+A separate, more serious concern was found during the same research but is explicitly **not** addressed by this fix, since it's a transport-level issue outside Mnemolis's control: an open upstream issue describes a race condition where the session manager can report "shutting down" immediately after a request starts, before a response is fully streamed. Documented directly in `mcp_server.py` as a known risk to watch for.
+
+### Changed — Dependency Pinning
+`mcp[cli]` in `requirements.txt` was previously unpinned, meaning every fresh install received whatever the latest version happened to be — a real, separate risk given how much the SDK's own API surface shifted across the versions encountered during this migration's research (method names, schema-registration support, and more, varying meaningfully release to release). Pinned to `mcp[cli]==1.27.2`, the exact version this migration was built and tested against.
+
+### Added (Tests)
+- Completely rewrote `tests/test_mcp_server.py` against the new implementation — the old file directly tested removed internals (`create_sse_app`, standalone `list_tools`/`call_tool` functions) and would have needed deletion regardless of pass/fail status
+- New regression tests specifically covering the session-manager bug: confirming repeated `get_mcp_app()` calls produce genuinely independent session manager instances, and that a full lifespan can be entered and exited multiple times without raising
+- New regression test confirming the `source` parameter's schema deliberately has no `enum`/`$ref`/`$defs` — protects the documented tradeoff from being silently reversed without it being a deliberate decision again
+
+### Changed
+- Version bumped to 3.19.0
+
+**Total test count: 883** (net unchanged — old MCP tests removed and replaced, new regression tests added for the real bug found)
+
+---
+
 ## [3.18.2]
 
 ### Added — GitHub Wiki (Documentation Restructuring Complete)
