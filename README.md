@@ -442,6 +442,22 @@ Also generate a unique `secret_key` in `searxng/settings.yml`:
 openssl rand -hex 32
 ```
 
+### SearXNG request timeout
+
+SearXNG's default `request_timeout` is `3.0` seconds — too short for several real, commonly-used engines (Google, Wikipedia, Startpage, DuckDuckGo have all been observed taking 15-25+ seconds to respond under normal conditions, not just when rate-limited). With the default timeout, these requests get killed before they have a chance to succeed, which surfaces in Mnemolis as `"Error reaching SearXNG: connection failed."` even though SearXNG itself is healthy and the network path is fine — the actual cause is visible in SearXNG's own logs (`docker logs searxng`) as `HTTP requests timeout (search duration : 20.5s, timeout: 3.0s)`, not in anything Mnemolis logs.
+
+If you see this error, check SearXNG's own logs first before assuming a Mnemolis or network problem. Raise the timeout in your SearXNG `settings.yml`:
+
+```yaml
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 20.0
+```
+
+`max_request_timeout` is commented out by default — uncomment it, since some individual engines (e.g. `360search`, shipped already configured for `timeout: 20.0` in the default SearXNG config) need more time than the global default, and the maximum acts as a ceiling on those per-engine overrides. Restart SearXNG after changing this (`docker restart searxng` or `docker compose restart searxng`, depending on how it's deployed).
+
+Separately, real per-engine rate limiting (e.g. Brave returning `SearxEngineTooManyRequestsException: Too many request (suspended_time=180)`) is a different, normal occurrence under heavy query volume — SearXNG self-recovers after the suspension window without intervention.
+
 ### LLM-assisted routing
 Mnemolis uses a local LLM backend in five ways:
 
