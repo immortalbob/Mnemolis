@@ -38,6 +38,7 @@ from app.snapshots import (
     snapshot_ha,
     get_changes,
     format_changes,
+    get_snapshot_job_health,
 )
 from app.config import settings
 
@@ -184,7 +185,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.18.0",
+    version="3.18.1",
     lifespan=lifespan,
 )
 
@@ -308,8 +309,12 @@ def health():
     """
     Health check. Returns container status, Kiwix books loaded, result and
     routing cache entry counts (with their configured max sizes, so growth
-    toward the bound is visible without needing to dig through logs), and
-    connectivity status for every configured source.
+    toward the bound is visible without needing to dig through logs),
+    background snapshot job health (each job's status compared against
+    its expected interval, since every snapshot job already catches its
+    own exceptions and silently logs a warning rather than surfacing
+    failure anywhere externally visible), and connectivity status for
+    every configured source.
     """
     books = get_books()
     sources = {
@@ -329,6 +334,7 @@ def health():
         "cache_max_size": settings.cache_max_size,
         "routing_cache_entries": len(get_routing_cache_stats()),
         "routing_cache_max_size": settings.routing_cache_max_size,
+        "snapshot_jobs": get_snapshot_job_health(),
         "sources": sources,
     }
 

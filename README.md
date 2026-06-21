@@ -589,7 +589,7 @@ Response:
 Returns the list of available sources.
 
 ### `GET /health`
-Returns status, number of Kiwix books loaded, result and routing cache entry counts alongside their configured max sizes (so growth toward either bound is visible without digging through logs or code), and connectivity status for every configured source — these are real, live network checks against each dependency, not just a check that a config value is present.
+Returns status, number of Kiwix books loaded, result and routing cache entry counts alongside their configured max sizes (so growth toward either bound is visible without digging through logs or code), background snapshot job health (each job's status compared against its expected interval — `ok`, `stale`, `never_ran`, or `unknown`, since every snapshot job already catches its own exceptions and silently logs a warning rather than surfacing failure anywhere externally visible), and connectivity status for every configured source — these are real, live network checks against each dependency, not just a check that a config value is present.
 
 ### `GET /catalog`
 Lists all books currently loaded from the Kiwix OPDS catalog.
@@ -783,7 +783,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-875 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing with accurate fallback-source reporting and discourse-framing routing bias, fallback occurrence detection and reporting, bounded routing cache eviction, query decomposition with stop-word-based content detection/colloquial phrase handling/mixed-conjunction-type splitting/proper-noun-pair protection, conditional query detection with honest scoped yes/no interpretation and recursive sub-query re-detection, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation with corrected eligibility checks/multi-book fusion/discourse-framing phrase stripping, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection including colloquial patterns, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning and contraction normalization, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, application logging configuration, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
+883 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing with accurate fallback-source reporting and discourse-framing routing bias, fallback occurrence detection and reporting, bounded routing cache eviction, background snapshot job health reporting, query decomposition with stop-word-based content detection/colloquial phrase handling/mixed-conjunction-type splitting/proper-noun-pair protection, conditional query detection with honest scoped yes/no interpretation and recursive sub-query re-detection, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation with corrected eligibility checks/multi-book fusion/discourse-framing phrase stripping, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection including colloquial patterns, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning and contraction normalization, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, application logging configuration, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 
@@ -819,14 +819,14 @@ Mnemolis/
 │   ├── test_main.py                # FastAPI endpoint tests, API key auth, catalog/areas endpoints
 │   ├── test_llm.py                 # Ollama/OpenAI-compatible LLM client behavior
 │   ├── test_mcp_server.py          # MCP tool schema and call dispatch
-│   ├── test_snapshots.py           # snapshot diff engines, net-change collapsing
+│   ├── test_snapshots.py           # snapshot diff engines, net-change collapsing, background job health
 │   ├── test_snapshot_jobs.py       # scheduled snapshot job functions
 │   ├── test_security.py            # SQL injection, path traversal, fuzz, concurrency
 │   ├── test_property.py            # Hypothesis property-based fuzz testing
 │   └── locustfile.py               # Locust load testing suite
 └── app/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog/areas endpoints + API key auth
-    ├── snapshots.py                # Snapshot engine — scheduler, diff logic, change detection
+    ├── snapshots.py                # Snapshot engine — scheduler, diff logic, change detection, background job health reporting
     ├── mcp_server.py               # MCP SSE server
     ├── router.py                   # Intent detection, source routing, decomposition, conditional detection, caching
     ├── llm.py                      # LLM client — Ollama native and OpenAI-compatible

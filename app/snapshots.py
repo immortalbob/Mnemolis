@@ -84,6 +84,86 @@ def _get_last_snapshots(source: str, limit: int = 2) -> list[str]:
         return []
 
 
+# Each background snapshot job's scheduled interval, matching main.py's
+# scheduler.add_job() calls exactly — kept here rather than in main.py
+# since this module is what actually needs to reason about "how overdue
+# is this job" using its own stored timestamps.
+JOB_INTERVALS_MINUTES = {
+    "uptime": 2,
+    "forecast": 30,
+    "news": 60,
+    "ha": 5,
+}
+
+
+def get_snapshot_job_health() -> dict[str, dict]:
+    """
+    Report each background snapshot job's health by comparing its most
+    recent successful snapshot timestamp against its expected interval.
+
+    Found via real review, not a reported failure: every snapshot job
+    (snapshot_uptime, snapshot_forecast, snapshot_news, snapshot_ha)
+    already catches its own exceptions and just logs a warning — meaning
+    a job that started failing on every single run would never crash,
+    never stop the scheduler, and produce zero externally visible signal
+    beyond a log line nobody is necessarily watching. The scheduler
+    object itself also has no external visibility at all (it's a local
+    variable inside main.py's lifespan context manager, never exposed to
+    any endpoint) — so there was previously no way to ask "is the
+    background scheduler actually still running and succeeding" without
+    reading raw application logs.
+
+    Uses a 3x grace multiplier on each job's interval before considering
+    it stale — generous enough to absorb normal jitter (job execution
+    time, a slightly delayed scheduler start), tight enough to catch a
+    genuinely stuck job within a reasonable window (e.g. the 60-minute
+    news job is flagged after ~3 hours of silence, not days).
+    """
+    _GRACE_MULTIPLIER = 3
+    now = datetime.now(timezone.utc)
+    health = {}
+
+    for source, interval_minutes in JOB_INTERVALS_MINUTES.items():
+        try:
+            con = _connect(SNAPSHOT_DB)
+            row = con.execute(
+                "SELECT timestamp FROM snapshots WHERE source = ? ORDER BY id DESC LIMIT 1",
+                (source,)
+            ).fetchone()
+            con.close()
+        except Exception as e:
+            health[source] = {"status": "unknown", "error": str(e)}
+            continue
+
+        if row is None:
+            # No snapshot has ever been stored for this source — either
+            # the job hasn't run yet (very early after startup) or it
+            # has never once succeeded
+            health[source] = {
+                "status": "never_ran",
+                "expected_interval_minutes": interval_minutes,
+            }
+            continue
+
+        try:
+            last_timestamp = datetime.strptime(row[0], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except Exception:
+            health[source] = {"status": "unknown", "error": f"unparseable timestamp: {row[0]!r}"}
+            continue
+
+        minutes_since = (now - last_timestamp).total_seconds() / 60
+        is_stale = minutes_since > interval_minutes * _GRACE_MULTIPLIER
+
+        health[source] = {
+            "status": "stale" if is_stale else "ok",
+            "last_snapshot": row[0],
+            "minutes_since_last_snapshot": round(minutes_since, 1),
+            "expected_interval_minutes": interval_minutes,
+        }
+
+    return health
+
+
 def _get_snapshots_since(source: str, since_hours: int = 24) -> list[tuple[str, str]]:
     """Return all snapshots for a source since N hours ago."""
     try:

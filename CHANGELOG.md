@@ -4,6 +4,27 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.18.1]
+
+### Added — Background Snapshot Job Health (Third and Final Operational Maturity Item)
+Found via real review, not a reported failure: every background snapshot job (`snapshot_uptime`, `snapshot_forecast`, `snapshot_news`, `snapshot_ha`) already catches its own exceptions internally and just logs a warning — meaning a job that started failing on every single run would never crash, never stop the scheduler, and produce zero externally visible signal beyond a log line nobody is necessarily watching. The `BackgroundScheduler` object itself also had no external visibility at all — it's a local variable inside `main.py`'s lifespan context manager, never exposed to any endpoint — so there was previously no way to ask "is the background scheduler actually still running and succeeding" without reading raw application logs.
+
+- **`get_snapshot_job_health()`** — reports each job's health by comparing its most recent successful snapshot timestamp (already persisted and timestamped in the existing `snapshots` table, requiring zero new instrumentation) against its expected interval, using a 3x grace multiplier to absorb normal jitter without false-alarming. Four possible states per job: `ok`, `stale` (genuinely overdue), `never_ran` (no snapshot ever stored), `unknown` (an unparseable timestamp — degrades gracefully rather than raising).
+- **`/health`** now includes a `snapshot_jobs` field with this report for all four jobs.
+- **Verified against real production data** — all four jobs correctly reporting `ok` with accurate per-job timing matching the real scheduler configuration (uptime every 2 min, forecast every 30, news every 60, ha every 5).
+
+This closes out the Battle Testing & Operational Maturity phase's three identified gaps: fallback visibility (3.18.0), routing cache bounding (3.18.0), and now background job health.
+
+### Added (Tests)
+- 9 new regression tests across `get_snapshot_job_health()` (fresh/stale/never-ran/unknown-timestamp states, correct per-job interval mapping, jitter tolerance) and its `/health` integration, reusing the relative-timestamp test helper pattern established earlier this session for the exact same reason — hardcoded absolute timestamps in a staleness check would silently break the moment real time passed whatever window was hardcoded against them.
+
+### Changed
+- Version bumped to 3.18.1
+
+**Total test count: 883**
+
+---
+
 ## [3.18.0]
 
 ### Added — Fallback Visibility (First Operational Maturity Item)

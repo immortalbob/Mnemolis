@@ -413,3 +413,129 @@ class TestFormatChanges:
         changes = {"uptime": [{"timestamp": "2026-06-18T12:00:00Z", "change": "Outage"}]}
         result = self.fmt(changes)
         assert "UTC" in result
+
+
+class TestSnapshotJobHealth:
+    """Tests for get_snapshot_job_health() — reports each background
+    snapshot job's health by comparing its most recent successful
+    snapshot timestamp against its expected interval.
+
+    Found via real review, not a reported failure: every snapshot job
+    (snapshot_uptime, snapshot_forecast, snapshot_news, snapshot_ha)
+    already catches its own exceptions internally and just logs a
+    warning — meaning a job that started failing on every single run
+    would never crash, never stop the scheduler, and produce zero
+    externally visible signal beyond a log line nobody is necessarily
+    watching. The scheduler object itself also has no external
+    visibility at all (a local variable inside main.py's lifespan
+    context manager, never exposed to any endpoint), so there was
+    previously no way to ask "is the background scheduler actually
+    still running and succeeding" without reading raw application logs.
+    """
+
+    def setup_method(self):
+        import tempfile
+        from unittest.mock import patch
+        self.temp_db_fixture = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.temp_db = self.temp_db_fixture.name
+        self.temp_db_fixture.close()
+        self.patcher = patch("app.snapshots.SNAPSHOT_DB", self.temp_db)
+        self.patcher.start()
+        from app.snapshots import init_snapshot_db
+        init_snapshot_db()
+
+    def teardown_method(self):
+        import os
+        self.patcher.stop()
+        os.unlink(self.temp_db)
+
+    def _insert_snapshot(self, source, content, timestamp):
+        from app.snapshots import _connect, SNAPSHOT_DB
+        con = _connect(SNAPSHOT_DB)
+        con.execute(
+            "INSERT INTO snapshots (timestamp, source, content) VALUES (?, ?, ?)",
+            (timestamp, source, content)
+        )
+        con.commit()
+        con.close()
+
+    def _ago(self, minutes_ago: int) -> str:
+        """Return an ISO timestamp `minutes_ago` minutes before now — see
+        the identical helper in TestGetChangesNetCollapsing above for why
+        relative timestamps matter here: hardcoded absolute dates in a
+        staleness check would silently break the moment real time passed
+        whatever window was hardcoded against them."""
+        from datetime import datetime, timedelta, timezone
+        ts = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_recent_snapshot_reports_ok(self):
+        from app.snapshots import get_snapshot_job_health
+        self._insert_snapshot("uptime", "All services up.", self._ago(1))
+        health = get_snapshot_job_health()
+        assert health["uptime"]["status"] == "ok"
+
+    def test_never_ran_reports_never_ran(self):
+        """A source with zero snapshots ever stored — either the job
+        hasn't run yet shortly after startup, or it has never once
+        succeeded — must be distinguishable from a genuinely stale job
+        that DID succeed at some point but has since stopped."""
+        from app.snapshots import get_snapshot_job_health
+        health = get_snapshot_job_health()
+        assert health["forecast"]["status"] == "never_ran"
+
+    def test_stale_snapshot_reports_stale(self):
+        """A job whose last successful snapshot is well past its
+        expected interval (beyond the grace multiplier) must be flagged
+        as stale — this is the actual real gap found during review:
+        every snapshot job already catches its own exceptions and just
+        logs a warning, so a genuinely stuck job was previously
+        completely invisible outside of raw logs."""
+        from app.snapshots import get_snapshot_job_health
+        # news has a 60-minute interval; 4 hours (240 min) is well past
+        # even a generous 3x grace window (180 min)
+        self._insert_snapshot("news", "Old headlines.", self._ago(240))
+        health = get_snapshot_job_health()
+        assert health["news"]["status"] == "stale"
+        assert health["news"]["minutes_since_last_snapshot"] >= 239
+
+    def test_slightly_late_snapshot_is_not_flagged_stale(self):
+        """Normal jitter (job execution time, a slightly delayed
+        scheduler tick) must not trigger a false alarm — the grace
+        multiplier exists specifically to absorb this."""
+        from app.snapshots import get_snapshot_job_health
+        # uptime has a 2-minute interval; 4 minutes late is normal jitter,
+        # well within the 3x grace window (6 minutes)
+        self._insert_snapshot("uptime", "All up.", self._ago(4))
+        health = get_snapshot_job_health()
+        assert health["uptime"]["status"] == "ok"
+
+    def test_all_four_jobs_are_reported(self):
+        """Every job the real scheduler actually runs must appear in the
+        health report, even if some have never produced a snapshot —
+        a missing key would be just as bad as a wrong status."""
+        from app.snapshots import get_snapshot_job_health
+        health = get_snapshot_job_health()
+        for source in ["uptime", "forecast", "news", "ha"]:
+            assert source in health
+
+    def test_each_job_reports_its_correct_expected_interval(self):
+        """Confirm the reported interval actually matches what main.py's
+        real scheduler.add_job() calls use — a mismatch here would mean
+        this health check is silently checking against the wrong
+        expectation for at least one job."""
+        from app.snapshots import get_snapshot_job_health
+        health = get_snapshot_job_health()
+        assert health["uptime"]["expected_interval_minutes"] == 2
+        assert health["forecast"]["expected_interval_minutes"] == 30
+        assert health["news"]["expected_interval_minutes"] == 60
+        assert health["ha"]["expected_interval_minutes"] == 5
+
+    def test_unparseable_timestamp_reports_unknown_not_a_crash(self):
+        """A corrupted or unexpected timestamp format must degrade
+        gracefully to 'unknown' status, never raise an exception that
+        would take down the whole /health endpoint over one bad row."""
+        from app.snapshots import get_snapshot_job_health
+        self._insert_snapshot("ha", "content", "not-a-valid-timestamp")
+        health = get_snapshot_job_health()
+        assert health["ha"]["status"] == "unknown"

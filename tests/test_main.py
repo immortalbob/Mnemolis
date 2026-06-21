@@ -155,6 +155,20 @@ class TestHealthEndpoint:
         assert isinstance(data["routing_cache_max_size"], int)
         assert data["routing_cache_max_size"] > 0
 
+    def test_health_includes_snapshot_jobs(self, client):
+        """Regression coverage for a real gap found during operational
+        maturity review — every background snapshot job already catches
+        its own exceptions and just logs a warning on failure, with the
+        scheduler object itself never exposed to any endpoint at all.
+        /health must surface each job's status so a genuinely stuck job
+        is visible without reading raw application logs."""
+        resp = client.get("/health")
+        data = resp.json()
+        assert "snapshot_jobs" in data
+        for source in ["uptime", "forecast", "news", "ha"]:
+            assert source in data["snapshot_jobs"]
+            assert "status" in data["snapshot_jobs"][source]
+
     def test_health_includes_sources(self, client):
         resp = client.get("/health")
         data = resp.json()
