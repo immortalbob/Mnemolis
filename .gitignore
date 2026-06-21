@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Test/property-testing caches — regenerated fresh on every run,
+# nothing useful to persist in version control
+.pytest_cache/
+.hypothesis/
+
+# Local Mnemolis data (created at runtime, not part of the source tree)
+data/
+
+# Local environment / secrets
+.env
+docker-compose.yml
+
+# Editor/OS cruft
+.DS_Store
+.vscode/
+.idea/
