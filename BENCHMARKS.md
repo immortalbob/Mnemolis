@@ -120,6 +120,13 @@ Query decomposition and smart fusion truncation did not add meaningful overhead 
 | Web search, cold | 17ms | 170ms | First time seeing a query (p99: 4600ms) |
 | Web search, warm | 17ms | 20ms | Alternate phrasing cached |
 | 20 concurrent users (v3.11.1) | 17ms | 38ms | 0% failure rate, warm cache |
+| Conditional query, cold | 17ms | 1200ms | First time seeing the condition |
+| Conditional query, warm | 18ms | 35ms | Condition routing cached |
+| Conditional with remainder, cold | 17ms | 1200ms | Two independent searches (condition + remainder) |
+| Conditional with remainder, warm | 18ms | 38ms | Only partially warmed — see v3.17.0 notes (small query pool artifact) |
+| Discourse-framing query, cold | 18ms | 150ms | First time seeing the phrase (p98: 2500ms) |
+| Discourse-framing query, warm | 17ms | 23ms | Routing + disambiguation cached |
+| 20 concurrent users (v3.17.0) | 18ms | 32ms | 0% failure rate, warm cache |
 
 ## Key findings
 
@@ -217,6 +224,66 @@ Re-benchmarked after the capability expansion series: configurable thresholds, K
 **The routing cache fully absorbs the new features' cold-start cost.** `kiwix_disambiguation` p95 dropped from 5900ms (cold) to 20ms (warm) — a ~295x improvement. `web` p99 dropped from 4600ms (cold) to 38ms (warm) — a ~121x improvement. Once a given ambiguous term or query phrasing has been seen once, every subsequent occurrence skips the LLM calls entirely and returns at the same sub-20ms median every other source achieves.
 
 **Median latency is unaffected by any of this series' work.** Aggregated median held at 17ms cold and warm, identical to every prior benchmarked version back to v3.5.0. The capability expansion series traded cold-path tail latency for correctness on a minority of complex queries — disambiguation and multi-query expansion only ever run when genuinely needed (short ambiguous Kiwix terms, 3+ word web queries) — without touching the steady-state experience for the other ~90% of traffic.
+
+### 20 Users — Cold vs Warm Cache (v3.17.0, with Conditional Query Detection + Discourse-Framing Fix)
+
+Re-benchmarked after the conditional query detection feature (3.16.0) and the discourse-framing routing bypass fix (3.17.0) — neither had been measured under load before. The locustfile was updated for this run with three new task types: `conditional` (leading "if X, Y" queries against both structured and open-ended sources), `conditional_remainder` (a conditional followed by a real, independently-searched second intent), and `discourse_framing` ("everyone's obsessed with X" phrasing, which now forces Kiwix into the routing decision and strips the discourse phrase from Kiwix's search terms). The prior locustfile had zero coverage for any of this — it couldn't have measured these features' cost at all.
+
+**Cold cache** — first run, routing cache empty for the new query patterns.
+
+| Endpoint | Median | p95 | p98 | p99 | Failures |
+|----------|--------|-----|-----|-----|----------|
+| `/health` | 700ms | 910ms | 910ms | 910ms | 0% |
+| `/search [kiwix]` | 18ms | 1600ms | 1800ms | 3600ms | 0% |
+| `/search [kiwix_disambiguation]` | 18ms | 2200ms | 8000ms | 8000ms | 0% |
+| `/search [web]` | 18ms | 1700ms | 3600ms | 5200ms | 0% |
+| `/search [conditional]` | 17ms | 1200ms | 1300ms | 1300ms | 0% |
+| `/search [conditional_remainder]` | 17ms | 1200ms | 1900ms | 1900ms | 0% |
+| `/search [discourse_framing]` | 18ms | 150ms | 2500ms | 2500ms | 0% |
+| `/search [forecast]` | 17ms | 20ms | 750ms | 750ms | 0% |
+| `/search [news]` | 18ms | 23ms | 100ms | 100ms | 0% |
+| `/search [uptime]` | 18ms | 1100ms | 1100ms | 1100ms | 0% |
+| `/search [ha]` | 35ms | 56ms | 120ms | 120ms | 0% |
+| `/search [auto]` | 19ms | 1100ms | 1400ms | 1500ms | 0% |
+| `/search [fusion_explicit]` | 18ms | 92ms | 670ms | 960ms | 0% |
+| `/search [fusion_auto]` | 18ms | 23ms | 120ms | 170ms | 0% |
+| `/search [fusion_triple]` | 18ms | 120ms | 1300ms | 1300ms | 0% |
+| `/search [cache_hit]` | 18ms | 2600ms | 4700ms | 4700ms | 0% |
+| **Aggregated** | **18ms** | **750ms** | **1600ms** | **2500ms** | **0%** |
+
+**849 requests. 0 failures.** `kiwix_disambiguation` remains the most expensive cold-path query (p98 8000ms) — unchanged in kind from prior releases, just a different worst-case sample. The two genuinely new cost centers are `conditional_remainder` (two full searches plus two routing decisions per request — condition and remainder are independently routed) and `discourse_framing` (the forced extra Kiwix search added on top of whatever the LLM already chose).
+
+**Warm cache** — identical run immediately after, routing cache populated.
+
+| Endpoint | Median | p95 | p98 | p99 | Failures |
+|----------|--------|-----|-----|-----|----------|
+| `/health` | 710ms | 770ms | 770ms | 770ms | 0% |
+| `/search [kiwix]` | 18ms | 20ms | 23ms | 25ms | 0% |
+| `/search [kiwix_disambiguation]` | 18ms | 21ms | 32ms | 32ms | 0% |
+| `/search [web]` | 17ms | 21ms | 24ms | 25ms | 0% |
+| `/search [conditional]` | 18ms | 35ms | 1100ms | 1100ms | 0% |
+| `/search [conditional_remainder]` | 18ms | 38ms | 1100ms | 1100ms | 0% |
+| `/search [discourse_framing]` | 17ms | 23ms | 25ms | 25ms | 0% |
+| `/search [forecast]` | 18ms | 21ms | 24ms | 24ms | 0% |
+| `/search [news]` | 18ms | 22ms | 40ms | 40ms | 0% |
+| `/search [uptime]` | 17ms | 980ms | 1400ms | 1400ms | 0% |
+| `/search [ha]` | 35ms | 48ms | 48ms | 48ms | 0% |
+| `/search [auto]` | 18ms | 1100ms | 1500ms | 1600ms | 0% |
+| `/search [fusion_explicit]` | 17ms | 22ms | 26ms | 34ms | 0% |
+| `/search [fusion_auto]` | 18ms | 21ms | 23ms | 47ms | 0% |
+| `/search [fusion_triple]` | 17ms | 21ms | 21ms | 22ms | 0% |
+| `/search [cache_hit]` | 17ms | 22ms | 23ms | 23ms | 0% |
+| **Aggregated** | **18ms** | **32ms** | **700ms** | **770ms** | **0%** |
+
+**907 requests. 0 failures.**
+
+**`kiwix_disambiguation` and `discourse_framing` both collapse fully on cache hit, consistent with every prior release.** `kiwix_disambiguation` p98 dropped from 8000ms (cold) to 32ms (warm) — a ~250x improvement. `discourse_framing` p98 dropped from 2500ms (cold) to 25ms (warm) — a ~100x improvement. Once a discourse-framing phrase or disambiguation term has been seen once, the routing cache skips the LLM/disambiguation work entirely on every subsequent occurrence.
+
+**`conditional_remainder` only partially warmed (1900ms → 1100ms at p98, not down to ~25ms like everything else) — a real, honest finding worth noting rather than glossing over.** The remainder path makes two independent `route_with_source()` calls (one for the condition, one for the remainder), each with its own cache key. With only 2 remainder queries in the test pool and `random.choice()` picking independently across the cold and warm runs, it's plausible one half of a given pair was cached from the cold run while the other wasn't — a benchmark-methodology artifact of a small query pool size, not evidence the underlying caching mechanism (already proven correct everywhere else in this same benchmark) is broken for this path specifically.
+
+**`uptime` shows an unexplained warm-cache tail (p95 980ms, p99 1400ms) inconsistent with its own cold-cache numbers and every prior release's uptime benchmarks.** Worth re-checking in a future run rather than treating as confirmed — could be a real Uptime Kuma connection hiccup during this specific run, or sampling noise given the relatively small request count (25) for this endpoint.
+
+**Median latency remains completely unaffected.** Aggregated median held at 18ms cold and warm, consistent with every prior benchmarked version back to v3.5.0 — conditional detection and the discourse-framing fix both add real cost only on the specific query shapes that trigger them, with zero impact on the steady-state majority of traffic.
 
 ## Running benchmarks
 

@@ -415,6 +415,7 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `FUSION_MAX_CHARS_PER_SOURCE` | Characters per source result before truncation in fusion output | `1500` |
 | `FUSION_TIMEOUT_SECONDS` | Maximum time to wait for any single source in a fusion query | `15` |
 | `CACHE_MAX_SIZE` | Maximum result cache entries before oldest-eviction kicks in | `500` |
+| `ROUTING_CACHE_MAX_SIZE` | Maximum routing cache entries before oldest-eviction kicks in | `1000` |
 | `KIWIX_SEARCH_LIMIT` | Results requested per book per Kiwix search — higher values help the scoring function find the right answer among brand-name collisions | `15` |
 | `KIWIX_MAX_BOOKS` | Maximum number of Kiwix books the LLM can select for a single query — raise for broader multi-book fusion | `2` |
 | `WEB_NEWS_SCORE_THRESHOLD` | Web/news results scoring at or below this are dropped as irrelevant | `0` |
@@ -588,7 +589,7 @@ Response:
 Returns the list of available sources.
 
 ### `GET /health`
-Returns status, number of Kiwix books loaded, cache entry count, and connectivity status for every configured source.
+Returns status, number of Kiwix books loaded, result and routing cache entry counts alongside their configured max sizes (so growth toward either bound is visible without digging through logs or code), and connectivity status for every configured source — these are real, live network checks against each dependency, not just a check that a config value is present.
 
 ### `GET /catalog`
 Lists all books currently loaded from the Kiwix OPDS catalog.
@@ -603,7 +604,7 @@ Shows all current result cache entries with age and remaining TTL.
 Clears all result cache entries from memory and disk.
 
 ### `GET /cache/routing`
-Shows all current routing cache entries — source and Kiwix book selection decisions cached to avoid redundant LLM calls.
+Shows all current routing cache entries — source and Kiwix book selection decisions cached to avoid redundant LLM calls. Bounded at `ROUTING_CACHE_MAX_SIZE` (default 1000), evicting the oldest entry once full.
 
 ### `POST /cache/routing/clear`
 Clears all routing cache entries from memory and disk.
@@ -624,13 +625,15 @@ Returns meaningful changes detected across snapshot sources within the last N ho
 Manually trigger all snapshot jobs immediately.
 
 ### `GET /logs`
-Returns recent query log entries — timestamp, query, source used, cached flag, success, and latency in milliseconds. Optional `?limit=N` parameter (default 50).
+Returns recent query log entries — timestamp, query, source requested, source used, cached flag, success, latency in milliseconds, and whether a `FALLBACK_CHAIN` fallback occurred (e.g. a `kiwix` request that resolved to `web`). Optional `?limit=N` parameter (default 50).
 
 ### `POST /logs/clear`
 Clears all query log entries.
 
 ### `GET /logs/stats`
-Returns query log statistics — Time To First Knowledge (TTFK), cache hit rate, success rate, average latency by source, top 10 most-asked queries, unique query count, and learned query count.
+Returns query log statistics — Time To First Knowledge (TTFK), cache hit rate, success rate, fallback count and rate, average latency by source, top 10 most-asked queries, unique query count, and learned query count.
+
+Fallback statistics are reported as `fallback_by_target` rather than by original source — when multiple sources share the same fallback target (`kiwix` and `news` both fall back to `web`), a single boolean column genuinely cannot distinguish which one triggered any individual fallback, so this is reported as an honest, combined label (e.g. `kiwix_or_news_fallback_to_web`) instead of guessing at an attribution the underlying data doesn't actually support.
 
 ## Caching
 
@@ -780,7 +783,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-862 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing with accurate fallback-source reporting and discourse-framing routing bias, query decomposition with stop-word-based content detection/colloquial phrase handling/mixed-conjunction-type splitting/proper-noun-pair protection, conditional query detection with honest scoped yes/no interpretation and recursive sub-query re-detection, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation with corrected eligibility checks/multi-book fusion/discourse-framing phrase stripping, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection including colloquial patterns, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning and contraction normalization, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, application logging configuration, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
+875 tests covering FastAPI endpoints, API key authentication, HA area discoverability, backup/restore, intent routing with accurate fallback-source reporting and discourse-framing routing bias, fallback occurrence detection and reporting, bounded routing cache eviction, query decomposition with stop-word-based content detection/colloquial phrase handling/mixed-conjunction-type splitting/proper-noun-pair protection, conditional query detection with honest scoped yes/no interpretation and recursive sub-query re-detection, time-window phrase resolution, multi-keyword fusion escalation, cache logic and persistence, routing cache, Kiwix scoring/stemming/catalog parsing/book selection/multi-candidate search term disambiguation with corrected eligibility checks/multi-book fusion/discourse-framing phrase stripping, shared web/news relevance scoring with generic-result penalty and URL normalization, multi-query expansion, definitional query detection including colloquial patterns, list article penalties, HA area detection, the core HA entity matching engine, search term cleaning and contraction normalization, FreshRSS authentication with recency-aware scoring, forecast formatting/location attribution/configurable thresholds, uptime heartbeat parsing, fusion validation/header formatting/configurable limits, LLM client behavior for both Ollama and OpenAI-compatible backends, MCP tool server dispatch, snapshot diff engines and scheduled job functions with configurable thresholds, application logging configuration, SQL injection and security hardening, Hypothesis property-based fuzz testing, concurrency safety, settings configuration, all source modules via mocking, and Home Assistant entity filtering.
 
 ## Project Structure
 

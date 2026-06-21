@@ -76,6 +76,36 @@ HA_QUERIES = [
     "security status",
 ]
 
+# Leading "if X, Y" conditional queries — exercises detect_conditional(),
+# _interpret_yes_no()'s structured-source verdict path, and
+# _frame_conditional_response(). Mix of structured (ha/uptime/forecast,
+# gets a real verdict) and open-ended (kiwix, honest abstention) sources,
+# since both paths have genuinely different cost profiles.
+CONDITIONAL_QUERIES = [
+    "if the back door is unlocked, let me know",
+    "if any services are down, let me know right away",
+    "if it is raining, remind me to bring an umbrella",
+    "if mercury is in retrograde, I will be careful with communication",
+]
+
+# Conditional queries with a real remainder after the consequence — also
+# exercises the remainder extraction/independent-search/merge path added
+# alongside detect_conditional(), not just the simple no-remainder case
+CONDITIONAL_WITH_REMAINDER_QUERIES = [
+    "if any services are down, let me know, and also whats the weather",
+    "if the back door is unlocked, let me know, and also check the news",
+]
+
+# Discourse-framing queries ("everyone's obsessed with X") — exercises
+# _has_discourse_framing()'s routing bias (forcing kiwix into the fusion
+# decision) and _strip_discourse_framing()'s search-term cleanup inside
+# kiwix.py. Real production queries verified earlier this session.
+DISCOURSE_FRAMING_QUERIES = [
+    "whats the deal with that whole bitcoin thing everyone is obsessed with",
+    "whats the deal with that whole galaxy thing everyones obsessed with right now",
+    "whats the deal with that whole black hole thing everyone keeps talking about",
+]
+
 
 class MnemolisSingleSourceUser(HttpUser):
     """Simulates single-source queries — most common usage pattern."""
@@ -105,6 +135,41 @@ class MnemolisSingleSourceUser(HttpUser):
             "query": random.choice(AUTO_QUERIES),
             "source": "auto"
         }, name="/search [auto]")
+
+    @task(2)
+    def conditional(self):
+        """Leading 'if X, Y' conditional queries — exercises
+        detect_conditional(), the structured-source yes/no verdict path
+        (ha/uptime/forecast) and the honest-abstention path (kiwix), and
+        _frame_conditional_response(). Only fires under source='auto' —
+        conditional detection is skipped entirely for explicit sources."""
+        self.client.post("/search", json={
+            "query": random.choice(CONDITIONAL_QUERIES),
+            "source": "auto"
+        }, name="/search [conditional]")
+
+    @task(1)
+    def conditional_with_remainder(self):
+        """Conditional queries with a real remainder after the
+        consequence — exercises the remainder extraction, independent
+        search, and merge-back-into-response path, not just the simpler
+        no-remainder case."""
+        self.client.post("/search", json={
+            "query": random.choice(CONDITIONAL_WITH_REMAINDER_QUERIES),
+            "source": "auto"
+        }, name="/search [conditional_remainder]")
+
+    @task(2)
+    def discourse_framing(self):
+        """'Everyone's obsessed with X' style queries — exercises
+        _has_discourse_framing()'s routing bias (forcing kiwix into the
+        fusion decision alongside whatever the LLM already chose) and
+        _strip_discourse_framing()'s search-term cleanup. Only fires
+        under source='auto', same as conditional detection."""
+        self.client.post("/search", json={
+            "query": random.choice(DISCOURSE_FRAMING_QUERIES),
+            "source": "auto"
+        }, name="/search [discourse_framing]")
 
     @task(3)
     def web_search(self):

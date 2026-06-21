@@ -4,6 +4,38 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.18.0]
+
+### Added — Fallback Visibility (First Operational Maturity Item)
+The query log previously had no signal at all about whether a result came from a query's originally-intended source or from a `FALLBACK_CHAIN` fallback (e.g. kiwix → web) — `source_used` only ever showed the final outcome, with no record of whether it took a detour to get there.
+
+- **`fallback_occurred`** — a single new boolean column on `query_log`, set by comparing the pre-route intended source (from `detect_intent()` for `auto` requests, or the explicit `request.source` otherwise) against the actual resolved source from `route_with_source()`. Deliberately does **not** change `route_with_source()`'s own return signature — that function already recurses into itself at 4 internal call sites (conditional detection's condition/remainder handling, and the same for decomposed sub-queries), so widening its return tuple would have touched every one of those, a much larger and riskier change than a post-hoc comparison needed to be.
+- **Proper migration** — `ALTER TABLE query_log ADD COLUMN fallback_occurred` runs defensively alongside the `CREATE TABLE IF NOT EXISTS`, since the latter only ever affects fresh installs; an existing deployment's table doesn't gain new columns just because the `CREATE` statement changed.
+- **`/logs/stats`** now reports `fallback_count`, `fallback_rate_pct`, and a `fallback_by_target` breakdown.
+- **Real design flaw found and fixed before shipping** — the first version of the `fallback_by_target` breakdown attempted to attribute fallbacks to their original source (`kiwix` vs `news`), but since both share the same fallback target (`web`), a boolean column genuinely cannot distinguish which one triggered a given fallback — querying per-original-source would have run the identical SQL query under both labels and double-counted the same underlying rows. Fixed by reporting an honest, combined label instead (e.g. `kiwix_or_news_fallback_to_web`) rather than guessing at an attribution the data doesn't actually support.
+- **Verified against real production data** — the known GPIO/numpy query that falls back from kiwix to web (confirmed multiple times earlier this session) now correctly logs `fallback_occurred=1` and surfaces in `/logs/stats` exactly as designed; a control query with no fallback correctly logs `0`.
+
+### Added — Routing Cache Size Bounding (Second Operational Maturity Item)
+Found during operational maturity review: the routing cache had **no size limit at all**, unlike the result cache, which already had a proven bounded-eviction pattern (`_CACHE_MAX_SIZE` / `_evict_oldest()`). Given how many genuinely distinct cache keys this session's own features generate — every unique conditional query, discourse-framing phrase, and disambiguation candidate set gets its own entry — unbounded growth over sustained real-world usage is a real operational risk, not just a theoretical one.
+
+- **`routing_cache_max_size`** config setting (default `1000`), mirroring `cache_max_size`'s existing pattern.
+- **`_evict_oldest_routing()`** added, identical in shape to the result cache's `_evict_oldest()`.
+- **Defensive cap on load from disk too** — a routing cache file saved before this fix existed could theoretically still be over the new limit; `load_routing_cache()` now trims to the most recently-written entries if so, rather than silently allowing an over-limit cache to persist across a restart.
+- **`/health`** now reports `cache_max_size`, `routing_cache_entries`, and `routing_cache_max_size` alongside the existing `cache_entries` field, so growth toward either bound is visible without digging through logs or code.
+
+### Verified
+The existing `/health` endpoint was reviewed before building anything new — it already performs real, live network checks against all 6 source dependencies plus the LLM backend, not just config-presence checks. This existing coverage was confirmed working correctly against current production state before concluding the only genuine remaining gaps were the routing cache's missing bound and its absence from `/health`'s reported fields.
+
+### Added (Tests)
+- 10 new regression tests across fallback detection (`/search` integration, `/logs/stats` surfacing, the combined-label fix), routing cache eviction (oldest-entry correctness, existing-key-doesn't-evict correctness), and the new `/health` fields
+
+### Changed
+- Version bumped to 3.18.0
+
+**Total test count: 875**
+
+---
+
 ## [3.17.0]
 
 ### Fixed — Discourse-Framing Routing Bypass (Longest-Standing Known Limitation, Resolved)

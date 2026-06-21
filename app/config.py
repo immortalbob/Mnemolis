@@ -67,6 +67,15 @@ class Settings(BaseSettings):
     # Lower this on memory-constrained hardware (e.g. an N100 with limited RAM).
     cache_max_size: int = 500
 
+    # Routing cache — max entries before oldest-eviction kicks in. Separate
+    # from cache_max_size since the routing cache key space is genuinely
+    # larger: every unique conditional query, discourse-framing phrase, and
+    # disambiguation candidate set gets its own entry, on top of plain
+    # source-routing decisions. Found via real usage — this cache had NO
+    # size limit at all until this setting was added, unlike the result
+    # cache, which could grow unboundedly over sustained real-world usage.
+    routing_cache_max_size: int = 1000
+
     # Kiwix — results requested per book per search. Higher values give the
     # scoring function more candidates to find the right answer among when
     # common terms are crowded out by brand-name collisions (e.g. "galaxy"

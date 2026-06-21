@@ -131,6 +131,30 @@ class TestHealthEndpoint:
         data = resp.json()
         assert "cache_entries" in data
 
+    def test_health_includes_cache_max_size(self, client):
+        """Surfacing the configured max alongside the current count makes
+        growth toward the bound visible without digging through code or
+        config — the actual operational-maturity goal of this change."""
+        resp = client.get("/health")
+        data = resp.json()
+        assert "cache_max_size" in data
+        assert isinstance(data["cache_max_size"], int)
+        assert data["cache_max_size"] > 0
+
+    def test_health_includes_routing_cache_entries_and_max_size(self, client):
+        """Regression coverage for a real gap found during operational
+        maturity review — the routing cache previously had no exposed
+        size at all in /health, and (separately) no enforced size limit
+        either. Both the current count and the configured max must be
+        visible here."""
+        resp = client.get("/health")
+        data = resp.json()
+        assert "routing_cache_entries" in data
+        assert isinstance(data["routing_cache_entries"], int)
+        assert "routing_cache_max_size" in data
+        assert isinstance(data["routing_cache_max_size"], int)
+        assert data["routing_cache_max_size"] > 0
+
     def test_health_includes_sources(self, client):
         resp = client.get("/health")
         data = resp.json()
@@ -259,6 +283,131 @@ class TestLogsEndpoints:
             entry = entries[0]
             for field in ["timestamp", "query", "source_requested", "source_used", "cached", "success", "latency_ms"]:
                 assert field in entry
+
+    def test_log_query_accepts_fallback_occurred_default_false(self, client):
+        """Backward compatibility — existing call sites that don't pass
+        fallback_occurred at all (the 6-arg call signature used
+        throughout the rest of the test suite and the exception handler
+        in /search) must continue to work unchanged."""
+        from app.main import _log_query
+        # Should not raise — fallback_occurred defaults to False
+        _log_query("backward compat test", "auto", "forecast", False, True, 50)
+
+    def test_log_query_accepts_explicit_fallback_occurred(self, client):
+        from app.main import _log_query
+        _log_query("fallback test query", "kiwix", "web", False, True, 200, fallback_occurred=True)
+        resp = client.get("/logs?limit=1")
+        entries = resp.json()["entries"]
+        assert entries[0]["query"] == "fallback test query"
+
+
+class TestFallbackDetection:
+    """Tests for the fallback_occurred detection logic in /search and its
+    surfacing in /logs/stats.
+
+    Detected via a single boolean column, computed by comparing the
+    pre-route intended source against the actual resolved source from
+    route_with_source() — deliberately NOT by changing
+    route_with_source()'s own return signature, since that function
+    already recurses into itself at 4 internal call sites (conditional
+    detection's condition/remainder handling, and the same for decomposed
+    sub-queries), so widening its return tuple would touch every one of
+    those, a much larger and riskier change than this comparison needed
+    to require."""
+
+    def setup_method(self):
+        from app.main import _LOG_DB
+        import sqlite3
+        con = sqlite3.connect(_LOG_DB)
+        con.execute("DELETE FROM query_log")
+        con.commit()
+        con.close()
+
+    def test_explicit_source_fallback_is_detected(self, client):
+        """An explicit source='kiwix' request that internally falls back
+        to web must be logged with fallback_occurred=1."""
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["kiwix"] = lambda q: "No results found in wikipedia."
+        router_module.SOURCE_MAP["web"] = lambda q: "Real web results."
+        try:
+            resp = client.post("/search", json={"query": "test fallback query", "source": "kiwix"})
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+
+        assert resp.status_code == 200
+        assert resp.json()["source_used"] == "web"
+
+        from app.main import _connect, _LOG_DB
+        con = _connect(_LOG_DB)
+        row = con.execute(
+            "SELECT fallback_occurred FROM query_log WHERE query = ? ORDER BY id DESC LIMIT 1",
+            ("test fallback query",)
+        ).fetchone()
+        con.close()
+        assert row is not None
+        assert row[0] == 1
+
+    def test_no_fallback_is_not_flagged(self, client):
+        """A request that succeeds on its intended source (no fallback
+        needed at all) must be logged with fallback_occurred=0."""
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["forecast"] = lambda q: "Today will be clear."
+        try:
+            resp = client.post("/search", json={"query": "test no fallback query", "source": "forecast"})
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+
+        assert resp.status_code == 200
+
+        from app.main import _connect, _LOG_DB
+        con = _connect(_LOG_DB)
+        row = con.execute(
+            "SELECT fallback_occurred FROM query_log WHERE query = ? ORDER BY id DESC LIMIT 1",
+            ("test no fallback query",)
+        ).fetchone()
+        con.close()
+        assert row is not None
+        assert row[0] == 0
+
+    def test_stats_reports_fallback_count_and_rate(self, client):
+        from app.main import _log_query
+        _log_query("q1", "kiwix", "web", False, True, 100, fallback_occurred=True)
+        _log_query("q2", "forecast", "forecast", False, True, 50, fallback_occurred=False)
+
+        resp = client.get("/logs/stats")
+        data = resp.json()
+        assert data["fallback_count"] >= 1
+        assert "fallback_rate_pct" in data
+
+    def test_stats_fallback_by_target_uses_combined_label_not_duplicate_attribution(self, client):
+        """Regression test for a real flaw found during design: kiwix
+        and news both fall back to the same target (web), so a boolean
+        column genuinely cannot distinguish which one triggered a given
+        fallback. Querying naively per-original-source would run the
+        identical SQL query under both labels and double-report the
+        same underlying rows. The fix reports a single, honest combined
+        label (e.g. "kiwix_or_news_fallback_to_web") instead of guessing
+        at an attribution the data doesn't actually support."""
+        from app.main import _log_query
+        _log_query("fallback q1", "kiwix", "web", False, True, 100, fallback_occurred=True)
+        _log_query("fallback q2", "news", "web", False, True, 100, fallback_occurred=True)
+
+        resp = client.get("/logs/stats")
+        data = resp.json()
+        fallback_by_target = data["fallback_by_target"]
+
+        # Must NOT have separate, duplicate-counted "kiwix" and "news" keys
+        assert "kiwix" not in fallback_by_target
+        assert "news" not in fallback_by_target
+        # Must have exactly one combined key covering both
+        assert "kiwix_or_news_fallback_to_web" in fallback_by_target
+        assert fallback_by_target["kiwix_or_news_fallback_to_web"] == 2
 
 
 class TestAPIKeyAuth:

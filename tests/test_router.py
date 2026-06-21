@@ -969,6 +969,89 @@ class TestCache:
         assert self.count() == _CACHE_MAX_SIZE
 
 
+class TestRoutingCacheEviction:
+    """Tests for routing cache size-bounding — a real gap found during
+    operational maturity review: the routing cache had NO size limit at
+    all until this was added, unlike the result cache, which already had
+    this exact eviction pattern. The routing cache's key space is
+    genuinely larger in practice (every unique conditional query,
+    discourse-framing phrase, and disambiguation candidate set gets its
+    own entry), making unbounded growth over sustained real-world usage a
+    real concern, not just a theoretical one.
+
+    _save_routing_cache() (real disk I/O) is mocked throughout — it fires
+    on every single _set_routing() call with no batching, unlike the
+    result cache's batched save, so filling the cache to its max size in
+    a test would otherwise mean hundreds or thousands of real disk writes
+    to test logic that has nothing to do with disk I/O at all.
+    """
+
+    def setup_method(self):
+        from app.router import clear_routing_cache
+        from unittest.mock import patch
+        self._save_patch = patch("app.router._save_routing_cache")
+        self._save_patch.start()
+        clear_routing_cache()
+
+    def teardown_method(self):
+        self._save_patch.stop()
+
+    def test_routing_cache_has_a_size_limit(self):
+        """Confirm the constant actually exists and is a positive
+        integer — the most basic regression check that this isn't
+        silently disabled or misconfigured to 0/None."""
+        from app.router import _ROUTING_CACHE_MAX_SIZE
+        assert isinstance(_ROUTING_CACHE_MAX_SIZE, int)
+        assert _ROUTING_CACHE_MAX_SIZE > 0
+
+    def test_routing_cache_max_size_evicts_oldest(self):
+        from app.router import _ROUTING_CACHE_MAX_SIZE, _set_routing, _routing_cache
+        for i in range(_ROUTING_CACHE_MAX_SIZE):
+            _set_routing(f"routing query {i}", "kiwix")
+        assert len(_routing_cache) == _ROUTING_CACHE_MAX_SIZE
+        # Add one more — should evict oldest rather than growing unbounded
+        _set_routing("one more routing query", "web")
+        assert len(_routing_cache) == _ROUTING_CACHE_MAX_SIZE
+
+    def test_eviction_removes_the_genuinely_oldest_entry(self):
+        """Confirm eviction actually removes the OLDEST entry by
+        timestamp, not an arbitrary one — the same correctness property
+        the result cache's _evict_oldest() already guarantees."""
+        from app.router import _ROUTING_CACHE_MAX_SIZE, _set_routing, _get_routing, _routing_cache
+        import time as time_module
+        from unittest.mock import patch
+
+        # Manually control timestamps so eviction order is unambiguous
+        base_time = time_module.time()
+        with patch("app.router.time.time", side_effect=[base_time + i for i in range(_ROUTING_CACHE_MAX_SIZE)]):
+            for i in range(_ROUTING_CACHE_MAX_SIZE):
+                _set_routing(f"query {i}", "kiwix")
+
+        assert _get_routing("query 0") == "kiwix"  # the oldest, still present
+
+        with patch("app.router.time.time", return_value=base_time + _ROUTING_CACHE_MAX_SIZE):
+            _set_routing("newest query", "web")
+
+        # The oldest entry ("query 0") must now be gone
+        assert _get_routing("query 0") is None
+        assert _get_routing("newest query") == "web"
+
+    def test_updating_an_existing_key_does_not_trigger_eviction(self):
+        """Re-caching a decision for a query ALREADY in the cache must
+        not count as a new entry for eviction purposes — only genuinely
+        new keys should trigger eviction when at capacity, matching the
+        same logic the result cache's _set_cached() already has."""
+        from app.router import _ROUTING_CACHE_MAX_SIZE, _set_routing, _routing_cache
+        for i in range(_ROUTING_CACHE_MAX_SIZE):
+            _set_routing(f"query {i}", "kiwix")
+        assert len(_routing_cache) == _ROUTING_CACHE_MAX_SIZE
+
+        # Re-cache an EXISTING key — should not evict anything, since
+        # this isn't a new entry
+        _set_routing("query 0", "web")
+        assert len(_routing_cache) == _ROUTING_CACHE_MAX_SIZE
+
+
 # ---------------------------------------------------------------------------
 # Empty result detection
 # ---------------------------------------------------------------------------

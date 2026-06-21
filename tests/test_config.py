@@ -151,6 +151,10 @@ class TestDefaultValues:
         s = self._bare_settings()
         assert s.cache_max_size == 500
 
+    def test_routing_cache_max_size_default(self):
+        s = self._bare_settings()
+        assert s.routing_cache_max_size == 1000
+
     def test_kiwix_search_limit_default(self):
         s = self._bare_settings()
         assert s.kiwix_search_limit == 15

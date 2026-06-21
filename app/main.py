@@ -17,6 +17,7 @@ from app.router import (
     route,
     route_with_source,
     SOURCE_MAP,
+    FALLBACK_CHAIN,
     detect_intent,
     check_cached,
     get_cache_stats,
@@ -96,7 +97,16 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def _init_log_db():
-    """Create query log table if it doesn't exist."""
+    """Create query log table if it doesn't exist, and migrate existing
+    tables to add columns introduced after the table was first created.
+
+    CREATE TABLE IF NOT EXISTS only affects fresh installs — an existing
+    deployment's table already exists and won't gain new columns just
+    because the CREATE statement changed, so any new column needs an
+    explicit ALTER TABLE migration here, run defensively (existing
+    databases that already have the column will hit a harmless,
+    caught exception on the ALTER).
+    """
     try:
         con = _connect(_LOG_DB)
         con.execute("""
@@ -108,22 +118,31 @@ def _init_log_db():
                 source_used TEXT NOT NULL,
                 cached INTEGER NOT NULL,
                 success INTEGER NOT NULL,
-                latency_ms INTEGER NOT NULL
+                latency_ms INTEGER NOT NULL,
+                fallback_occurred INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # Migration for tables created before fallback_occurred existed —
+        # ALTER TABLE ADD COLUMN fails harmlessly if the column is already
+        # present (fresh installs created with the CREATE TABLE above
+        # already have it), so this is safe to run unconditionally
+        try:
+            con.execute("ALTER TABLE query_log ADD COLUMN fallback_occurred INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # column already exists
         con.commit()
         con.close()
     except Exception as e:
         _LOGGER.warning("Could not initialize query log db: %s", e)
 
 
-def _log_query(query: str, source_requested: str, source_used: str, cached: bool, success: bool, latency_ms: int):
+def _log_query(query: str, source_requested: str, source_used: str, cached: bool, success: bool, latency_ms: int, fallback_occurred: bool = False):
     """Write a query log entry."""
     try:
         con = _connect(_LOG_DB)
         con.execute(
-            "INSERT INTO query_log (timestamp, query, source_requested, source_used, cached, success, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), query, source_requested, source_used, int(cached), int(success), latency_ms)
+            "INSERT INTO query_log (timestamp, query, source_requested, source_used, cached, success, latency_ms, fallback_occurred) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), query, source_requested, source_used, int(cached), int(success), latency_ms, int(fallback_occurred))
         )
         con.commit()
         con.close()
@@ -165,7 +184,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.17.0",
+    version="3.18.0",
     lifespan=lifespan,
 )
 
@@ -287,8 +306,10 @@ def _check_llm() -> dict:
 @app.get("/health")
 def health():
     """
-    Health check. Returns container status, Kiwix books loaded, cache entry count,
-    and connectivity status for every configured source.
+    Health check. Returns container status, Kiwix books loaded, result and
+    routing cache entry counts (with their configured max sizes, so growth
+    toward the bound is visible without needing to dig through logs), and
+    connectivity status for every configured source.
     """
     books = get_books()
     sources = {
@@ -305,6 +326,9 @@ def health():
         "status": "ok",
         "kiwix_books_loaded": len(books),
         "cache_entries": get_cache_count(),
+        "cache_max_size": settings.cache_max_size,
+        "routing_cache_entries": len(get_routing_cache_stats()),
+        "routing_cache_max_size": settings.routing_cache_max_size,
         "sources": sources,
     }
 
@@ -369,6 +393,7 @@ def routing_cache_clear():
 
 @app.post("/search", response_model=SearchResponse, dependencies=[Depends(require_api_key)])
 def search(request: SearchRequest):
+    intent = None
     if request.source == "auto":
         intent = detect_intent(request.query)
         if isinstance(intent, list):
@@ -390,7 +415,25 @@ def search(request: SearchRequest):
         # while the actual content was a web search result.
         result, resolved_source = route_with_source(request.query, request.source, request.fusion_sources)
         latency_ms = int((time.monotonic() - start) * 1000)
-        _log_query(request.query, request.source, resolved_source, was_cached, True, latency_ms)
+
+        # Detect fallback occurrence without changing route_with_source()'s
+        # return signature at all — that function already recurses into
+        # itself at 4 internal call sites (conditional detection, remainder
+        # handling), so widening its return tuple would touch every one of
+        # those, a much larger and riskier change than this comparison.
+        # 'intent' (or request.source for explicit requests) is what was
+        # decided BEFORE route_with_source ran; comparing it against
+        # FALLBACK_CHAIN's known mapping for resolved_source tells us
+        # whether a fallback actually happened, using only data that
+        # already existed at this call site.
+        intended_source = intent if intent is not None else request.source
+        fallback_occurred = (
+            not isinstance(intended_source, list)
+            and intended_source in FALLBACK_CHAIN
+            and resolved_source == FALLBACK_CHAIN[intended_source]
+        )
+
+        _log_query(request.query, request.source, resolved_source, was_cached, True, latency_ms, fallback_occurred)
         return SearchResponse(
             query=request.query,
             source_used=resolved_source,
@@ -608,6 +651,20 @@ def query_log_stats():
 
     Returns:
     - Total queries, cache hit rate, success rate
+    - Fallback count and rate — how often a result was empty enough to
+      trigger FALLBACK_CHAIN (e.g. kiwix -> web). Detected via a single
+      boolean column (fallback_occurred) computed by comparing the
+      pre-route intended source against the actual resolved source,
+      rather than changing route_with_source()'s return signature —
+      that function already recurses into itself at 4 internal call
+      sites, so widening its return tuple would be much more invasive
+      than this comparison needed to be.
+    - Fallback breakdown by TARGET, not original source — when multiple
+      sources share the same fallback target (kiwix and news both fall
+      back to web), the boolean alone can't distinguish which one
+      triggered a given fallback, so this is reported as a combined,
+      honestly-labeled count (e.g. "kiwix_or_news_fallback_to_web")
+      rather than guessing at an attribution the data doesn't support
     - Time To First Knowledge (TTFK) — average latency for first-seen queries
     - Average latency by source
     - Top 10 most-asked queries
@@ -623,7 +680,8 @@ def query_log_stats():
                 COUNT(*) as total,
                 SUM(cached) as cache_hits,
                 SUM(success) as successes,
-                AVG(latency_ms) as avg_latency_ms
+                AVG(latency_ms) as avg_latency_ms,
+                SUM(fallback_occurred) as fallbacks
             FROM query_log
         """).fetchone()
 
@@ -631,6 +689,7 @@ def query_log_stats():
         cache_hits = totals[1] or 0
         successes = totals[2] or 0
         avg_latency = round(totals[3] or 0, 1)
+        fallbacks = totals[4] or 0
 
         # TTFK — average latency of first-seen queries (cached=0, first occurrence)
         # A query's "cold" cost is its first appearance in the log
@@ -656,6 +715,31 @@ def query_log_stats():
                 "avg_latency_ms": round(row[1], 1),
                 "query_count": row[2],
             }
+
+        # Fallback breakdown — reported per FALLBACK_CHAIN TARGET, not per
+        # original source. A boolean column can't distinguish which
+        # original source a fallback came from when multiple sources
+        # share the same target (kiwix and news both fall back to web) —
+        # querying "fallback_occurred=1 AND source_used='web'" would
+        # double-count under separate 'kiwix' and 'news' labels if we
+        # tried to attribute it to one or the other, since the same rows
+        # would match both. Reporting it honestly as a combined count
+        # against the shared target avoids that, at the cost of not being
+        # able to say whether kiwix or news specifically struggled more —
+        # a real, accepted limitation of using one boolean column rather
+        # than recording the original source as text.
+        fallback_by_target = {}
+        fallback_targets = set(FALLBACK_CHAIN.values())
+        for target in fallback_targets:
+            sources_falling_back_here = [s for s, t in FALLBACK_CHAIN.items() if t == target]
+            row = con.execute("""
+                SELECT COUNT(*) FROM query_log
+                WHERE fallback_occurred = 1 AND source_used = ?
+            """, (target,)).fetchone()
+            fallback_count = row[0] or 0
+            if fallback_count > 0:
+                label = "_or_".join(sorted(sources_falling_back_here))
+                fallback_by_target[f"{label}_fallback_to_{target}"] = fallback_count
 
         # Top 10 most asked queries
         top_queries = []
@@ -705,9 +789,12 @@ def query_log_stats():
             "learned_queries": learned,
             "cache_hit_rate_pct": round(cache_hits / total * 100, 1) if total > 0 else 0,
             "success_rate_pct": round(successes / total * 100, 1) if total > 0 else 0,
+            "fallback_count": fallbacks,
+            "fallback_rate_pct": round(fallbacks / total * 100, 1) if total > 0 else 0,
             "avg_latency_ms": avg_latency,
             "ttfk_ms": ttfk_ms,
             "latency_by_source": latency_by_source,
+            "fallback_by_target": fallback_by_target,
             "top_queries": top_queries,
         }
 

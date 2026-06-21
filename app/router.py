@@ -173,6 +173,7 @@ CACHE_TTL = {
 ROUTING_CACHE_FILE = "/app/data/routing_cache.json"
 ROUTING_CACHE_TTL = 3600  # 1 hour — routing decisions are stable but not permanent
 _routing_cache: dict[str, tuple[str, float]] = {}
+_ROUTING_CACHE_MAX_SIZE: int = settings.routing_cache_max_size  # max entries before evicting oldest
 
 
 def _routing_cache_key(query: str) -> str:
@@ -192,9 +193,31 @@ def _get_routing(query: str) -> str | None:
     return None
 
 
+def _evict_oldest_routing() -> None:
+    """Remove the oldest routing cache entry.
+
+    Found via real usage — this cache had NO size limit at all until this
+    was added. The result cache (_cache) already had this exact pattern;
+    the routing cache's key space is genuinely larger in practice (every
+    unique conditional query, discourse-framing phrase, and disambiguation
+    candidate set gets its own entry on top of plain source-routing
+    decisions), making unbounded growth over sustained real-world usage
+    a real, not just theoretical, concern.
+    """
+    if not _routing_cache:
+        return
+    oldest_key = min(_routing_cache, key=lambda k: _routing_cache[k][1])
+    del _routing_cache[oldest_key]
+    _LOGGER.debug("Evicted oldest routing cache entry: %s", oldest_key)
+
+
 def _set_routing(query: str, decision: str) -> None:
     """Cache a routing decision for a query."""
     key = _routing_cache_key(query)
+    # Evict oldest if at capacity (and this is a new entry)
+    if key not in _routing_cache and len(_routing_cache) >= _ROUTING_CACHE_MAX_SIZE:
+        _evict_oldest_routing()
+        _LOGGER.info("Routing cache at max size (%d), evicted oldest entry", _ROUTING_CACHE_MAX_SIZE)
     _routing_cache[key] = (decision, time.time())
     _LOGGER.info("Cached routing decision: '%s' -> %s", query[:50], decision)
     _save_routing_cache()
@@ -236,6 +259,22 @@ def load_routing_cache() -> None:
                 continue
         _routing_cache.clear()
         _routing_cache.update(loaded)
+        # Defensive cap on load too — in practice this rarely matters
+        # since ROUTING_CACHE_TTL (1 hour) means anything surviving the
+        # expiry filter above was written recently anyway, but a disk
+        # file saved before _ROUTING_CACHE_MAX_SIZE existed could
+        # theoretically still be over the limit. Keep only the most
+        # recently-written entries if so, rather than silently allowing
+        # an over-limit cache to persist across a restart.
+        if len(_routing_cache) > _ROUTING_CACHE_MAX_SIZE:
+            newest_keys = sorted(
+                _routing_cache, key=lambda k: _routing_cache[k][1], reverse=True
+            )[:_ROUTING_CACHE_MAX_SIZE]
+            _routing_cache = {k: _routing_cache[k] for k in newest_keys}
+            _LOGGER.info(
+                "Routing cache loaded from disk exceeded max size, trimmed to %d most recent entries",
+                _ROUTING_CACHE_MAX_SIZE
+            )
         _LOGGER.info("Loaded %d routing cache entries from disk", len(_routing_cache))
     except json.JSONDecodeError as e:
         _LOGGER.warning("Routing cache corrupted: %s, starting fresh", e)
