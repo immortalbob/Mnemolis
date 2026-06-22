@@ -44,17 +44,47 @@ underlying transport itself, not something our own session-manager-reset
 fix touches. Worth monitoring for real-world reports of truncated MCP
 responses; if seen, check that upstream issue for a resolution before
 assuming it's a Mnemolis-side bug.
+A second real bug found via actual MCP client testing (MCP Inspector),
+not caught by the test suite at all: FastMCP's `transport_security`
+defaults to DNS-rebinding protection that only allows the `Host` header
+to be `127.0.0.1`/`localhost`/`::1` — auto-enabled specifically because
+FastMCP's own `host` constructor parameter defaults to `127.0.0.1`. Since
+Mnemolis is explicitly designed to be reached over a real LAN (the whole
+point of running it as a homelab service), every real-network connection
+attempt was being rejected with "Invalid Host header" before ever
+reaching the actual tool logic. `TestClient`-based tests never caught
+this because TestClient addresses the app as `testserver` internally,
+never exercising real Host-header validation at all — this is exactly
+the kind of gap real client testing exists to catch. Fixed by explicitly
+disabling DNS-rebinding protection via `transport_security`, since
+Mnemolis already assumes a trusted local network (see the README's API
+key authentication section for the actual, intended trust model).
 """
 
 import asyncio
 import logging
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import TransportSecuritySettings
 
 from app.router import route
 
 _LOGGER = logging.getLogger(__name__)
 
-mcp = FastMCP("mnemolis")
+mcp = FastMCP(
+    "mnemolis",
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    # FastMCP's own internal Streamable HTTP route defaults to "/mcp" —
+    # since main.py's app.mount("/mcp", mcp_app) already provides that
+    # prefix, leaving this at the default produced a real, found-via-
+    # actual-client-testing bug: a doubled path, http://host:8888/mcp/mcp,
+    # not the documented http://host:8888/mcp. TestClient-based tests
+    # never caught this because they call the app object directly by
+    # Python reference, not by constructing and parsing a real URL path —
+    # exactly the kind of gap real MCP client testing (MCP Inspector)
+    # exists to catch. Setting this to "/" makes main.py's own "/mcp"
+    # mount the only "/mcp" in the final, effective path.
+    streamable_http_path="/",
+)
 
 
 @mcp.tool()

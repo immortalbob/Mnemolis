@@ -237,3 +237,88 @@ class TestMcpAppModuleLevel:
     def test_server_name_is_mnemolis(self):
         from app.mcp_server import mcp
         assert mcp.name == "mnemolis"
+
+
+class TestRealClientFindings:
+    """Regression tests for two real bugs found ONLY via actual MCP
+    client testing (MCP Inspector) — neither was caught by the rest of
+    this test suite, since TestClient-based tests call the app object
+    directly by Python reference and never exercise real URL-path
+    resolution or real Host-header validation the way an actual network
+    client does. This is exactly the kind of gap real client testing
+    exists to catch, and is why both fixes are specifically verified
+    here against a real LAN-style request, not just localhost."""
+
+    def test_mcp_endpoint_is_reachable_at_documented_single_path(self):
+        """Regression test for a real, found bug: FastMCP's own internal
+        Streamable HTTP route defaults to '/mcp', and main.py ALSO mounts
+        the whole app at '/mcp' — combined, the real, only-reachable path
+        was 'http://host:8888/mcp/mcp', not the documented
+        'http://host:8888/mcp'. Fixed via streamable_http_path='/' on the
+        FastMCP instance, so main.py's own '/mcp' mount is the only
+        '/mcp' in the final path."""
+        from starlette.testclient import TestClient
+        from app.main import app
+
+        with TestClient(app, base_url="http://192.168.1.50:8888") as client:
+            resp = client.post(
+                "/mcp",
+                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                json={
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                },
+            )
+        assert resp.status_code == 200
+
+    def test_mcp_endpoint_accepts_real_lan_host_header(self):
+        """Regression test for a real, found bug: FastMCP auto-enables
+        DNS-rebinding protection whenever its `host` constructor
+        parameter is left at the default '127.0.0.1', which only allows
+        Host headers of 127.0.0.1/localhost/::1 — rejecting every real
+        request addressed to Mnemolis's actual LAN IP or hostname with
+        "Invalid Host header", even though Mnemolis is explicitly
+        designed to be reached over a real home network. Fixed via
+        transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False). This test specifically
+        uses a real, non-localhost base_url to catch a regression of
+        this exact bug — a test using the default testserver host would
+        not exercise this code path at all."""
+        from starlette.testclient import TestClient
+        from app.main import app
+
+        with TestClient(app, base_url="http://192.168.3.50:8888") as client:
+            resp = client.post(
+                "/mcp",
+                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                json={
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1.0"},
+                    },
+                },
+            )
+        assert resp.status_code == 200
+        assert "Invalid Host header" not in resp.text
+
+    def test_other_real_rest_routes_unaffected_by_mcp_mount(self):
+        """Confirms the MCP mount's position in main.py (registered
+        before the REST routes are defined) does not shadow them — a
+        real risk found and ruled out while designing the path fix
+        above: mounting the MCP app at root ("/") instead of "/mcp"
+        would have shadowed every REST route registered after it,
+        since a root Mount matches any path prefix. The chosen fix
+        (streamable_http_path="/" on FastMCP, mount stays at "/mcp" in
+        main.py) avoids this entirely."""
+        from starlette.testclient import TestClient
+        from app.main import app
+
+        with TestClient(app, base_url="http://192.168.1.50:8888") as client:
+            resp = client.get("/health")
+        assert resp.status_code == 200

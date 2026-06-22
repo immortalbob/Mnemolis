@@ -4,6 +4,30 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.19.1]
+
+### Fixed — Two Real Bugs Found Via Actual MCP Client Testing
+The 3.19.0 migration to Streamable HTTP had only ever been verified via the test suite and direct code tracing — no real MCP client had ever actually connected to the new endpoint. The very first real connection attempt, using MCP Inspector, surfaced two genuine bugs neither the test suite nor direct code reading had caught, both now fixed and confirmed working end to end against a real client over a real network.
+
+**1. Doubled endpoint path.** `FastMCP`'s own internal Streamable HTTP route defaults to `/mcp`, and `main.py` separately mounts the whole MCP app at `/mcp` — combined, the only actually-reachable path was `http://host:8888/mcp/mcp`, not the documented `http://host:8888/mcp`. `TestClient`-based tests never caught this because they call the app object directly by Python reference and never construct or resolve a real URL path. Fixed by setting `streamable_http_path="/"` on the `FastMCP` instance, so `main.py`'s own `/mcp` mount is the only `/mcp` in the final, effective path.
+
+**2. Real LAN connections rejected with "Invalid Host header."** `FastMCP` auto-enables DNS-rebinding protection whenever its `host` constructor parameter is left at the default `127.0.0.1` — which only allows `Host` header values of `127.0.0.1`/`localhost`/`::1`, rejecting every request addressed to Mnemolis's actual LAN IP or hostname. Since Mnemolis is explicitly designed to be reached over a real home network (the entire point of running it as a homelab service), this meant **no real-network MCP connection could ever succeed**, regardless of the path fix above. `TestClient`'s default `testserver` host never exercises real Host-header validation, so this was invisible to every test written so far. Fixed via `transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)`, matching the trust model already documented for the REST API's own optional auth.
+
+A real, deliberate risk was checked and ruled out while designing the path fix: mounting the MCP app at root (`/`) instead of fixing `streamable_http_path` was considered and tested, then rejected after confirming directly that it would shadow every REST route registered after it in `main.py` (`/health`, `/search`, etc. are all defined after the MCP mount) — a root `Mount` matches any path prefix regardless of registration order. The chosen fix avoids this entirely by keeping the mount at `/mcp` and changing FastMCP's internal route instead.
+
+### Verified
+**The full MCP Streamable HTTP migration is now genuinely confirmed working end to end against a real MCP client** (MCP Inspector), not just the test suite — connection established over a real network, exactly one `search` tool listed with the expected schema, and a real test call (`"what is nitrogen"`) correctly returned genuine, multi-book-fused Kiwix content (Wikipedia + Wiktionary). This closes the verification gap explicitly flagged as outstanding when 3.19.0 shipped.
+
+### Added (Tests)
+- 3 new regression tests specifically covering both bugs: confirming the MCP endpoint is reachable at the single documented path, confirming a real (non-localhost) Host header is accepted rather than rejected, and confirming the MCP mount's position in `main.py` doesn't shadow other REST routes
+
+### Changed
+- Version bumped to 3.19.1
+
+**Total test count: 886**
+
+---
+
 ## [3.19.0]
 
 ### Changed — MCP Transport Migrated from SSE to Streamable HTTP
