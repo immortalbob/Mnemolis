@@ -71,7 +71,7 @@ ESP32 Voice Assistant
                                 │
                            ┌────┴────┐
                            ▼         ▼
-                    REST API       MCP/SSE
+                    REST API   MCP/Streamable HTTP
                            │         │
                Home Assistant    Any MCP
              (Mnemolis Intents)   Client
@@ -311,7 +311,7 @@ This is the layer that fixed the "galaxy returns Samsung phones, battery returns
 |--------|----------|-----|
 | [Open WebUI](mnemolis_tool.py) | REST | Lightweight tool that POSTs to `/search` |
 | [Mnemolis Intents](https://github.com/immortalbob/mnemolis_intents) | REST | Native HA LLM API integration |
-| Any MCP client (Claude Desktop, Cursor, etc.) | MCP/SSE | Connect to `http://your-host:8888/mcp/sse` |
+| Any MCP client (Claude Desktop, Cursor, etc.) | MCP/Streamable HTTP | Connect to `http://your-host:8888/mcp` |
 
 ## Sources
 
