@@ -227,7 +227,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.19.1",
+    version="3.19.2",
     lifespan=lifespan,
 )
 
@@ -826,13 +826,3 @@ def query_log_stats():
 
     except Exception as e:
         return {"error": str(e)}
-    """Clear all query log entries."""
-    try:
-        con = _connect(_LOG_DB)
-        cur = con.execute("DELETE FROM query_log")
-        count = cur.rowcount
-        con.commit()
-        con.close()
-        return {"status": "cleared", "entries_removed": count}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}

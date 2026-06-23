@@ -144,22 +144,24 @@ def filter_and_rank(
     title_key: str = "title",
     content_key: str = "content",
     url_key: str = "url",
-    recency_bonuses: dict | None = None,
 ) -> list[dict]:
     """
     Score a list of results against a query, drop anything at or below
     score_threshold, then cap the survivors at top_n.
 
     Args:
-        results: list of result dicts (web search results, news articles, etc.)
+        results: list of result dicts (web search results, news articles, etc.).
+            If a result dict has a "_recency_bonus" key, its value is added
+            directly to that result's score — this is the real, current
+            mechanism for factoring recency into ranking; callers (e.g.
+            freshrss.py) attach this key to each dict before calling, since
+            an earlier id(result)-keyed dict approach didn't survive across
+            calls and was abandoned in favor of this simpler convention.
         query: the original user query to score relevance against
         score_threshold: results scoring at or below this are dropped
         top_n: maximum number of results to keep after filtering
         title_key/content_key/url_key: dict keys to pull text from, since
             web and news results don't share identical field names
-        recency_bonuses: optional dict mapping result identity (e.g. id(result)
-            won't work across calls — callers should attach a precomputed
-            "_recency_bonus" key to each dict instead if recency matters)
 
     Returns:
         Filtered, score-sorted list of the original result dicts (unmodified,

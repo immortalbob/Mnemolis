@@ -4,6 +4,31 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.19.2]
+
+### Fixed — A Fourth Dead Duplicate Function, Found via Vulture
+A static dead-code analysis pass (`vulture`) found a genuinely real issue, independently confirmed before fixing: a *fourth* copy of the exact same dead, undecorated `logs_clear` body that's now been found and removed three separate times this project's life — this one sitting at the true end of `app/main.py`, directly beneath `query_log_stats()`'s own `return`/`except` block, with no separating blank line (the same copy-paste-accident signature as the previous three). The real, working, correctly-decorated `/logs/clear` endpoint was confirmed untouched and unaffected.
+
+### Fixed — Dead Parameter and Documentation Gap in `filter_and_rank()`
+`recency_bonuses: dict | None = None` was a real, genuinely unused parameter — confirmed independently via a direct grep showing zero callers anywhere in the codebase pass it, leftover from an earlier, abandoned `id(result)`-keyed approach to factoring recency into scoring. The function's own docstring already explained why that approach was dropped, but the parameter itself was never actually removed when the simpler, current `_recency_bonus` dict-key convention replaced it. Removed the dead parameter, and improved the docstring to document the real, current mechanism directly (callers attach a `_recency_bonus` key to each result dict; `filter_and_rank()` reads it via `r.get("_recency_bonus", 0)`) — verified this description is accurate against the actual function body before writing it.
+
+### Verified — Two Reported Findings Confirmed as Genuine False Positives
+The same pass also flagged 23 "unused variable" hits across two test files — both independently verified as standard, correct false-positive patterns rather than accepted on the report's word alone:
+- `tests/test_snapshot_jobs.py`'s `temp_snapshot_db` (17 hits) is a pytest fixture injected purely for its `patch()` side effect (redirecting where snapshot tests write), never meant to be referenced by name in test bodies.
+- `tests/test_kiwix_network.py`'s `limit` parameter (6 hits) exists in mock `side_effect` helper functions solely to match the real `_search_book()` call signature and avoid a `TypeError`, not because the specific assertions in those tests need to inspect its value.
+
+No code changes for either — confirmed safe as-is.
+
+### Considered and Declined
+Adding `vulture` as a permanent, ongoing CI check (alongside the existing `ruff` lint workflow) was considered and explicitly declined for now — `ruff` already covers a meaningfully overlapping space (unused imports/variables), and a second static-analysis tool means a second whitelist file to maintain and a second thing that could go stale. Treated as a useful one-time pass rather than a permanent addition to the CI surface.
+
+### Changed
+- Version bumped to 3.19.2
+
+**Total test count: 886** (unchanged — this release removed dead code and a dead parameter with zero behavior change, no new tests required)
+
+---
+
 ## [3.19.1]
 
 ### Fixed — Two Real Bugs Found Via Actual MCP Client Testing
