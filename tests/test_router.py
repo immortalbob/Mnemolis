@@ -892,6 +892,77 @@ class TestDiscourseFramingRoutingBias:
         assert "kiwix" in result
 
 
+class TestDiscourseFramingEscalationHelpers:
+    """Direct, isolated tests for _escalate_multi_source_for_discourse_
+    framing() and _escalate_single_source_for_discourse_framing() —
+    extracted from _llm_detect() during a deliberate complexity-reduction
+    pass (the same discipline applied to route_with_source(),
+    home_assistant.py's search(), and kiwix.py's _pick_books_with_llm()
+    earlier this release cycle). Unlike those, this investigation
+    confirmed CORRECTNESS rather than finding a bug — directly verifying
+    that not re-caching an escalated cached decision is intentional, not
+    an oversight, since _has_discourse_framing() is re-evaluated fresh
+    on every call regardless of what's cached, so the escalation
+    self-heals on every request. TestDiscourseFramingRoutingBias above
+    already covers all four real code paths through _llm_detect()'s
+    public interface; these tests add fast, isolated coverage of the
+    two extracted helpers directly."""
+
+    def test_multi_source_adds_kiwix_when_framing_present(self):
+        from app.router import _escalate_multi_source_for_discourse_framing
+        result = _escalate_multi_source_for_discourse_framing(
+            "whats the deal with bitcoin everyone is obsessed with", ["web", "news"]
+        )
+        assert result == ["web", "news", "kiwix"]
+
+    def test_multi_source_does_not_duplicate_existing_kiwix(self):
+        from app.router import _escalate_multi_source_for_discourse_framing
+        result = _escalate_multi_source_for_discourse_framing(
+            "whats the deal with bitcoin everyone is obsessed with", ["kiwix", "web"]
+        )
+        assert result == ["kiwix", "web"]
+
+    def test_multi_source_unaffected_without_framing(self):
+        from app.router import _escalate_multi_source_for_discourse_framing
+        result = _escalate_multi_source_for_discourse_framing(
+            "what is the weather today", ["web", "news"]
+        )
+        assert result == ["web", "news"]
+
+    def test_multi_source_does_not_mutate_original_list(self):
+        """A real, deliberate design choice worth its own regression
+        test: the helper returns a NEW list rather than mutating the
+        caller's list in place, since the caller (e.g. a cached value
+        parsed fresh on every call) shouldn't have its own local list
+        silently changed as a side effect of calling this helper."""
+        from app.router import _escalate_multi_source_for_discourse_framing
+        original = ["web", "news"]
+        result = _escalate_multi_source_for_discourse_framing(
+            "whats the deal with bitcoin everyone is obsessed with", original
+        )
+        assert original == ["web", "news"]
+        assert result == ["web", "news", "kiwix"]
+
+    def test_single_source_escalates_when_framing_present(self):
+        from app.router import _escalate_single_source_for_discourse_framing
+        result = _escalate_single_source_for_discourse_framing(
+            "whats the deal with bitcoin everyone is obsessed with", "web"
+        )
+        assert result == ["web", "kiwix"]
+
+    def test_single_source_returns_none_without_framing(self):
+        from app.router import _escalate_single_source_for_discourse_framing
+        result = _escalate_single_source_for_discourse_framing("what is the weather today", "web")
+        assert result is None
+
+    def test_single_source_returns_none_when_already_kiwix(self):
+        from app.router import _escalate_single_source_for_discourse_framing
+        result = _escalate_single_source_for_discourse_framing(
+            "whats the deal with bitcoin everyone is obsessed with", "kiwix"
+        )
+        assert result is None
+
+
 # ---------------------------------------------------------------------------
 # Cache logic
 # ---------------------------------------------------------------------------

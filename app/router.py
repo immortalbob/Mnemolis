@@ -565,6 +565,44 @@ def _keyword_detect(query: str) -> str | list[str] | None:
     return matched
 
 
+def _escalate_multi_source_for_discourse_framing(query: str, sources: list[str]) -> list[str]:
+    """
+    If the query has discourse-framing language and kiwix isn't already
+    among the given sources, add it.
+
+    Extracted from _llm_detect(), where this exact pattern appeared
+    twice — once for a cached fusion decision, once for a fresh
+    multi-source LLM decision. Confirmed via direct testing that NOT
+    re-caching the escalated result after this runs is correct, not an
+    oversight: _has_discourse_framing() is re-evaluated fresh on every
+    call regardless of what's cached, so the escalation self-heals on
+    every request rather than depending on whether a stale cache entry
+    happened to bake the bias in — verified directly that a query whose
+    cached decision predates this bias still correctly escalates on
+    every subsequent call, not just the first.
+    """
+    if _has_discourse_framing(query) and "kiwix" not in sources:
+        return sources + ["kiwix"]
+    return sources
+
+
+def _escalate_single_source_for_discourse_framing(query: str, source: str) -> list[str] | None:
+    """
+    If the query has discourse-framing language and the given source
+    isn't kiwix, return a [source, "kiwix"] list to escalate to fusion.
+    Returns None if no escalation is needed (caller should keep using
+    the plain single source in that case).
+
+    Extracted from _llm_detect() alongside
+    _escalate_multi_source_for_discourse_framing() — this is the
+    single-source counterpart, also previously duplicated twice (once
+    for a cached single-source decision, once for a fresh one).
+    """
+    if _has_discourse_framing(query) and source != "kiwix":
+        return [source, "kiwix"]
+    return None
+
+
 def _llm_detect(query: str) -> str | list[str]:
     """Ask LLM to pick the best source(s) for the query.
 
@@ -586,8 +624,7 @@ def _llm_detect(query: str) -> str | list[str]:
         if "," in cached:
             sources = [s.strip() for s in cached.split(",") if s.strip() in SOURCE_MAP and s.strip() != "fusion"]
             if sources:
-                if _has_discourse_framing(query) and "kiwix" not in sources:
-                    sources.append("kiwix")
+                sources = _escalate_multi_source_for_discourse_framing(query, sources)
                 _LOGGER.info("Routing cache hit (fusion): '%s' -> %s", query[:50], sources)
                 return sources
         elif cached in SOURCE_MAP:
@@ -596,13 +633,13 @@ def _llm_detect(query: str) -> str | list[str]:
             # existed (or before kiwix was added) would silently bypass it
             # for up to its full TTL, since the cache check above returns
             # before the bias logic further down ever runs.
-            if _has_discourse_framing(query) and cached != "kiwix":
-                sources = [cached, "kiwix"]
+            escalated = _escalate_single_source_for_discourse_framing(query, cached)
+            if escalated is not None:
                 _LOGGER.info(
                     "Routing cache hit but discourse-framing detected — escalating '%s' to fusion: %s",
-                    query[:50], sources
+                    query[:50], escalated
                 )
-                return sources
+                return escalated
             _LOGGER.info("Routing cache hit: '%s' -> %s", query[:50], cached)
             return cached
 
@@ -637,9 +674,7 @@ def _llm_detect(query: str) -> str | list[str]:
             if candidate in SOURCE_MAP and candidate != "fusion" and candidate not in sources:
                 sources.append(candidate)
         if len(sources) >= 2:
-            if _has_discourse_framing(query) and "kiwix" not in sources:
-                _LOGGER.info("Discourse-framing detected, adding kiwix to fusion sources for: '%s'", query[:50])
-                sources.append("kiwix")
+            sources = _escalate_multi_source_for_discourse_framing(query, sources)
             _LOGGER.info("LLM escalated to fusion: '%s' -> %s", query[:50], sources)
             _set_routing(f"source:{query}", ",".join(sources))
             return sources
@@ -648,14 +683,14 @@ def _llm_detect(query: str) -> str | list[str]:
     # Single source response
     chosen = raw.strip(".").strip()
     if chosen in SOURCE_MAP and chosen != "fusion":
-        if _has_discourse_framing(query) and chosen != "kiwix":
-            sources = [chosen, "kiwix"]
+        escalated = _escalate_single_source_for_discourse_framing(query, chosen)
+        if escalated is not None:
             _LOGGER.info(
                 "Discourse-framing detected — escalating '%s' to fusion: %s",
-                query[:50], sources
+                query[:50], escalated
             )
-            _set_routing(f"source:{query}", ",".join(sources))
-            return sources
+            _set_routing(f"source:{query}", ",".join(escalated))
+            return escalated
         _LOGGER.info("LLM intent: '%s' -> %s", query[:50], chosen)
         _set_routing(f"source:{query}", chosen)
         return chosen

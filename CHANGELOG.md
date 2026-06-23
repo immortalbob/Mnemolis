@@ -4,6 +4,26 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.22.2]
+
+### Verified — Confirmed Correct Rather Than Finding a Bug This Time
+A fourth complexity-investigation pass this release cycle, applied to `app/router.py`'s `_llm_detect()` (D, 29) — the highest score left in the codebase after the previous three passes. Found four near-duplicate "apply discourse-framing bias" blocks (cached fusion, cached single-source, fresh fusion, fresh single-source), the same suspicious shape that surfaced real bugs in the previous three investigations. This time, comparing them precisely surfaced something different worth being honest about: the two cached-decision blocks never re-cache the escalated result after adding the bias, while the two fresh-decision blocks do — initially looked like a real inconsistency, but direct testing confirmed it's correct, deliberate behavior, not an oversight. `_has_discourse_framing()` is cheap (pure string matching, no LLM call) and is re-evaluated fresh on every single call regardless of what's cached — so a routing cache entry that predates this bias, or was written before kiwix happened to be the chosen source, still correctly escalates on every subsequent call, not just the first, without needing the escalated decision itself to be re-cached. Verified directly: a simulated pre-fix cached entry escalates correctly on both the first and second identical call.
+
+### Changed — Extracted Two Genuinely Reused Discourse-Framing Patterns: D(29) → D(23)
+With correctness confirmed, the four blocks still shared two real, reusable patterns worth extracting: `_escalate_multi_source_for_discourse_framing()` (add kiwix to a source list if discourse-framing language is present and it isn't already there) and `_escalate_single_source_for_discourse_framing()` (the single-source equivalent, returning `None` when no escalation is needed). Both genuinely reused — each appears at exactly two of the four call sites — verified via direct testing of the helpers themselves, plus re-running the existing `TestDiscourseFramingRoutingBias` class (which already exercised all four real code paths through `_llm_detect()`'s public interface) to confirm zero behavioral change end to end.
+
+**An honest, minor logging-detail tradeoff worth disclosing:** one of the four call sites previously logged a specific "Discourse-framing detected, adding kiwix..." message only when escalation actually happened, in addition to a second, always-fires "LLM escalated to fusion" line immediately after. Since the new shared helper doesn't report back whether escalation occurred (only the possibly-modified list), that specific intermediate log line was dropped in favor of relying on the still-present, always-fires line, which already shows the final source list including kiwix if it was added. A small, deliberate reduction in log specificity for that one path, judged acceptable since the same diagnostic information (that kiwix was added) is still visible in the surviving log line.
+
+### Added (Tests)
+- 7 new direct tests for the two extracted helpers: escalation with and without discourse framing present, no-op when kiwix is already included, and an explicit test confirming the multi-source helper returns a new list rather than mutating the caller's list in place
+
+### Changed
+- Version bumped to 3.22.2
+
+**Total test count: 906**
+
+---
+
 ## [3.22.1]
 
 ### Changed — Deduplicated `_pick_books_with_llm()`: E(34) → D(24)
