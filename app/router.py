@@ -1252,6 +1252,136 @@ def _resolve_single_source(source: str, query: str) -> tuple[str, str]:
     return result, source
 
 
+def _resolve_conditional(query: str, source: str) -> tuple[str, str] | None:
+    """
+    Detect and resolve a leading "if X, Y" conditional structure, if
+    present. Returns (result, source_used) if the query was genuinely
+    conditional, or None if it wasn't — callers should fall through to
+    normal routing/decomposition on None, exactly as route_with_source()
+    already did before this logic was a separate function.
+
+    Extracted from route_with_source() during the same complexity-
+    reduction effort that produced _resolve_single_source() — this is
+    the second-most complex remaining piece of that function, and the
+    one with the densest real bug history in the project (see the wiki's
+    "The Recursion Design Bug" page for the full story of why this logic
+    looks the way it does, including a depth-counter approach that was
+    tried, found to have a real bug, and replaced with the simpler
+    recursive-on-the-extracted-condition-text approach used here).
+
+    Conditional detection only ever applies to source == "auto" — an
+    explicit source request skips it entirely, the same way it already
+    skips decomposition. Only the condition is searched; Mnemolis has no
+    reminder/trigger capability to act on the consequence, but the
+    response is framed around the condition's actual real answer rather
+    than presenting it as an unconditional fact.
+
+    Recurses into route_with_source() by passing the already-extracted
+    CONDITION text, never the original "if X, Y" string — so the
+    recursive call's input essentially never re-matches the leading
+    "if/should/in case" pattern again, naturally self-limiting without
+    needing an explicit recursion-depth counter.
+    """
+    if source != "auto":
+        return None
+
+    conditional = detect_conditional(query)
+    if not conditional:
+        return None
+
+    condition, consequence, remainder = conditional
+    _LOGGER.info(
+        "Detected conditional query — condition=%r consequence=%r remainder=%r",
+        condition[:50], consequence[:50], remainder[:50]
+    )
+    condition_result, condition_source = route_with_source(condition, "auto")
+    framed = _frame_conditional_response(condition, consequence, condition_result, condition_source)
+
+    # A real, separate intent followed the conditional statement
+    # ("...let me know, and also whats the weather") — search it
+    # independently and merge it in, rather than either losing it
+    # entirely or letting it pollute the conditional's consequence.
+    #
+    # If the remainder itself decomposes into multiple distinct
+    # sources, route_with_source() already returns "fusion" as
+    # its reported source for an already-self-headered result
+    # (each contributing source has its own [SOURCE — DESC]
+    # header baked in). Wrapping that in ANOTHER header using the
+    # literal string "fusion" produces the same nonsensical
+    # "[FUSION — FUSION]" double-header bug found and fixed
+    # earlier this session in the decomposition loop — this is
+    # the same root cause showing up at a different call site
+    # that needed the identical fix: only wrap genuinely
+    # single-source results, pass fusion results through as-is.
+    if remainder:
+        remainder_result, remainder_source = route_with_source(remainder, "auto")
+        if not _looks_empty(remainder_result):
+            overall_source = "fusion" if remainder_source != condition_source else condition_source
+            remainder_section = (
+                remainder_result if remainder_source == "fusion"
+                else f"{fusion._format_header(remainder_source)}\n{remainder_result}"
+            )
+            condition_section = (
+                framed if condition_source == "fusion"
+                else f"{fusion._format_header(condition_source)}\n{framed}"
+            )
+            merged_text = f"{condition_section}\n\n---\n\n{remainder_section}"
+            return merged_text, overall_source
+
+    return framed, condition_source
+
+
+def _merge_decomposed_parts(parts: list[tuple[str, str]]) -> tuple[str, str]:
+    """
+    Merge a list of (source, result) tuples from decomposed sub-queries
+    into one final, headered response string, plus the overall source
+    label to report.
+
+    Extracted from route_with_source()'s decomposition branch during the
+    same complexity-reduction effort that produced _resolve_single_source()
+    and _resolve_conditional() — this is the formatting/merging half of
+    that branch; the per-sub-query resolution loop that builds `parts` in
+    the first place stays inline, since it recurses into route_with_source()
+    itself and extracting it cleanly would mean threading several more
+    pieces of loop state through a function boundary for comparatively
+    little complexity reduction.
+
+    Consecutive results from the same source are merged into one block
+    first, so e.g. "indoor air quality and are the doors locked" (both
+    resolving to `ha`) returns one [HA] section, not two. A sub-query
+    whose own intent resolved to internal fusion already contains its
+    own per-source [SOURCE — DESC] headers (added by fusion.search()
+    itself) — wrapping that block in another header at this outer level
+    produces a nonsensical "[FUSION — FUSION]" label, since "fusion"
+    isn't a real source with its own entry in _HEADER_LABELS, just
+    self-headered content passing through. Only genuinely single-source
+    results get wrapped here.
+    """
+    merged = []
+    current_source, current_result = parts[0]
+    for source, result in parts[1:]:
+        if source == current_source:
+            current_result = current_result.rstrip() + "\n\n" + result.lstrip()
+        else:
+            merged.append((current_source, current_result))
+            current_source, current_result = source, result
+    merged.append((current_source, current_result))
+
+    sections = []
+    for src, result in merged:
+        if src == "fusion":
+            sections.append(result)
+        else:
+            sections.append(f"{fusion._format_header(src)}\n{result}")
+
+    # Multiple decomposed sources merged — report "fusion" as the overall
+    # source if more than one distinct source contributed, otherwise
+    # report the single source used
+    distinct_sources = {s for s, _ in merged}
+    overall_source = "fusion" if len(distinct_sources) > 1 else next(iter(distinct_sources))
+    return "\n\n---\n\n".join(sections), overall_source
+
+
 def route_with_source(query: str, source: str = "auto", fusion_sources: list[str] | None = None) -> tuple[str, str]:
     """
     Route a query to the appropriate source(s) and return both the result
@@ -1284,53 +1414,10 @@ def route_with_source(query: str, source: str = "auto", fusion_sources: list[str
     # Conditional detection — only for auto routing, checked before
     # decomposition since "if X, Y" is structurally a single statement
     # with a condition and a consequence, not a flat list of independent
-    # intents the way "X and Y" is. Only the condition is searched;
-    # Mnemolis has no reminder/trigger capability to act on the
-    # consequence, but the response is framed around the condition's
-    # actual real answer rather than presenting it as an unconditional fact.
-    if source == "auto":
-        conditional = detect_conditional(query)
-        if conditional:
-            condition, consequence, remainder = conditional
-            _LOGGER.info(
-                "Detected conditional query — condition=%r consequence=%r remainder=%r",
-                condition[:50], consequence[:50], remainder[:50]
-            )
-            condition_result, condition_source = route_with_source(condition, "auto")
-            framed = _frame_conditional_response(condition, consequence, condition_result, condition_source)
-
-            # A real, separate intent followed the conditional statement
-            # ("...let me know, and also whats the weather") — search it
-            # independently and merge it in, rather than either losing it
-            # entirely or letting it pollute the conditional's consequence.
-            #
-            # If the remainder itself decomposes into multiple distinct
-            # sources, route_with_source() already returns "fusion" as
-            # its reported source for an already-self-headered result
-            # (each contributing source has its own [SOURCE — DESC]
-            # header baked in). Wrapping that in ANOTHER header using the
-            # literal string "fusion" produces the same nonsensical
-            # "[FUSION — FUSION]" double-header bug found and fixed
-            # earlier this session in the decomposition loop — this is
-            # the same root cause showing up at a different call site
-            # that needed the identical fix: only wrap genuinely
-            # single-source results, pass fusion results through as-is.
-            if remainder:
-                remainder_result, remainder_source = route_with_source(remainder, "auto")
-                if not _looks_empty(remainder_result):
-                    overall_source = "fusion" if remainder_source != condition_source else condition_source
-                    remainder_section = (
-                        remainder_result if remainder_source == "fusion"
-                        else f"{fusion._format_header(remainder_source)}\n{remainder_result}"
-                    )
-                    condition_section = (
-                        framed if condition_source == "fusion"
-                        else f"{fusion._format_header(condition_source)}\n{framed}"
-                    )
-                    merged_text = f"{condition_section}\n\n---\n\n{remainder_section}"
-                    return merged_text, overall_source
-
-            return framed, condition_source
+    # intents the way "X and Y" is.
+    conditional_result = _resolve_conditional(query, source)
+    if conditional_result is not None:
+        return conditional_result
 
     # Query decomposition — only for auto routing
     if source == "auto":
@@ -1394,38 +1481,7 @@ def route_with_source(query: str, source: str = "auto", fusion_sources: list[str
                     parts.append((sub_source, sub_result))
 
             if parts:
-                # Merge consecutive same-source results to avoid duplicate headers
-                merged = []
-                current_source, current_result = parts[0]
-                for source, result in parts[1:]:
-                    if source == current_source:
-                        current_result = current_result.rstrip() + "\n\n" + result.lstrip()
-                    else:
-                        merged.append((current_source, current_result))
-                        current_source, current_result = source, result
-                merged.append((current_source, current_result))
-
-                # A sub-query whose own intent resolved to internal fusion
-                # already contains its own per-source [SOURCE — DESC]
-                # headers (added by fusion.search() itself). Wrapping that
-                # block in another header at this outer level produced a
-                # nonsensical "[FUSION — FUSION]" label, since "fusion"
-                # isn't a real source with its own entry in
-                # _HEADER_LABELS — it's just self-headered content passing
-                # through. Only wrap genuinely single-source results here.
-                sections = []
-                for src, result in merged:
-                    if src == "fusion":
-                        sections.append(result)
-                    else:
-                        sections.append(f"{fusion._format_header(src)}\n{result}")
-
-                # Multiple decomposed sources merged — report "fusion" as
-                # the overall source if more than one distinct source
-                # contributed, otherwise report the single source used
-                distinct_sources = {s for s, _ in merged}
-                overall_source = "fusion" if len(distinct_sources) > 1 else next(iter(distinct_sources))
-                return "\n\n---\n\n".join(sections), overall_source
+                return _merge_decomposed_parts(parts)
             # All sub-queries returned empty — fall through to single query routing
 
     if source == "auto":

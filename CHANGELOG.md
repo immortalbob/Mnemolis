@@ -4,6 +4,31 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.21.0]
+
+### Changed — Continued Refactoring `route_with_source()`: D(30) → C(18)
+A direct follow-up to 3.20.0's first extraction, picking up exactly where that one left off. The previous release reduced `route_with_source()` from F(45) to D(30) by extracting `_resolve_single_source()`; this release continues with two more targeted extractions:
+
+- **`_resolve_conditional()`** — the leading "if X, Y" conditional-detection block, including the recursive condition/remainder handling. This is the single most bug-prone piece of logic in the function's history (see the wiki's "The Recursion Design Bug" page), so it was read fresh and completely before extracting, with no assumptions carried over from memory.
+- **`_merge_decomposed_parts()`** — the consecutive-same-source merging and header-formatting step that runs after a decomposed query's sub-queries have all been resolved.
+
+**A third near-duplicate was found and deliberately left unmerged, on purpose.** The decomposition loop has its own, separate conditional-detection check for each individual sub-query, which looks similar to the newly-extracted `_resolve_conditional()` at first glance — but a careful comparison (the same discipline that found two real bugs during the previous extraction) confirmed these are genuinely, correctly different by design, not an accidental duplication: the top-level handler builds its own complete headers since it returns directly with nothing else downstream, while the sub-query version correctly defers header-wrapping to the decomposition loop's own later merge step, since its result is just one ingredient among potentially several others still to come. Forcing these into one shared function would have broken the sub-query path's correct deferred-header behavior for the sake of looking less duplicated — left as two separate, deliberately specialized implementations.
+
+**Result:** `route_with_source()` now scores C(18), the original target range — down from F(45) across both releases. Three new helper functions exist as a result, scoring B(9), B(8), and B(7) respectively. Verified with the same real production query confirmed working in 3.20.0 ("is it going to rain this week, and is the back door locked?") — identical, correct, fusion-merged output after the refactor as before it.
+
+### Verified
+Full re-verification pass across every tool used during this release cycle (`vulture`, `bandit`, `pip-audit`, `mypy`, `ruff`) confirmed zero new findings introduced by either extraction — every result either identical to the post-3.20.0 baseline or improved.
+
+### Added (Tests)
+No new tests this release — the three extracted functions are already covered by the existing `route_with_source()` test suite, which exercises every code path through its public interface regardless of internal structure; the extraction changes how the logic is organized, not what it does.
+
+### Changed
+- Version bumped to 3.21.0
+
+**Total test count: 889** (unchanged — pure internal restructuring, zero behavior change beyond what already shipped in 3.20.0)
+
+---
+
 ## [3.20.0]
 
 ### Fixed — Three Real Issues Found via Static Type Checking
