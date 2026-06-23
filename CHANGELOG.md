@@ -4,6 +4,26 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.22.1]
+
+### Changed — Deduplicated `_pick_books_with_llm()`: E(34) → D(24)
+Continuing the same complexity-investigation discipline through a third file this release cycle — `app/sources/kiwix.py`'s `_pick_books_with_llm()`, the next genuine outlier at E(34). Unlike the previous two investigations (`route_with_source()` and `home_assistant.py`'s `search()`), which both surfaced real behavioral bugs once compared carefully, this one turned up something simpler and just as worth fixing: the "pick Wikipedia if available, otherwise the first book" fallback logic was duplicated **byte-for-byte**, used identically for both the "no LLM configured at all" case and the "LLM responded but returned nothing usable" case — a genuine, exact, mechanical duplicate with no hidden divergence to find. Extracted into `_fallback_book_choice()`, confirmed via a dedicated test to verify both call sites genuinely invoke the same shared function (not just coincidentally producing the same output, which could silently mask a future re-divergence).
+
+No other near-duplicate was found worth extracting in this function — the candidate-matching loop (parsing the LLM's raw comma-separated response, fuzzy-matching against real book names) has no comparable logic elsewhere in the file to check it against, and was left as-is, consistent with the same restraint applied to `home_assistant.py`'s grouping/formatting stages in 3.22.0.
+
+### Fixed — A Real Test-Organization Mistake, Caught Before It Shipped
+While adding regression tests for the new extraction, a `str_replace` edit accidentally inserted the new test class in the middle of the existing `TestPickBooksWithLLM` class rather than after it, orphaning several pre-existing tests that depended on that class's own `self._books()` helper. Caught immediately by running the affected test file directly rather than just the new tests in isolation — 7 pre-existing tests failed with `AttributeError: 'TestFallbackBookChoice' object has no attribute '_books'`, which would have been a real, confusing regression if it had reached the test suite undetected. Fixed by moving the new class to the correct location, after all legitimate `TestPickBooksWithLLM` tests.
+
+### Added (Tests)
+- 5 new tests for `_fallback_book_choice()` directly: Wikipedia-present, no-Wikipedia, empty-books, cache-key-usage, and an explicit test confirming both real call sites in `_pick_books_with_llm()` genuinely invoke the shared function rather than just happening to produce matching output
+
+### Changed
+- Version bumped to 3.22.1
+
+**Total test count: 899**
+
+---
+
 ## [3.22.0]
 
 ### Fixed — Real, Significant Bug: HA Area-Filtered Queries Silently Skipped Exclusion Keywords

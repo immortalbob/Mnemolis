@@ -96,6 +96,33 @@ def refresh_catalog() -> list[dict]:
 # LLM-assisted book selection
 # ---------------------------------------------------------------------------
 
+def _fallback_book_choice(books: list[dict], cache_key: str, set_routing) -> list[str]:
+    """
+    Pick a single fallback book — Wikipedia if available, otherwise the
+    first book in the list — and cache the decision.
+
+    Extracted from _pick_books_with_llm(), where this exact logic was
+    duplicated byte-for-byte in two places: once for "no LLM configured
+    at all," once for "the LLM responded but returned nothing usable."
+    Found via the same side-by-side comparison discipline applied to
+    app/router.py's route_with_source() (3.20.0/3.21.0) and
+    app/sources/home_assistant.py's search() (3.22.0) this release
+    cycle — unlike those two, which surfaced real behavioral bugs once
+    compared carefully, this one is a genuine, exact, mechanical
+    duplicate with no hidden divergence to find.
+    """
+    book_names_list = [b["name"] for b in books]
+    for name in book_names_list:
+        if "wikipedia" in name:
+            result = [name]
+            set_routing(cache_key, ",".join(result))
+            return result
+    result = [book_names_list[0]] if book_names_list else []
+    if result:
+        set_routing(cache_key, ",".join(result))
+    return result
+
+
 def _pick_books_with_llm(query: str, books: list[dict], max_books: int | None = None) -> list[str]:
     """Ask Ollama to pick the best books for the query. Returns ranked list of book names.
     Checks routing cache first to avoid redundant Ollama calls.
@@ -121,16 +148,7 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int | None = 
     from app.llm import complete, is_configured
 
     if not is_configured():
-        book_names_list = [b["name"] for b in books]
-        for name in book_names_list:
-            if "wikipedia" in name:
-                result = [name]
-                set_routing(cache_key, ",".join(result))
-                return result
-        result = [book_names_list[0]] if book_names_list else []
-        if result:
-            set_routing(cache_key, ",".join(result))
-        return result
+        return _fallback_book_choice(books, cache_key, set_routing)
 
     is_definitional = _is_definitional_query(query)
     intent_hint = (
@@ -183,16 +201,7 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int | None = 
         _LOGGER.warning("LLM returned no valid books from '%s', falling back", raw)
 
     # Fallback — Wikipedia first
-    book_names_list = [b["name"] for b in books]
-    for name in book_names_list:
-        if "wikipedia" in name:
-            result = [name]
-            set_routing(cache_key, ",".join(result))
-            return result
-    result = [book_names_list[0]] if book_names_list else []
-    if result:
-        set_routing(cache_key, ",".join(result))
-    return result
+    return _fallback_book_choice(books, cache_key, set_routing)
 
 
 # ---------------------------------------------------------------------------

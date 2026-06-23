@@ -293,6 +293,79 @@ class TestPickBooksWithLLM:
         assert result == ["wikipedia_en_all_maxi_2026-02"]
 
 
+class TestFallbackBookChoice:
+    """Tests for _fallback_book_choice() — extracted from
+    _pick_books_with_llm() during a deliberate complexity-reduction
+    investigation (the same discipline applied to app/router.py's
+    route_with_source() and app/sources/home_assistant.py's search()
+    earlier this release cycle). Unlike those two, which surfaced real
+    behavioral bugs once compared carefully, this was a genuine, exact,
+    byte-for-byte duplicate with no hidden divergence — the same "pick
+    Wikipedia if available, else the first book" logic was used for both
+    the 'LLM not configured' case and the 'LLM returned nothing usable'
+    case in _pick_books_with_llm(), confirmed identical before
+    extracting."""
+
+    def test_picks_wikipedia_when_present(self):
+        from app.sources.kiwix import _fallback_book_choice
+        books = [
+            {"name": "unix.stackexchange.com_en_all_2026-02", "title": "Unix SE", "summary": ""},
+            {"name": "wikipedia_en_all_maxi_2026-02", "title": "Wikipedia", "summary": ""},
+        ]
+        mock_set_routing = MagicMock()
+        result = _fallback_book_choice(books, "test_key", mock_set_routing)
+        assert result == ["wikipedia_en_all_maxi_2026-02"]
+
+    def test_picks_first_book_when_no_wikipedia(self):
+        from app.sources.kiwix import _fallback_book_choice
+        books = [
+            {"name": "some_book", "title": "X", "summary": ""},
+            {"name": "another_book", "title": "Y", "summary": ""},
+        ]
+        mock_set_routing = MagicMock()
+        result = _fallback_book_choice(books, "test_key", mock_set_routing)
+        assert result == ["some_book"]
+
+    def test_empty_books_returns_empty_without_caching(self):
+        from app.sources.kiwix import _fallback_book_choice
+        mock_set_routing = MagicMock()
+        result = _fallback_book_choice([], "test_key", mock_set_routing)
+        assert result == []
+        mock_set_routing.assert_not_called()
+
+    def test_caches_the_decision_with_the_given_key(self):
+        from app.sources.kiwix import _fallback_book_choice
+        books = [{"name": "wikipedia_en_all_maxi_2026-02", "title": "Wikipedia", "summary": ""}]
+        mock_set_routing = MagicMock()
+        _fallback_book_choice(books, "my_cache_key", mock_set_routing)
+        mock_set_routing.assert_called_once_with("my_cache_key", "wikipedia_en_all_maxi_2026-02")
+
+    def test_both_callers_in_pick_books_with_llm_genuinely_share_this_function(self):
+        """Confirms the unification is real, not coincidental — patches
+        _fallback_book_choice itself and verifies it's actually invoked
+        for both the 'not configured' and 'LLM returned nothing usable'
+        scenarios, rather than just asserting on the final returned
+        value (which could theoretically match by coincidence if the two
+        call sites had silently diverged again in the future)."""
+        from app.sources.kiwix import _pick_books_with_llm
+        books = [{"name": "wikipedia_en_all_maxi_2026-02", "title": "Wikipedia", "summary": ""}]
+
+        with patch("app.sources.kiwix._fallback_book_choice", return_value=["wikipedia_en_all_maxi_2026-02"]) as mock_fallback, \
+             patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.is_configured", return_value=False):
+            mock_fns.return_value = (MagicMock(return_value=None), MagicMock())
+            _pick_books_with_llm("test", books)
+        assert mock_fallback.call_count == 1
+
+        with patch("app.sources.kiwix._fallback_book_choice", return_value=["wikipedia_en_all_maxi_2026-02"]) as mock_fallback, \
+             patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="not_a_real_book_name"):
+            mock_fns.return_value = (MagicMock(return_value=None), MagicMock())
+            _pick_books_with_llm("test", books)
+        assert mock_fallback.call_count == 1
+
+
 class TestShouldDisambiguate:
     """Tests for _should_disambiguate() eligibility checks."""
 
