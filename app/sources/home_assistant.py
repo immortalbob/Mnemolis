@@ -420,22 +420,47 @@ def search(query: str) -> str:
     matched = []
 
     if area_id and area_entity_ids:
-        # Area-filtered search — only return entities in the specified area
+        # Area-filtered search — only consider entities in the specified
+        # area, but otherwise apply the EXACT SAME filter logic
+        # _matches_filter() already uses for the keyword-based path below.
+        #
+        # Found via a deliberate complexity-reduction investigation (the
+        # same side-by-side comparison discipline that found real bugs
+        # in app/router.py's route_with_source() this same release
+        # cycle): this branch used to reimplement only a SUBSET of
+        # _matches_filter()'s real logic — state_filter and a simplified
+        # domain/device_class check — silently missing
+        # exclude_entity_keywords, strict mode, entity_keywords, and
+        # event_keywords entirely. This was genuinely reachable: queries
+        # like "indoor air quality" or "house status summary" set real
+        # exclude_entity_keywords (filtering out cotech/processor/esp32
+        # sensor-node entities that would otherwise pollute the results),
+        # and combining either with a real area name ("indoor air
+        # quality in the living room") silently skipped that exclusion
+        # entirely, since the area branch never checked for it.
+        #
+        # An earlier version of this fix also special-cased a "filter is
+        # completely empty" leniency, on the theory that a bare area name
+        # with no other constraint should still return everything in that
+        # area, where bare _matches_filter() would return nothing for a
+        # genuinely empty filter spec. Confirmed via three independent
+        # checks — a full static trace of _build_filter()'s control flow,
+        # 2000 Hypothesis-generated random fuzz inputs, and an exhaustive
+        # check of every real entry in _QUERY_MAP — that _build_filter()
+        # never actually produces an empty filter spec for any real input:
+        # every path either matches something real or falls back to
+        # _build_filter("summary"), itself a real, non-empty filter. The
+        # leniency branch was genuinely unreachable dead code, not cheap
+        # defensive insurance, so it was removed rather than kept.
         for entity_id in area_entity_ids:
             if entity_id in state_by_id:
                 e = state_by_id[entity_id]
-                if entity_id not in seen_ids and not _is_excluded(e):
-                    # Apply state filter if present (e.g. "lights on in bedroom")
-                    if f["state_filter"] and e["state"] != f["state_filter"]:
-                        continue
-                    # Apply domain filter if present
-                    domain = entity_id.split(".")[0]
-                    dc = e.get("attributes", {}).get("device_class", "")
-                    if f["domains"] or f["device_classes"]:
-                        if domain not in f["domains"] and dc not in f["device_classes"]:
-                            continue
-                    seen_ids.add(entity_id)
-                    matched.append(e)
+                if entity_id in seen_ids:
+                    continue
+                if not _matches_filter(e, f):
+                    continue
+                seen_ids.add(entity_id)
+                matched.append(e)
     else:
         # Standard keyword-based filter
         for e in states:

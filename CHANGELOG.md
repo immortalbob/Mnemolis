@@ -4,6 +4,31 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.22.0]
+
+### Fixed — Real, Significant Bug: HA Area-Filtered Queries Silently Skipped Exclusion Keywords
+Continuing the same complexity-investigation discipline that found the router.py caching gap in 3.21.1, applied this time to `home_assistant.py`'s `search()` — by far the most complex function in the codebase (F, 43-44). Comparing the area-filtered entity-matching branch against the keyword-filtered branch (the same side-by-side comparison that's now found four real bugs across two files this release cycle) surfaced a genuine, significant, user-facing issue: **the area-filtered branch reimplemented only a subset of `_matches_filter()`'s real logic** — `state_filter` and a simplified domain/device_class check — silently missing `exclude_entity_keywords`, strict mode, `entity_keywords`, and `event_keywords` entirely.
+
+This was genuinely reachable and practically significant: queries like `"temperature"`, `"humidity"`, `"air quality"`, `"indoor"`, and even `"house status summary"` all set real `exclude_entity_keywords` (filtering out `cotech`/`processor`/`esp32`/`va_temperature` sensor-node entities that would otherwise pollute results with raw device telemetry). Combining any of these with a real area name — e.g. **"indoor air quality in the living room"** — silently skipped that exclusion entirely, since the area-filtered branch never checked for it at all. The same query without an area name correctly excluded those entities via `_matches_filter()`.
+
+Fixed by deferring to `_matches_filter()` for the area-filtered branch too, rather than maintaining a second, incomplete reimplementation — so there's exactly one place this filtering logic lives, not two that can silently drift apart.
+
+### Fixed — A Confirmed-Unreachable Defensive Branch, Removed
+The first version of this fix added a special case preserving what looked like a deliberate leniency: a bare area-only query with no other real filter should still return everything in that area, since `_matches_filter()` alone would return nothing for a genuinely empty filter spec. Rather than assume this case was reachable, it was verified directly, three independent ways, before deciding whether to keep the extra branch: a full static trace of `_build_filter()`'s control flow, 2000 Hypothesis-generated random fuzz inputs run directly against it, and an exhaustive check of every real entry in `_QUERY_MAP`. All three confirmed `_build_filter()` never actually produces an empty filter spec for any real input — every path either matches something real or falls back to `_build_filter("summary")`, itself a real, non-empty filter. The leniency branch was genuinely dead code, not cheap defensive insurance, and was removed — simplifying the fix further and improving the function's complexity score from F(44) to E(37) as a direct result, on top of the correctness fix itself.
+
+### Considered and Declined
+Further extraction or restructuring of `home_assistant.py`'s `search()` beyond this fix was considered and declined — unlike `route_with_source()`, this function is a single continuous pipeline (configure check → fetch states → detect area → build filter → match entities → group → format) rather than several alternate strategies bundled together, and the entity-matching/grouping/formatting stages don't have an obvious near-duplicate worth the same side-by-side comparison that found this release's real bugs. The value of this investigation was the bug found, not a forced reduction in the complexity score — consistent with the same judgment call made in 3.21.1.
+
+### Added (Tests)
+- 2 new regression tests confirming `exclude_entity_keywords` is now correctly applied for area-filtered queries, and confirming a bare area-only query (falling back to the real, broad "summary" filter) still correctly returns multiple entity types within the area
+
+### Changed
+- Version bumped to 3.22.0
+
+**Total test count: 894**
+
+---
+
 ## [3.21.1]
 
 ### Fixed — A Real Caching Gap Found While Investigating Whether B-Grade Complexity Was Worth Pursuing

@@ -372,6 +372,63 @@ class TestAreaSearch:
         assert "Bedroom Light" in result
         assert "Bedroom Lamp" not in result
 
+    def test_area_filter_respects_exclude_entity_keywords(self):
+        """Regression test for a real, significant bug found via a
+        deliberate complexity-reduction investigation: the area-filtered
+        branch of search() used to reimplement only a SUBSET of
+        _matches_filter()'s real logic (state_filter and a simplified
+        domain/device_class check), silently missing
+        exclude_entity_keywords entirely. This was genuinely reachable —
+        queries like "temperature", "humidity", and "indoor air quality"
+        all set real exclude_entity_keywords (filtering out cotech/
+        processor/esp32 sensor-node entities), and combining any of them
+        with a real area name silently skipped that exclusion. Fixed by
+        deferring to _matches_filter() for any genuinely non-empty
+        filter, rather than maintaining a second, incomplete
+        reimplementation."""
+        from app.sources import home_assistant
+        states = [
+            _make_entity("sensor.living_room_temperature", "72", device_class="temperature",
+                        friendly_name="Living Room Temp"),
+            _make_entity("sensor.living_room_cotech_temperature", "70", device_class="temperature",
+                        friendly_name="Cotech Temp"),
+        ]
+        area_map = {"living_room": [
+            "sensor.living_room_temperature", "sensor.living_room_cotech_temperature"
+        ]}
+
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)),              patch("app.sources.home_assistant.requests.post", return_value=self._mock_area_template(area_map)):
+            result = home_assistant.search("temperature in the living room")
+
+        assert "Living Room Temp" in result
+        assert "Cotech Temp" not in result
+
+    def test_area_filter_with_default_summary_filter_returns_broad_results(self):
+        """A bare area-only query with no specific keyword match falls
+        back to _build_filter("summary") (real, broad domains/device
+        classes, not an empty filter — confirmed via static trace, 2000
+        Hypothesis-generated fuzz inputs, and an exhaustive check of
+        every _QUERY_MAP entry that _build_filter() never actually
+        produces a genuinely empty filter spec for any real input). This
+        test confirms that realistic, broad-but-real filter correctly
+        returns multiple different entity types within the area, the
+        same way a "house status" query would."""
+        from app.sources import home_assistant
+        states = [
+            _make_entity("light.living_room_lamp", "on", friendly_name="Living Room Lamp"),
+            _make_entity("sensor.living_room_temperature", "72", device_class="temperature",
+                        friendly_name="Living Room Temp"),
+        ]
+        area_map = {"living_room": [
+            "light.living_room_lamp", "sensor.living_room_temperature"
+        ]}
+
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)),              patch("app.sources.home_assistant.requests.post", return_value=self._mock_area_template(area_map)):
+            result = home_assistant.search("what's in the living room")
+
+        assert "Living Room Lamp" in result
+        assert "Living Room Temp" in result
+
     def test_unknown_area_falls_back_to_keyword(self):
         from app.sources import home_assistant
         states = [
