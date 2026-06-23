@@ -1473,8 +1473,35 @@ def route_with_source(query: str, source: str = "auto", fusion_sources: list[str
 
                 intent = detect_intent(sub_q)
                 if isinstance(intent, list):
+                    # Found via a deliberate complexity-reduction
+                    # investigation (comparing this dispatch against the
+                    # top-level single-query fusion dispatch, the same
+                    # side-by-side-comparison discipline that found two
+                    # real bugs during the prior extraction pass): a
+                    # decomposed sub-query that itself resolves to fusion
+                    # had NO caching at all, unlike every other path in
+                    # the system — every individual single-source
+                    # sub-query result gets cached via
+                    # _resolve_single_source(), the overall merged
+                    # decomposed response gets no cache of its own either,
+                    # but a sub-query-level fusion result fell through
+                    # both, meaning a repeated compound query whose
+                    # individual clause happened to resolve to multiple
+                    # sources internally re-ran _llm_pick_fusion_sources()
+                    # and re-queried every fusion source on every single
+                    # request, even identical repeats. Fixed by using the
+                    # exact same cache-key convention the top-level
+                    # fusion path already uses.
                     sub_source = "fusion"
-                    sub_result = fusion.search(sub_q, intent)
+                    sub_fusion_key = ",".join(sorted(intent))
+                    sub_cache_key = f"fusion[{sub_fusion_key}]:{sub_q}"
+                    cached_sub_fusion = _get_cached("fusion", sub_cache_key)
+                    if cached_sub_fusion:
+                        sub_result = cached_sub_fusion
+                    else:
+                        sub_result = fusion.search(sub_q, intent)
+                        if not _looks_empty(sub_result):
+                            _set_cached("fusion", sub_cache_key, sub_result)
                 else:
                     sub_result, sub_source = _resolve_single_source(intent, sub_q)
                 if not _looks_empty(sub_result):
