@@ -4,6 +4,28 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.19.3]
+
+### Fixed — XML Parsing Hardened Against Entity Expansion Attacks
+A `bandit` static security analysis pass — run as a genuine one-time check, the same way `vulture` was, not added as a permanent CI tool yet — found one real, medium-severity issue: `app/sources/kiwix.py`'s OPDS catalog parser used the standard library's `xml.etree.ElementTree.fromstring`, which is documented as vulnerable to XML entity expansion attacks (the "billion laughs" attack class) on untrusted input. Switched to `defusedxml.ElementTree`, a drop-in-compatible replacement (verified directly — same `fromstring()` API, same `Element` return type) specifically built to reject these attack patterns. The realistic threat model here is contained (the XML comes from `KIWIX_URL`, expected to be your own self-hosted, trusted Kiwix instance, not arbitrary internet content) but the fix was free and unconditionally worth applying regardless of how contained the risk is.
+
+### Verified — Three Additional Findings Confirmed as Deliberate, Safe Patterns
+The same pass flagged three low-severity `try/except: pass`/`try/except: continue` patterns. Each was independently checked in context rather than dismissed on the tool's "low severity" rating alone, and confirmed as deliberate, already-considered design rather than a hidden bug: a SQLite `ALTER TABLE ADD COLUMN` migration relying on the exception itself to detect "column already exists" (SQLite has no `ADD COLUMN IF NOT EXISTS` syntax), a routing-cache disk-load loop skipping one malformed entry without aborting the whole load, and a corrupted-cache-file rename step where a secondary failure (can't even rename the corrupted file) shouldn't crash startup over an already-degraded, non-critical recovery path.
+
+### Verified — No Known Vulnerabilities in Pinned Dependencies
+`pip-audit` against the real, current `requirements.txt` (including the `mcp==1.27.2` pin locked during the Streamable HTTP migration) returned zero known CVEs.
+
+### Considered and Declined
+Adding `bandit` and `pip-audit` as permanent, ongoing CI checks was considered and explicitly deferred, consistent with the same reasoning applied to `vulture` last release — treated as genuine, valuable one-time passes for now rather than an immediate permanent addition to the CI surface. Revisit if a future finding suggests otherwise.
+
+### Changed
+- Version bumped to 3.19.3
+- Added `defusedxml` to `requirements.txt`
+
+**Total test count: 886** (unchanged — this release hardens XML parsing with zero behavior change for legitimate input)
+
+---
+
 ## [3.19.2]
 
 ### Fixed — A Fourth Dead Duplicate Function, Found via Vulture

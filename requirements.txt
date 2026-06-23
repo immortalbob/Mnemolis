@@ -2,9 +2,10 @@ fastapi
 uvicorn
 requests
 beautifulsoup4
+defusedxml
 pydantic
 pydantic-settings
-mcp[cli]
+mcp[cli]==1.27.2
 uptime-kuma-api
 pytest
 apscheduler

@@ -1,7 +1,7 @@
 import re
 import logging
 import requests
-from xml.etree import ElementTree as ET
+from defusedxml import ElementTree as ET
 from bs4 import BeautifulSoup
 from app.config import settings
 
