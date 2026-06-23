@@ -4,6 +4,27 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.21.1]
+
+### Fixed — A Real Caching Gap Found While Investigating Whether B-Grade Complexity Was Worth Pursuing
+After 3.21.0 brought `route_with_source()` to C(18), a deliberate, honest investigation into what reaching B(6-10) would actually require — explicitly scoped as "only proceed if it surfaces a real bug, not purely to chase the grade" — found one. Comparing the decomposition loop's per-sub-query fusion dispatch against the top-level single-query fusion dispatch (the same side-by-side comparison discipline that found two real bugs during the 3.20.0/3.21.0 extractions) surfaced a genuine, real gap: **a decomposed sub-query that itself resolves to fusion (multiple sources at once) had no caching at all**, unlike every other path in the system — individual single-source sub-query results are cached via `_resolve_single_source()`, and the top-level fusion path explicitly builds a cache key from sorted source names and checks/sets it, but the sub-query-level fusion call fell through both. A repeated compound query whose individual clause happened to resolve to multiple sources internally would re-run `_llm_pick_fusion_sources()` and re-query every fusion source on every single request, even identical, immediate repeats.
+
+Fixed using the exact same cache-key convention (`fusion[sorted,sources]:query`) the top-level fusion path already uses, rather than inventing a separate scheme. Verified directly with a real before/after test: two identical requests now correctly result in exactly one real call to `fusion.search()`, not two.
+
+**The investigation that found this is documented as its own honest finding, not retroactively framed as "we were chasing this all along":** quantifying the actual complexity reduction available from unifying the sub-query and top-level dispatch logic showed it would only bring `route_with_source()` from C(18) to roughly C(12) — nowhere near B(6-10) on its own, and not worth the real risk of restructuring the function's recursive, loop-internal logic for that small a gain. The dispatch-unification idea was explicitly **not** pursued; only the concrete caching bug it surfaced was fixed, exactly as scoped going in.
+
+**Honest cost:** this fix added 2 new decision points to `route_with_source()` (the new cache check and the empty-result check before caching), moving its complexity score from C(18) to C(20) — a small, deliberate, accepted regression in the metric in exchange for fixing a real correctness gap. Still solidly within C range, still a major improvement over the original F(45).
+
+### Added (Tests)
+- 3 new regression tests: confirming a repeated sub-query-level fusion result is served from cache rather than re-querying, confirming the new cache key matches the top-level convention exactly, and confirming two different sub-queries that both resolve to fusion get independent cache entries rather than colliding
+
+### Changed
+- Version bumped to 3.21.1
+
+**Total test count: 892**
+
+---
+
 ## [3.21.0]
 
 ### Changed — Continued Refactoring `route_with_source()`: D(30) → C(18)

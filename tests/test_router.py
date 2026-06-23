@@ -1369,6 +1369,112 @@ class TestResolveSingleSourceRefactor:
         assert "web" in decomp_result.lower() or "Real web result" in decomp_result
 
 
+class TestSubQueryFusionCaching:
+    """Regression tests for a real bug found via a deliberate complexity-
+    reduction investigation, applying the same side-by-side comparison
+    discipline that previously found the fallback-caching inconsistency
+    and the unrecognized-error-message gap: comparing the decomposition
+    loop's per-sub-query fusion dispatch against the top-level single-
+    query fusion dispatch surfaced that the sub-query path had NO caching
+    at all for a sub-query that itself resolves to fusion (multiple
+    sources at once) — unlike every other path in the system, including
+    individual single-source sub-query results (cached via
+    _resolve_single_source()) and the top-level fusion path (which
+    explicitly builds a cache key from sorted source names and checks/
+    sets it). A repeated compound query whose individual clause happened
+    to resolve to multiple sources internally would re-run
+    _llm_pick_fusion_sources() and re-query every fusion source on every
+    single request, even identical repeats."""
+
+    def setup_method(self):
+        from app.router import clear_cache
+        clear_cache()
+
+    def test_repeated_subquery_fusion_result_is_served_from_cache(self):
+        """The actual real-world regression test — confirms fusion.search
+        is only genuinely called once across two identical requests."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        call_count = []
+
+        def fake_fusion_search(query, sources):
+            call_count.append(query)
+            return "[FORECAST]\nSunny\n\n---\n\n[HA]\nLocked"
+
+        def fake_detect_intent(q):
+            return ["forecast", "ha"] if q.strip() == "weather" else "news"
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["news"] = lambda q: "Some news."
+        try:
+            with patch("app.router.fusion.search", side_effect=fake_fusion_search), \
+                 patch("app.router.detect_intent", side_effect=fake_detect_intent):
+                route_with_source("weather and door status, and also the news", "auto")
+                route_with_source("weather and door status, and also the news", "auto")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+
+        assert len(call_count) == 1
+
+    def test_subquery_fusion_cache_key_matches_top_level_convention(self):
+        """Confirms the new cache key uses the exact same convention
+        ("fusion[sorted,sources]:query") the top-level fusion path
+        already uses — a deliberate consistency choice, not a new,
+        separate caching scheme."""
+        from app.router import route_with_source, _get_cached
+        from unittest.mock import patch
+        import app.router as router_module
+
+        def fake_detect_intent(q):
+            return ["forecast", "ha"] if q.strip() == "weather" else "news"
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["news"] = lambda q: "Some news."
+        try:
+            with patch("app.router.fusion.search", return_value="fusion result"), \
+                 patch("app.router.detect_intent", side_effect=fake_detect_intent):
+                route_with_source("weather and door status, and also the news", "auto")
+                cached = _get_cached("fusion", "fusion[forecast,ha]:weather")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+
+        assert cached == "fusion result"
+
+    def test_different_subquery_fusion_results_cached_independently(self):
+        """A different sub-query that also resolves to fusion must get
+        its own, independent cache entry — not collide with or
+        overwrite a different sub-query's cached fusion result."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        call_count = []
+
+        def fake_fusion_search(query, sources):
+            call_count.append(query)
+            return f"result for {query}"
+
+        def fake_detect_intent(q):
+            stripped = q.strip()
+            if stripped in ("weather", "lights status"):
+                return ["forecast", "ha"]
+            return "news"
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["news"] = lambda q: "Some news."
+        try:
+            with patch("app.router.fusion.search", side_effect=fake_fusion_search), \
+                 patch("app.router.detect_intent", side_effect=fake_detect_intent):
+                route_with_source("weather and door status, and also the news", "auto")
+                route_with_source("lights status and door status, and also the news", "auto")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+
+        assert len(call_count) == 2
+
+
 class TestConditionalDetection:
     """Tests for detect_conditional() — deliberately narrow leading
     "if X, Y" / "should X, Y" / "in case X, Y" pattern detection.
