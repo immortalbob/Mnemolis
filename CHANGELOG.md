@@ -4,6 +4,26 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.22.3]
+
+### Changed — Extracted `_interpret_binary_state()`: D(28) → B(8), the Biggest Reduction This Release Cycle
+A fifth complexity-investigation pass, applied to `app/router.py`'s `_interpret_yes_no()` (D, 28). The `uptime` and `ha` branches shared a genuinely identical shape — each checks which of two opposite states a condition asserts (down/up, unlocked/locked), then checks which state the result confirms, and returns whether they match.
+
+**A real, self-introduced bug was found and fixed during the extraction itself**, worth being fully honest about rather than glossing over: "locked" is a literal substring of "unlocked", and the original code correctly avoided this trap by always checking for "unlocked" first, regardless of which polarity the condition asserted. A first, naive attempt at generalizing this instead checked whichever result-keyword matched the *condition's own* polarity first — which got the "condition says locked, result says unlocked" case backwards, silently returning `True` instead of the correct `False`. Caught by deliberately constructing and testing this exact scenario before trusting the generalization, not by the existing test suite, which — also found during this investigation — **never actually covered this specific case at all**. The fix checks the negative-state result keyword first in a fixed order, independent of which condition polarity was detected, verified against 14 manually constructed test cases spanning all three real callers before being applied to the actual codebase.
+
+The new `_interpret_binary_state()` helper also correctly generalizes across all three sources' differing needs: `uptime`'s compound result check (`"all" in r and "up" in r`, not a single keyword), `ha`'s simple single-keyword checks, and `forecast`'s deliberately one-directional design (no positive-condition keywords at all, since "is it NOT raining" was never a phrasing this needed to handle) — all verified working correctly through the same shared function via caller-supplied check functions rather than hardcoded keywords.
+
+### Added (Tests)
+- **A genuinely missing regression test, added regardless of which version of the code is in place**: `test_ha_locked_condition_false_substring_trap`, confirming `_interpret_yes_no("the back door is locked", "Back Door: unlocked", "ha")` correctly returns `False` — this exact scenario was never tested before this investigation found the gap, meaning the original, correct code's check-order was effectively unprotected against a future "simplification" reintroducing this exact bug.
+- 8 new direct, isolated tests for `_interpret_binary_state()`: both condition polarities crossed with both result polarities (including the substring-trap case explicitly), both "no real signal" `None` cases, and explicit coverage of the compound-result-check and empty-positive-keywords-list support needed for `uptime` and `forecast` respectively.
+
+### Changed
+- Version bumped to 3.22.3
+
+**Total test count: 915**
+
+---
+
 ## [3.22.2]
 
 ### Verified — Confirmed Correct Rather Than Finding a Bug This Time

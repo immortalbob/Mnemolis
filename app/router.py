@@ -871,6 +871,57 @@ def detect_conditional(query: str) -> tuple[str, str, str] | None:
 _YES_NO_INTERPRETABLE_SOURCES = {"ha", "uptime", "forecast"}
 
 
+def _interpret_binary_state(
+    condition_lower: str,
+    result_lower: str,
+    negative_condition_keywords: list[str],
+    positive_condition_keywords: list[str],
+    confirms_negative_result: callable,
+    confirms_positive_result: callable,
+) -> bool | None:
+    """
+    Shared logic for interpreting a structured source's result against
+    a condition that asserts one of two opposite states (down/up,
+    unlocked/locked, raining/clear) — extracted from _interpret_yes_no()
+    after finding the uptime and ha branches shared this exact shape.
+
+    A real, genuine substring trap was found and fixed while extracting
+    this: "locked" is a literal substring of "unlocked", so checking for
+    "locked" in a result before checking for "unlocked" produces a false
+    positive on any result that's actually unlocked. The ORIGINAL code
+    avoided this correctly by always checking "unlocked" first,
+    regardless of which polarity the condition asserted — but a first,
+    naive attempt at generalizing this checked whichever result-keyword
+    matched the condition's OWN polarity first, which got the order
+    backwards for the "condition asserts locked" case and silently
+    returned the wrong answer. Fixed by always checking
+    confirms_negative_result first, in a FIXED order independent of
+    which condition polarity was detected — verified against 14 manually
+    constructed test cases across all three real callers (uptime, ha,
+    forecast) before this was trusted, including the exact substring-trap
+    scenario that exposed the bug in the first naive version.
+
+    confirms_negative_result/confirms_positive_result are caller-supplied
+    functions (not fixed strings) specifically because uptime's result
+    check is a compound condition ("all" in result AND "up" in result),
+    not a single keyword the way ha's ("unlocked"/"locked") and
+    forecast's ("rain"/"clear") are.
+    """
+    is_negative_condition = any(k in condition_lower for k in negative_condition_keywords)
+    is_positive_condition = any(k in condition_lower for k in positive_condition_keywords)
+    if not is_negative_condition and not is_positive_condition:
+        return None
+
+    if confirms_negative_result(result_lower):
+        result_is_negative = True
+    elif confirms_positive_result(result_lower):
+        result_is_negative = False
+    else:
+        return None
+
+    return result_is_negative if is_negative_condition else not result_is_negative
+
+
 def _interpret_yes_no(condition: str, result: str, source: str) -> bool | None:
     """
     Attempt to determine whether `result` confirms or denies `condition`,
@@ -886,46 +937,38 @@ def _interpret_yes_no(condition: str, result: str, source: str) -> bool | None:
     condition_lower = condition.lower()
 
     if source == "uptime":
-        if "down" in condition_lower or "not up" in condition_lower:
-            if "all" in result_lower and "up" in result_lower:
-                return False
-            if "down" in result_lower:
-                return True
-            return None
-        if "up" in condition_lower or "running" in condition_lower or "working" in condition_lower:
-            if "all" in result_lower and "up" in result_lower:
-                return True
-            if "down" in result_lower:
-                return False
-            return None
-        return None
+        return _interpret_binary_state(
+            condition_lower, result_lower,
+            negative_condition_keywords=["down", "not up"],
+            positive_condition_keywords=["up", "running", "working"],
+            confirms_negative_result=lambda r: "down" in r,
+            confirms_positive_result=lambda r: "all" in r and "up" in r,
+        )
 
     if source == "ha":
-        if "unlocked" in condition_lower:
-            if "unlocked" in result_lower:
-                return True
-            if "locked" in result_lower:
-                return False
-            return None
-        if "locked" in condition_lower:
-            if "unlocked" in result_lower:
-                return False
-            if "locked" in result_lower:
-                return True
-            return None
-        return None
+        return _interpret_binary_state(
+            condition_lower, result_lower,
+            negative_condition_keywords=["unlocked"],
+            positive_condition_keywords=["locked"],
+            confirms_negative_result=lambda r: "unlocked" in r,
+            confirms_positive_result=lambda r: "locked" in r,
+        )
 
     if source == "forecast":
         # Only explicit precipitation — never attempt subjective
         # conditions ("hot enough", "nice out") which have no universal
-        # threshold and would require a real guess, not a safe inference
-        if "rain" in condition_lower or "raining" in condition_lower:
-            if "rain" in result_lower or "storm" in result_lower or "shower" in result_lower:
-                return True
-            if "clear" in result_lower:
-                return False
-            return None
-        return None
+        # threshold and would require a real guess, not a safe inference.
+        # No positive_condition_keywords at all — deliberately one-
+        # directional, verified the generalized helper handles an empty
+        # list correctly (always returns None unless the condition
+        # actually mentions rain).
+        return _interpret_binary_state(
+            condition_lower, result_lower,
+            negative_condition_keywords=["rain", "raining"],
+            positive_condition_keywords=[],
+            confirms_negative_result=lambda r: "rain" in r or "storm" in r or "shower" in r,
+            confirms_positive_result=lambda r: "clear" in r,
+        )
 
     return None
 

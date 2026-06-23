@@ -1640,6 +1640,22 @@ class TestInterpretYesNo:
     def test_ha_locked_condition_true(self):
         assert self.interpret("the back door is locked", "Back Door: locked", "ha") is True
 
+    def test_ha_locked_condition_false_substring_trap(self):
+        """Regression test for a real bug found and fixed while
+        extracting _interpret_binary_state() from this function — and a
+        genuine, previously-missing test case discovered only by
+        noticing this exact scenario wasn't covered. "locked" is a
+        literal substring of "unlocked", so a naive check-order
+        (checking whichever keyword matches the CONDITION's own
+        polarity first) gets this case backwards: when the condition
+        says "locked," checking "locked" in the result first incorrectly
+        matches "Back Door: unlocked" too, since "locked" is right there
+        inside the word. The correct order checks "unlocked" first,
+        always, regardless of which polarity the condition asserts —
+        verified directly against this exact case before trusting the
+        generalized helper."""
+        assert self.interpret("the back door is locked", "Back Door: unlocked", "ha") is False
+
     def test_uptime_down_condition_false_when_all_up(self):
         assert self.interpret("my services are down", "All 15 monitored services are up.", "uptime") is False
 
@@ -1670,6 +1686,110 @@ class TestInterpretYesNo:
 
     def test_web_source_never_interpreted(self):
         result = self.interpret("it's a good time to invest", "Some web search result text.", "web")
+        assert result is None
+
+
+class TestInterpretBinaryState:
+    """Direct, isolated tests for _interpret_binary_state() — extracted
+    from _interpret_yes_no()'s uptime and ha branches, which shared this
+    exact "condition asserts one of two opposite states" shape.
+
+    A real bug was found and fixed during extraction: "locked" is a
+    literal substring of "unlocked", so a naive generalization that
+    checked whichever result-keyword matched the CONDITION's own
+    polarity first got the "condition says locked, result says
+    unlocked" case backwards. The fix checks the negative-state result
+    keyword FIRST, always, in a fixed order independent of which
+    polarity the condition asserts — exactly mirroring how the original,
+    un-extracted code happened to get this right by checking "unlocked"
+    before "locked" specifically. These tests exist both to verify the
+    extracted helper directly, and as a permanent guard against this
+    exact substring trap being reintroduced if this function is ever
+    "simplified" again in the future."""
+
+    def test_negative_condition_negative_result_returns_true(self):
+        from app.router import _interpret_binary_state
+        result = _interpret_binary_state(
+            "the door is unlocked", "back door: unlocked",
+            ["unlocked"], ["locked"],
+            lambda r: "unlocked" in r, lambda r: "locked" in r,
+        )
+        assert result is True
+
+    def test_negative_condition_positive_result_returns_false(self):
+        from app.router import _interpret_binary_state
+        result = _interpret_binary_state(
+            "the door is unlocked", "back door: locked",
+            ["unlocked"], ["locked"],
+            lambda r: "unlocked" in r, lambda r: "locked" in r,
+        )
+        assert result is False
+
+    def test_positive_condition_positive_result_returns_true(self):
+        from app.router import _interpret_binary_state
+        result = _interpret_binary_state(
+            "the door is locked", "back door: locked",
+            ["unlocked"], ["locked"],
+            lambda r: "unlocked" in r, lambda r: "locked" in r,
+        )
+        assert result is True
+
+    def test_positive_condition_negative_result_returns_false_substring_trap(self):
+        """The actual regression test for the real bug found while
+        extracting this — "locked" is a substring of "unlocked", so
+        getting the check order wrong here specifically produces a
+        silent, wrong True instead of the correct False."""
+        from app.router import _interpret_binary_state
+        result = _interpret_binary_state(
+            "the door is locked", "back door: unlocked",
+            ["unlocked"], ["locked"],
+            lambda r: "unlocked" in r, lambda r: "locked" in r,
+        )
+        assert result is False
+
+    def test_neither_condition_keyword_present_returns_none(self):
+        from app.router import _interpret_binary_state
+        result = _interpret_binary_state(
+            "is the cat happy", "back door: locked",
+            ["unlocked"], ["locked"],
+            lambda r: "unlocked" in r, lambda r: "locked" in r,
+        )
+        assert result is None
+
+    def test_neither_result_keyword_present_returns_none(self):
+        from app.router import _interpret_binary_state
+        result = _interpret_binary_state(
+            "the door is locked", "status unknown",
+            ["unlocked"], ["locked"],
+            lambda r: "unlocked" in r, lambda r: "locked" in r,
+        )
+        assert result is None
+
+    def test_compound_result_check_works_for_uptime_style_callers(self):
+        """Confirms the helper correctly supports a compound result
+        check (not just a single keyword) — uptime's "all up" check
+        requires BOTH "all" and "up" to appear, unlike ha's simple
+        single-keyword checks."""
+        from app.router import _interpret_binary_state
+        result = _interpret_binary_state(
+            "are services down", "all 15 services are up",
+            ["down", "not up"], ["up", "running"],
+            lambda r: "down" in r, lambda r: "all" in r and "up" in r,
+        )
+        assert result is False
+
+    def test_empty_positive_keywords_list_supported_for_forecast_style_callers(self):
+        """Confirms the helper correctly handles a deliberately
+        one-directional caller (forecast only checks for "rain," never
+        an opposite "is it NOT raining" condition phrasing) — an empty
+        positive_condition_keywords list should never match, only the
+        negative one can trigger interpretation."""
+        from app.router import _interpret_binary_state
+        result = _interpret_binary_state(
+            "is it hot enough", "clear skies",
+            ["rain", "raining"], [],
+            lambda r: "rain" in r or "storm" in r, lambda r: "clear" in r,
+        )
         assert result is None
 
 
