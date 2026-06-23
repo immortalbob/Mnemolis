@@ -37,7 +37,7 @@ _EXCLUDE_PATTERNS = [
 ]
 
 # Query keyword → filter spec
-_QUERY_MAP = {
+_QUERY_MAP: dict[str, dict] = {
     # Lights
     "light": {"domains": ["light"], "state_filter": None},
     "lights": {"domains": ["light"], "state_filter": None},
@@ -293,7 +293,7 @@ def _build_filter(query: str) -> dict:
 
     # Match longest phrases first to avoid partial matches
     matched_any = False
-    consumed_positions = set()
+    consumed_positions: set[int] = set()
 
     for keyword in sorted(_QUERY_MAP.keys(), key=len, reverse=True):
         pos = query_lower.find(keyword)

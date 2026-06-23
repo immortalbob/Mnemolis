@@ -4,6 +4,38 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.20.0]
+
+### Fixed — Three Real Issues Found via Static Type Checking
+A `mypy` pass (another genuine one-time check, following the same pattern as `vulture` and `bandit`) found 31 raw findings; most were the same low-value "needs an explicit type hint on an empty collection literal" pattern, but three were real and independently verified before fixing:
+
+- **A genuine variable-naming collision inside `route_with_source()`** — two completely different, non-overlapping branches of this one large function both used the name `merged` for two different types (a string in the conditional-detection branch, a list of tuples in the decomposition branch). Not an active bug (the two branches can't both execute in the same call), but a real, confusing code smell worth fixing before it became one — renamed the conditional branch's variable to `merged_text`.
+- **A stale return-type annotation on `get_changes()`** — declared `dict[str, list[str]]`, but the actual implementation (and `format_changes()`, the real, only caller) both correctly use `dict[str, list[dict[str, str]]]`. Verified the implementation and caller agree with each other before concluding the annotation itself was simply wrong, not the code.
+- **`since_hours` typed too narrowly as `int` across three functions** — `_resolve_changes_hours()` deliberately returns `float` (so "this morning" can resolve to a precise fractional-hour count, e.g. 2.5 hours since 6am), and Python's `timedelta(hours=...)` already handles this correctly at runtime. The `int`-only type hints on `_get_snapshots_since()`, `get_changes()`, and `format_changes()` were simply too narrow for what the code already correctly does — widened to `int | float` rather than changing any actual behavior.
+
+Two findings that looked concerning on first read (`fusion.py`'s `Callable[[str], str] | None` argument type, `home_assistant.py`'s untyped `_QUERY_MAP` causing a cascade of `"object" has no attribute "get"` errors) were investigated and confirmed safe — both are real runtime-safe patterns mypy can't fully trace through without an explicit type hint, not actual bugs. Added the missing hints (`_QUERY_MAP: dict[str, dict]`, `consumed_positions: set[int]`) anyway, since they resolved the false alarms and cost nothing.
+
+### Changed — Refactored `route_with_source()`, the Most Complex Function in the Codebase
+A `radon` cyclomatic-complexity pass flagged `route_with_source()` at F (45) — by far the highest in the project, consistent with how much real logic (conditional detection, recursive remainder handling, decomposition, fallback resolution) has accumulated there across many releases. Extracted the single-source-resolution-with-fallback logic into a new, standalone `_resolve_single_source()` helper, reducing `route_with_source()` to D (30) and giving the new helper itself a clean B (9).
+
+**The extraction surfaced two real, previously undetected bugs**, found only by comparing two near-duplicate inline implementations side by side rather than reading either in isolation — exactly the kind of thing a careful refactor is supposed to catch:
+
+1. **A real fallback-caching inconsistency.** The decomposition loop's fallback path called the fallback source's handler directly, with no cache check — while the top-level (explicit-source) path correctly checked the fallback source's own cache first. A repeated query that had already fallen back once should be served from cache the second time, regardless of which code path led to it; the decomposition loop wasn't doing this. Fixed by unifying both call sites on the new helper, which always checks cache first.
+2. **An "unknown source" message that `_looks_empty()` couldn't recognize.** If `detect_intent()` ever returned a source name with no matching `SOURCE_MAP` entry (shouldn't normally happen since the two are kept in sync, but isn't provably unreachable), the resulting error message matched none of `NO_RESULT_PHRASES`, so it was incorrectly treated as real content — meaning a stale or misconfigured state could silently inject an "Unknown source" string into an otherwise-clean merged response instead of being dropped the way any other failed result already is. Fixed by adding `"unknown source"` to `NO_RESULT_PHRASES`.
+
+### Considered and Declined
+Continuing to refactor `route_with_source()` further (extracting the conditional-detection and decomposition blocks too) was considered and explicitly deferred — this function has the most real bug history of anything in the project, and one careful, fully-verified extraction that surfaced two genuine bugs felt like the right scope for one sitting rather than pushing for a complete restructure in the same pass. `mypy` and `bandit`/`pip-audit`/`vulture` were all, once again, treated as one-time checks rather than added to the permanent CI surface, consistent with every prior tooling decision this release cycle.
+
+### Added (Tests)
+- 3 new regression tests for `_resolve_single_source()`: confirming an unknown source is correctly treated as empty, confirming the fallback path now checks cache before calling a handler, and an end-to-end test confirming the decomposition loop and the top-level path now genuinely share identical fallback behavior
+
+### Changed
+- Version bumped to 3.20.0
+
+**Total test count: 889**
+
+---
+
 ## [3.19.3]
 
 ### Fixed — XML Parsing Hardened Against Entity Expansion Attacks

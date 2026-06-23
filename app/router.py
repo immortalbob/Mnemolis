@@ -315,6 +315,17 @@ NO_RESULT_PHRASES = [
     "could not fetch",
     "no books available",
     "could not determine",
+    # Found via a deliberate refactoring pass: an unknown/unregistered
+    # source (detect_intent() returning a name with no matching
+    # SOURCE_MAP entry — shouldn't normally happen since the two are
+    # kept in sync, but isn't provably unreachable) previously produced
+    # a message that matched none of the phrases above, meaning
+    # _looks_empty() incorrectly treated it as real content. In the
+    # decomposition loop specifically, this meant a stale/misconfigured
+    # state could silently append an "Unknown source" error string into
+    # an otherwise-clean merged response rather than being dropped the
+    # same way any other empty/failed result already is.
+    "unknown source",
 ]
 
 # In-memory cache: key -> (result, timestamp)
@@ -1186,6 +1197,61 @@ def route(query: str, source: str = "auto", fusion_sources: list[str] | None = N
     return result
 
 
+def _resolve_single_source(source: str, query: str) -> tuple[str, str]:
+    """
+    Resolve a single (non-fusion) source for a query: check cache, call
+    the handler, and fall back to FALLBACK_CHAIN's target if the result
+    looks empty — checking the fallback target's own cache first too.
+
+    Extracted from two previously slightly-different inline
+    implementations found during a deliberate refactoring pass (prompted
+    by a cyclomatic-complexity check flagging route_with_source() as the
+    most complex function in the codebase by a wide margin) — one inside
+    the decomposition loop, one at the top level for a directly-routed
+    query. Comparing them side by side surfaced a real, previously
+    undetected inconsistency: the decomposition loop's fallback path
+    called the fallback handler directly with no cache check, while the
+    top-level path correctly checked _get_cached(fallback_source, query)
+    first. This unified version follows the more correct, top-level
+    behavior — a fallback result, once cached, should be served from
+    cache the same way any other result is, regardless of which code
+    path (direct routing or a decomposed sub-query) led to it.
+
+    Returns (result, source_used) — source_used reflects the actual
+    source that produced the result, which may differ from the
+    originally-intended `source` argument if a fallback occurred.
+    """
+    handler = SOURCE_MAP.get(source)
+    if not handler:
+        return f"Unknown source '{source}'. Valid options: {', '.join(SOURCE_MAP.keys())}.", source
+
+    cached = _get_cached(source, query)
+    if cached:
+        return cached, source
+
+    result = handler(query)
+
+    if _looks_empty(result) and source in FALLBACK_CHAIN:
+        fallback_source = FALLBACK_CHAIN[source]
+        _LOGGER.info("Result from '%s' looks empty, falling back to '%s'", source, fallback_source)
+        fallback_handler = SOURCE_MAP.get(fallback_source)
+        if fallback_handler:
+            cached_fallback = _get_cached(fallback_source, query)
+            if cached_fallback:
+                return cached_fallback, fallback_source
+            fallback_result = fallback_handler(query)
+            if not _looks_empty(fallback_result):
+                _LOGGER.info("Fallback to '%s' succeeded", fallback_source)
+                _set_cached(fallback_source, query, fallback_result)
+                return fallback_result, fallback_source
+            _LOGGER.warning("Fallback to '%s' also returned empty result", fallback_source)
+
+    if not _looks_empty(result):
+        _set_cached(source, query, result)
+
+    return result, source
+
+
 def route_with_source(query: str, source: str = "auto", fusion_sources: list[str] | None = None) -> tuple[str, str]:
     """
     Route a query to the appropriate source(s) and return both the result
@@ -1261,8 +1327,8 @@ def route_with_source(query: str, source: str = "auto", fusion_sources: list[str
                         framed if condition_source == "fusion"
                         else f"{fusion._format_header(condition_source)}\n{framed}"
                     )
-                    merged = f"{condition_section}\n\n---\n\n{remainder_section}"
-                    return merged, overall_source
+                    merged_text = f"{condition_section}\n\n---\n\n{remainder_section}"
+                    return merged_text, overall_source
 
             return framed, condition_source
 
@@ -1323,25 +1389,7 @@ def route_with_source(query: str, source: str = "auto", fusion_sources: list[str
                     sub_source = "fusion"
                     sub_result = fusion.search(sub_q, intent)
                 else:
-                    sub_source = intent
-                    handler = SOURCE_MAP.get(sub_source)
-                    cached = _get_cached(sub_source, sub_q)
-                    if cached:
-                        sub_result = cached
-                    elif handler:
-                        sub_result = handler(sub_q)
-                        if _looks_empty(sub_result) and sub_source in FALLBACK_CHAIN:
-                            fallback_source = FALLBACK_CHAIN[sub_source]
-                            fallback_handler = SOURCE_MAP.get(fallback_source)
-                            if fallback_handler:
-                                fallback_result = fallback_handler(sub_q)
-                                if not _looks_empty(fallback_result):
-                                    sub_source = fallback_source
-                                    sub_result = fallback_result
-                        if not _looks_empty(sub_result):
-                            _set_cached(sub_source, sub_q, sub_result)
-                    else:
-                        sub_result = ""
+                    sub_result, sub_source = _resolve_single_source(intent, sub_q)
                 if not _looks_empty(sub_result):
                     parts.append((sub_source, sub_result))
 
@@ -1407,32 +1455,4 @@ def route_with_source(query: str, source: str = "auto", fusion_sources: list[str
             _set_cached("fusion", cache_key_query, result)
         return result, "fusion"
 
-    handler = SOURCE_MAP.get(source)
-    if not handler:
-        return f"Unknown source '{source}'. Valid options: {', '.join(SOURCE_MAP.keys())}.", source
-
-    cached = _get_cached(source, query)
-    if cached:
-        return cached, source
-
-    result = handler(query)
-
-    if _looks_empty(result) and source in FALLBACK_CHAIN:
-        fallback_source = FALLBACK_CHAIN[source]
-        _LOGGER.info("Result from '%s' looks empty, falling back to '%s'", source, fallback_source)
-        fallback_handler = SOURCE_MAP.get(fallback_source)
-        if fallback_handler:
-            cached_fallback = _get_cached(fallback_source, query)
-            if cached_fallback:
-                return cached_fallback, fallback_source
-            fallback_result = fallback_handler(query)
-            if not _looks_empty(fallback_result):
-                _LOGGER.info("Fallback to '%s' succeeded", fallback_source)
-                _set_cached(fallback_source, query, fallback_result)
-                return fallback_result, fallback_source
-            _LOGGER.warning("Fallback to '%s' also returned empty result", fallback_source)
-
-    if not _looks_empty(result):
-        _set_cached(source, query, result)
-
-    return result, source
+    return _resolve_single_source(source, query)

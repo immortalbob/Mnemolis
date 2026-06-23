@@ -163,7 +163,7 @@ def get_snapshot_job_health() -> dict[str, dict]:
     return health
 
 
-def _get_snapshots_since(source: str, since_hours: int = 24) -> list[tuple[str, str]]:
+def _get_snapshots_since(source: str, since_hours: int | float = 24) -> list[tuple[str, str]]:
     """Return all snapshots for a source since N hours ago."""
     try:
         since = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -419,7 +419,7 @@ _DIFF_FNS = {
 }
 
 
-def get_changes(since_hours: int = 24) -> dict[str, list[str]]:
+def get_changes(since_hours: int | float = 24) -> dict[str, list[dict[str, str]]]:
     """
     Return meaningful changes detected across all snapshot sources
     within the last N hours.
@@ -473,7 +473,7 @@ def get_changes(since_hours: int = 24) -> dict[str, list[str]]:
     return changes
 
 
-def format_changes(changes: dict, since_hours: int = 24) -> str:
+def format_changes(changes: dict, since_hours: int | float = 24) -> str:
     """Format changes dict into a human-readable summary."""
     if not changes:
         return f"No significant changes detected in the last {since_hours} hours."

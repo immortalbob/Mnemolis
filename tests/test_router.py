@@ -1268,6 +1268,107 @@ class TestRouteWithSource:
         assert source == "fusion"
 
 
+class TestResolveSingleSourceRefactor:
+    """Regression tests for _resolve_single_source() — extracted from
+    route_with_source() during a deliberate refactoring pass prompted by
+    a cyclomatic-complexity check flagging route_with_source() as the
+    most complex function in the codebase (F, 45) by a wide margin.
+
+    The extraction itself surfaced two real, previously-undetected bugs,
+    found only by comparing two near-duplicate inline implementations
+    side by side rather than reading either one in isolation:
+
+    1. The decomposition loop's fallback path called the fallback
+       handler directly with no cache check, while the top-level path
+       correctly checked the fallback source's own cache first. Fixed by
+       unifying both call sites on one helper that always checks cache.
+    2. An unknown/unregistered source's error message didn't match any
+       phrase in NO_RESULT_PHRASES, so _looks_empty() incorrectly
+       treated it as real content — meaning a stale/misconfigured state
+       could silently append an "Unknown source" string into an
+       otherwise-clean merged response. Fixed by adding "unknown source"
+       to NO_RESULT_PHRASES.
+    """
+
+    def setup_method(self):
+        from app.router import clear_cache
+        clear_cache()
+
+    def test_unknown_source_message_is_treated_as_empty(self):
+        """Regression test for bug #2 above."""
+        from app.router import _looks_empty, _resolve_single_source
+        result, source = _resolve_single_source("not_a_real_source", "test query")
+        assert _looks_empty(result) is True
+
+    def test_fallback_checks_cache_before_calling_handler(self):
+        """Regression test for bug #1 above — confirms the unified
+        helper checks the fallback source's cache before invoking its
+        handler, the behavior the decomposition loop was previously
+        missing."""
+        from app.router import _resolve_single_source, _set_cached
+        from unittest.mock import patch
+        import app.router as router_module
+
+        fallback_handler_called = []
+
+        def fake_kiwix(q):
+            return "no results found"
+
+        def fake_web(q):
+            fallback_handler_called.append(q)
+            return "should not be called — cache should serve this"
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["kiwix"] = fake_kiwix
+        router_module.SOURCE_MAP["web"] = fake_web
+        try:
+            _set_cached("web", "test query", "Cached web result.")
+            with patch("app.router._get_cached", side_effect=lambda src, q: "Cached web result." if src == "web" else None):
+                result, source = _resolve_single_source("kiwix", "test query")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+
+        assert result == "Cached web result."
+        assert source == "web"
+        assert fallback_handler_called == []  # handler never called — cache served it
+
+    def test_decomposition_loop_and_top_level_share_identical_fallback_behavior(self):
+        """Confirms both call sites genuinely produce the same result for
+        the same scenario now that they share one implementation — the
+        actual real-world fix for the inconsistency found during
+        extraction, verified end to end rather than just unit-testing
+        the helper in isolation."""
+        from app.router import route_with_source
+        from unittest.mock import patch
+        import app.router as router_module
+
+        def fake_kiwix(q):
+            return "no results found"
+
+        def fake_web(q):
+            return "Real web result."
+
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["kiwix"] = fake_kiwix
+        router_module.SOURCE_MAP["web"] = fake_web
+        try:
+            with patch("app.router._get_cached", return_value=None):
+                # Top-level (explicit source) path
+                top_result, top_source = route_with_source("test query", "kiwix")
+                # Decomposition-loop path — force a 2-part split so the
+                # decomposition loop's per-sub-query resolution runs
+                with patch("app.router.detect_intent", side_effect=["kiwix", "forecast"]):
+                    router_module.SOURCE_MAP["forecast"] = lambda q: "Sunny."
+                    decomp_result, decomp_source = route_with_source(
+                        "test query and what is the weather", "auto"
+                    )
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+
+        assert top_source == "web"
+        assert "web" in decomp_result.lower() or "Real web result" in decomp_result
+
+
 class TestConditionalDetection:
     """Tests for detect_conditional() — deliberately narrow leading
     "if X, Y" / "should X, Y" / "in case X, Y" pattern detection.
