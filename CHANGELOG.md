@@ -4,6 +4,27 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.41.0]
+
+### Investigation Note
+A full, deliberate re-pass through `router.py`, specifically hunting for the kind of small-helper and string-handling bugs that complexity scores never flagged (the same category that found `_looks_empty`'s cross-file drift in 3.40.0). Most of the file held up cleanly — `INTENT_MAP`'s apparent keyword collisions (every query containing both a source's bare trigger and a `"changes"` trigger, e.g. "any outages today") were checked systematically and confirmed to be a real, intentional, sensible design pattern: escalating to fusion for these genuinely ambiguous compound questions ("what's the current status AND has anything changed") gives a more helpful answer than guessing at just one interpretation, not a bug. `load_cache()`/`load_routing_cache()`'s defensive disk-loading logic was re-confirmed solid.
+
+### Fixed — A Real Crash: a Natural Config Mistake Broke "This Morning" Queries
+`MORNING_START_HOUR`/`WORK_START_HOUR` are plain, unvalidated ints — setting either to `24` (a genuinely natural mistake, since `24:00` is a common way to write midnight in 24-hour notation) crashed `_hours_since()` with a raw `ValueError: hour must be in 0..23` the moment any "this morning" or "while at work" query needed it. Confirmed end to end: this is directly reachable from `_resolve_changes_hours()`, which has no exception handling of its own. Fixed with `hour_of_day % 24`, which correctly clamps `24 → 0` while also sensibly handling any other out-of-range value (negative hours wrap correctly too) rather than only patching the one specific mistake found.
+
+### Changed — Removed Genuinely Dead Code in `detect_conditional()`
+A redundant `if p != -1` filter ran after a list comprehension whose own condition (`if conj in consequence_lower`) already guarantees a real substring match before `.find()` is ever called on it — confirmed via direct testing across unicode, empty-string, and emoji edge cases that Python's `in` and `.find()` can never disagree. Removed the genuinely unreachable filter.
+
+### Added (Tests)
+- 2 new tests for `_hours_since()`: the originally-found `hour=24` case no longer crashes, and a more extreme out-of-range value (`100`) confirms the fix generalizes rather than just patching one specific input
+
+### Changed
+- Version bumped to 3.41.0
+
+**Total test count: 986**
+
+---
+
 ## [3.40.0]
 
 ### Fixed — A Significant, Real Bug: the Fallback Chain Silently Failed to Trigger on Misconfiguration

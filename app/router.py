@@ -71,6 +71,17 @@ def _hours_since(hour_of_day: int) -> float:
     If that hour hasn't happened yet today, looks back to yesterday's occurrence.
     """
     from datetime import datetime, timedelta
+    # Found via a deliberate "bulletproofing" pass: MORNING_START_HOUR
+    # and WORK_START_HOUR are plain, unvalidated ints — a genuinely
+    # natural config mistake (writing 24 for midnight, a common
+    # 24-hour-notation convention) crashed this function with a raw
+    # ValueError ("hour must be in 0..23") the moment any "this
+    # morning"/"while at work" query needed it. Modulo 24 correctly
+    # clamps 24 -> 0 specifically, while also sensibly handling any
+    # other out-of-range value (negative hours wrap correctly too,
+    # since Python's % always returns a non-negative result for a
+    # positive divisor) rather than crashing on the next mistake found.
+    hour_of_day = hour_of_day % 24
     now = datetime.now()
     target = now.replace(hour=hour_of_day, minute=0, second=0, microsecond=0)
     if target > now:
@@ -867,11 +878,19 @@ def detect_conditional(query: str) -> tuple[str, str, str] | None:
     consequence = consequence.strip()
 
     consequence_lower = consequence.lower()
+    # Found via a deliberate "bulletproofing" pass: the previous version
+    # had a redundant `if p != -1` filter after this list comprehension
+    # — genuinely dead code, since the comprehension's own condition
+    # (`if conj in consequence_lower`) already guarantees a real
+    # substring match before `.find()` ever runs on it, and Python's
+    # `in` / `.find()` can never disagree (confirmed directly across
+    # unicode, empty-string, and emoji edge cases) — if the substring
+    # is genuinely present, `.find()` is logically guaranteed to return
+    # a real, non-negative index, never -1.
     cut_points = [
         consequence_lower.find(conj) for conj in _CONJUNCTIONS
         if conj in consequence_lower
     ]
-    cut_points = [p for p in cut_points if p != -1]
     remainder = ""
     if cut_points:
         cut = min(cut_points)

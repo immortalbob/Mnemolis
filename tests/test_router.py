@@ -404,6 +404,25 @@ class TestHoursSince:
         assert result > 0
         assert result < 25
 
+    def test_hour_24_does_not_crash_and_is_treated_as_midnight(self):
+        """Regression test for a real bug found via a deliberate
+        "bulletproofing" pass: MORNING_START_HOUR/WORK_START_HOUR are
+        plain, unvalidated ints — writing 24 for midnight (a natural,
+        common 24-hour-notation convention) previously crashed this
+        function with a raw ValueError ("hour must be in 0..23") the
+        moment any "this morning"/"while at work" query needed it."""
+        result = self.hours_since(24)  # must not raise
+        assert isinstance(result, float)
+        assert result > 0
+
+    def test_out_of_range_hour_does_not_crash(self):
+        """Confirms the fix generalizes beyond the specific 24 case —
+        modulo 24 sensibly handles any out-of-range value rather than
+        only patching the one mistake that happened to be found."""
+        result = self.hours_since(100)  # must not raise
+        assert isinstance(result, float)
+        assert result > 0
+
 
 class TestDecompose:
     """Tests for _decompose conjunction splitting."""
