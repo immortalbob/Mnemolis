@@ -4,6 +4,27 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.34.0]
+
+### Investigation Note — Closing This Release Cycle's Complexity-Investigation Arc
+A twenty-first and final complexity-investigation pass this release cycle, applied to `_get_disambiguation_candidates()` (C, 14) — the last genuinely untouched function remaining above this cycle's investigation floor. This closes a sustained pass across essentially the entire codebase: every source file, every routing/scoring/dispatch function above a meaningful complexity threshold, and every function sitting adjacent to an already-confirmed real bug, has now had a deliberate, careful, fresh read this cycle.
+
+### Fixed — The Same Real Bug, Found a Third Time
+The exact same failure-caching pattern already found and fixed in `_llm_pick_fusion_sources()` and `_llm_detect()` earlier this release cycle was found here too: the bare-fallback result (just the original ambiguous word, no real disambiguation candidates at all) was cached under the same key a genuine LLM success would use, whenever the LLM call failed. A single transient hiccup would permanently lock that specific ambiguous word into the unhelpful fallback for the full routing cache TTL.
+
+**A real, deliberate distinction was made here that didn't apply to the previous two fixes**, since this function's fallback path can be reached for two genuinely different reasons: the LLM call itself failing outright (`complete()` returning `None`/empty — a real, transient failure where a retry is likely to succeed) versus the LLM genuinely responding with three candidate phrases that simply didn't survive the sanity filter (e.g. none containing the original word at all — a substantive answer that just wasn't usable). The second case isn't really a transient hiccup; the same prompt would likely produce a similarly unusable answer again, so caching that specific outcome remains the more sensible default rather than re-querying the LLM on every repeat of a query it has already genuinely struggled with. Fixed by only skipping the cache write when `raw` itself was empty/falsy — confirmed both cases work correctly via direct, separate tests for each.
+
+### Added (Tests)
+- 2 new tests distinguishing the two real cases: a genuine LLM call failure is confirmed not cached, while a genuine-but-filtered LLM response is confirmed still cached
+
+### Changed
+- `_get_disambiguation_candidates`: C(14) → C(15) — a small, honest increase for the new `if raw:` guard
+- Version bumped to 3.34.0
+
+**Total test count: 957**
+
+---
+
 ## [3.33.0]
 
 ### Investigation Note

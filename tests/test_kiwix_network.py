@@ -490,6 +490,47 @@ class TestGetDisambiguationCandidates:
             result = _get_disambiguation_candidates("what are galaxies", "galaxy")
         assert result == ["galaxy"]
 
+    def test_genuine_llm_failure_is_not_cached(self):
+        """Regression test for a real, significant bug found via a
+        deliberate complexity-investigation pass — the same pattern
+        already found and fixed in _llm_pick_fusion_sources() and
+        _llm_detect(): caching the bare-fallback result under the same
+        key a genuine success would use means a single transient LLM
+        hiccup permanently locks the query into the unhelpful, bare
+        fallback (just the original ambiguous word, no real
+        disambiguation at all) for the full routing cache TTL. When the
+        LLM call itself genuinely fails (complete() returns None/empty,
+        not a real response), the result must NOT be cached, so the
+        next identical query gets a fresh, real chance at success."""
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value=None):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            _get_disambiguation_candidates("what are galaxies", "galaxy")
+        mock_set_routing.assert_not_called()
+
+    def test_genuine_response_that_fails_sanity_filter_is_still_cached(self):
+        """A deliberate, real distinction from the fix above: when the
+        LLM genuinely RESPONDS (raw is truthy) but none of its phrases
+        survive the sanity filter (e.g. none contain the original word
+        at all), that's a substantive answer that simply wasn't usable
+        — not a transient hiccup. The same prompt would likely produce
+        a similarly unusable answer again, so this outcome IS still
+        cached, avoiding a wasteful repeat LLM call for a query the
+        model has already genuinely struggled with."""
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value="completely unrelated garbage"):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            _get_disambiguation_candidates("what are galaxies", "galaxy")
+        mock_set_routing.assert_called_once()
+
     def test_caps_at_three_candidates(self):
         from app.sources.kiwix import _get_disambiguation_candidates
         from unittest.mock import patch, MagicMock

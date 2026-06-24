@@ -522,7 +522,29 @@ def _get_disambiguation_candidates(query: str, search_terms: str) -> list[str]:
     # Cap at 3 candidates to bound the number of extra Kiwix searches
     valid_candidates = valid_candidates[:3]
 
-    set_routing(cache_key, "|".join(valid_candidates))
+    # Found via a deliberate complexity-investigation pass — the same
+    # bug already found and fixed in _llm_pick_fusion_sources() and
+    # _llm_detect(): caching a pure-fallback result under the same key
+    # a genuine success would use means a single transient LLM hiccup
+    # permanently locks the query into the bare, unhelpful fallback
+    # (just the original ambiguous word, no real disambiguation at all)
+    # for the full routing cache TTL. Confirmed directly via the same
+    # test pattern used for the other two fixes.
+    #
+    # A real, deliberate distinction from those two fixes: this
+    # function can reach the same bare-fallback OUTCOME for two
+    # genuinely different REASONS — `raw` itself being empty/falsy (a
+    # real call failure, where a retry is likely to succeed) versus the
+    # LLM genuinely responding with something that simply didn't
+    # survive the sanity filter (e.g. none of its 3 phrases contained
+    # the original word at all). The second case isn't really a
+    # transient hiccup — the same prompt would likely produce a
+    # similarly unusable answer again, so caching that outcome is the
+    # more sensible default rather than re-querying the LLM on every
+    # repeat of a query it has already genuinely struggled with. Only
+    # skip caching when `raw` was empty/falsy specifically.
+    if raw:
+        set_routing(cache_key, "|".join(valid_candidates))
     _LOGGER.info("Disambiguation candidates for '%s': %s", search_terms, valid_candidates)
     return valid_candidates
 
