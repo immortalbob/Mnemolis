@@ -96,6 +96,33 @@ class TestStem:
         assert self.stem("fox") == self.stem("foxes")
         assert self.stem("battery") == self.stem("batteries")
 
+    def test_common_non_plural_words_ending_in_s_are_not_mis_stemmed(self):
+        """Regression test for a real, if narrow, inaccuracy found via a
+        deliberate, precise re-read of this exact function: the plain
+        "s"-suffix rule has no way to tell a genuine plural ("foxes" →
+        fox) apart from a common, non-plural word that happens to end in
+        "s" and is long enough (>3 chars) to pass the length guard.
+        "this" → "thi", "less" → "les", "across" → "acros", "always" →
+        "alway", and "towards" → "toward" were all confirmed via direct
+        testing before this fix — verified the real-world scoring impact
+        was genuinely minimal (this function always compares two
+        complete strings against each other, never an isolated stop
+        word for its own sake), but worth a small, explicit exception
+        list anyway rather than leaving a known inaccuracy unaddressed."""
+        assert self.stem("this") == "this"
+        assert self.stem("less") == "less"
+        assert self.stem("across") == "across"
+        assert self.stem("always") == "always"
+        assert self.stem("towards") == "towards"
+
+    def test_exception_list_does_not_break_genuine_short_plural_words(self):
+        """Confirms the exception list is narrow and specific — it must
+        not accidentally prevent a genuine, real plural from being
+        correctly stemmed just because it happens to share a similar
+        shape with one of the exception words."""
+        assert self.stem("classes") == "class"
+        assert self.stem("buses") == "bus"
+
 
 class TestSearchTermCleaning:
     """Tests for stop word stripping and stemming before Kiwix search.

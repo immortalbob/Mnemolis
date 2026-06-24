@@ -336,7 +336,21 @@ def _stem(word: str) -> str:
     Handles plural and verb forms — safe suffixes only, no semantic changes.
     Examples: marsupials→marsupial, foxes→fox, batteries→battery,
               computing→comput, computed→comput
+
+    Real-world impact of this exception list is genuinely minimal — this
+    function is always used to compare two complete strings against each
+    other (never an isolated stop word for its own sake), and a
+    consistent mis-stem applied identically to both sides of a
+    comparison wouldn't typically flip a real match into a false one.
+    Found via a deliberate, precise re-read of this exact function: the
+    plain "s"-suffix rule below has no way to tell a genuine plural
+    ("foxes" → fox) apart from a common, non-plural word that happens to
+    end in "s" — "this"→"thi", "less"→"les", "across"→"acros",
+    "always"→"alway", "towards"→"toward" were all confirmed via direct
+    testing to be real, if narrow, inaccuracies.
     """
+    if word in {"this", "less", "across", "always", "towards"}:
+        return word
     if word.endswith("ies") and len(word) > 4:
         return word[:-3] + "y"
     if word.endswith("ing") and len(word) > 5:
@@ -380,7 +394,18 @@ def _score_result(result: dict, query: str, primary_book: str) -> int:
     - Stemmed title match (plural/suffix variations): +15
     - Title starts with query (after stop word removal): +10
     - Each query word in title (stop words removed): +5 each
-    - Each query word in excerpt (stop words removed, normalized): +1 each
+    - Query word overlap in excerpt (stop words removed): up to +10 total,
+      normalized by excerpt length so a short, precisely on-topic excerpt
+      competes fairly against a long, loosely-related one — NOT a flat
+      "+1 per matching word." Found via a deliberate, precise re-read of
+      this exact function: the docstring previously claimed "+1 each,"
+      which never matched the real formula (hit_count / excerpt_length *
+      10, then truncated to an int) — a real documentation error, not a
+      runtime bug, since the inline comment next to the actual code
+      ("normalize by excerpt length to avoid bias") was already
+      accurate, and the wiki's own Kiwix Scoring page was independently
+      correct too, apparently written from the real code rather than
+      this stale docstring summary.
     - Wikipedia bonus: +8 for definitional queries, +3 for all others
     - Primary book bonus: +2
     - List/index article penalty: -10 for titles starting with "List of", "Lists of", "Index of", etc.

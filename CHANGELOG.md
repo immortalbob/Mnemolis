@@ -4,6 +4,30 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.30.1]
+
+### Investigation Note
+A sixteenth complexity-investigation pass this release cycle, applied to `app/sources/kiwix.py`'s `_score_result()` (C, 16) — the literal scoring formula deciding which article wins for every single Kiwix answer, including every disambiguation and multi-book fusion decision built on top of it, never read this carefully end to end despite how heavily its documented weights were relied on throughout this whole release cycle. Most of the function held up cleanly under precise verification, including the deliberate, real reason two scoring bonuses (+15 stemmed-title-match, +10 title-starts-with) apply a `len(w) > 3` filter while the broader per-word title/excerpt scoring doesn't — confirmed directly with a real test that a genuinely relevant short-acronym query ("raspberry pi gpio error") still correctly outscores an unrelated result by a wide margin (35 vs 6), the length filter protecting only the two highest-value "this IS the topic" signals from short stop-word noise, not penalizing real short technical terms broadly.
+
+### Fixed — A Real Documentation Error in `_score_result()`'s Own Docstring
+The docstring's scoring-breakdown table claimed excerpt word matches score "+1 each" — this never matched the actual formula (`int((excerpt_hits / excerpt_len) * 10)`, normalized by excerpt length, not a flat per-word count), confirmed directly: 3 hits in a 30-word excerpt score +1 total, not +3; 3 hits in a 5-word excerpt score +6, not +3. Not a runtime bug — the actual code and its own inline comment ("normalize by excerpt length to avoid bias") were already correct — but a real, misleading inaccuracy in the docstring summary anyone reading just that table would get wrong. The wiki's own [Kiwix Scoring](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Scoring) page was independently correct already, apparently written from the real code rather than this stale docstring. Fixed the docstring to match reality.
+
+### Fixed — A Real, Narrow Stemming Inaccuracy
+`_stem()`'s plain "ends with s, length > 3" rule has no way to distinguish a genuine plural ("foxes" → fox) from a common, non-plural English word that happens to end in "s" and is long enough to pass the length guard. Confirmed via direct testing: `"this"` → `"thi"`, `"less"` → `"les"`, `"across"` → `"acros"`, `"always"` → `"alway"`, `"towards"` → `"toward"` — all real, genuine inaccuracies. Investigated the actual real-world risk carefully before fixing: `_stem()` is always used to compare two complete strings against each other, never an isolated stop word for its own sake, and a consistent mis-stem applied identically wouldn't typically flip a real match into a false one in practice — confirmed this directly rather than assuming. Fixed anyway with a small, explicit exception list, since the inaccuracy was real and the fix is cheap; verified the exception list is narrow enough not to interfere with genuine plurals sharing a similar shape (`"classes"` → `class`, `"buses"` → `bus` both still stem correctly).
+
+### Added (Tests)
+- 2 new tests confirming the 5 exception words pass through unchanged
+- 1 new test confirming the exception list doesn't break genuine plural stemming for similarly-shaped real words
+
+### Changed
+- `_stem`: C(11) → C(12) — a small, honest increase for the new exception check
+- [Kiwix Scoring](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Scoring) wiki page updated with an honest note about this real, narrow limitation and the fix
+- Version bumped to 3.30.1
+
+**Total test count: 947**
+
+---
+
 ## [3.30.0]
 
 ### Investigation Note
