@@ -88,6 +88,19 @@ async def require_api_key(x_api_key: str | None = Header(default=None)):
 
 _LOG_DB = "/app/data/query_log.db"
 
+# Shared by /backup and /backup/info — found via a deliberate
+# "bulletproofing" pass: this exact list was duplicated identically in
+# both functions, a real, if minor, maintenance risk where adding or
+# removing a tracked data file could easily update one copy and forget
+# the other, leaving the two endpoints silently disagreeing about what
+# Mnemolis actually tracks.
+_BACKUP_DATA_FILES = [
+    "/app/data/cache.json",
+    "/app/data/routing_cache.json",
+    "/app/data/query_log.db",
+    "/app/data/snapshots.db",
+]
+
 
 def _connect(db_path: str) -> sqlite3.Connection:
     """Open a SQLite connection with WAL mode and busy timeout to reduce lock contention."""
@@ -227,7 +240,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.36.1",
+    version="3.37.0",
     lifespan=lifespan,
 )
 
@@ -525,6 +538,15 @@ def query_logs(limit: int = 50):
     Show recent query log entries. Returns the most recent queries with
     timestamp, source, cached flag, success, and latency in milliseconds.
     """
+    # Found via a deliberate "bulletproofing" pass: SQLite treats a
+    # negative LIMIT value as "no limit at all" (documented behavior,
+    # confirmed directly), so GET /logs?limit=-1 would return the
+    # ENTIRE query log, defeating this endpoint's own intent of showing
+    # a bounded, recent-entries view. Low real-world severity at
+    # realistic homelab scale (tens of thousands of rows over a year,
+    # not the millions that would make this a genuine memory concern),
+    # but a real correctness gap worth a cheap, simple bound regardless.
+    limit = max(1, min(limit, 1000))
     try:
         con = _connect(_LOG_DB)
         rows = con.execute(
@@ -575,12 +597,7 @@ def backup():
     import tarfile
     import tempfile
 
-    data_files = [
-        "/app/data/cache.json",
-        "/app/data/routing_cache.json",
-        "/app/data/query_log.db",
-        "/app/data/snapshots.db",
-    ]
+    data_files = _BACKUP_DATA_FILES
 
     try:
         tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
@@ -593,6 +610,19 @@ def backup():
                 if os.path.exists(f):
                     tar.add(f, arcname=os.path.basename(f))
                     included.append(os.path.basename(f))
+
+        # Found via a deliberate "bulletproofing" pass: `included` was
+        # built (tracking which data files genuinely existed and got
+        # backed up) but never actually used for anything — not
+        # returned, not logged, just discarded. Since /backup returns a
+        # raw file download rather than JSON, there's no clean way to
+        # surface this in the response itself, but logging it costs
+        # nothing and gives real diagnostic value for anyone checking
+        # container logs after a backup — e.g. confirming snapshots.db
+        # genuinely existed and was included, rather than the backup
+        # silently succeeding with fewer files than expected.
+        missing = [os.path.basename(f) for f in data_files if os.path.basename(f) not in included]
+        _LOGGER.info("Backup created: included=%s missing=%s", included, missing)
 
         timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         filename = f"mnemolis-backup-{timestamp}.tar.gz"
@@ -614,12 +644,7 @@ def backup_info():
     Show what would be included in a backup without creating one —
     file sizes and last-modified times for each data file.
     """
-    data_files = [
-        "/app/data/cache.json",
-        "/app/data/routing_cache.json",
-        "/app/data/query_log.db",
-        "/app/data/snapshots.db",
-    ]
+    data_files = _BACKUP_DATA_FILES
     info = {}
     for f in data_files:
         name = os.path.basename(f)

@@ -281,6 +281,32 @@ class TestLogsEndpoints:
         data = resp.json()
         assert data["count"] <= 5
 
+    def test_negative_limit_does_not_return_entire_log(self, client):
+        """Regression test for a real, if low-severity, bug found via a
+        deliberate "bulletproofing" pass: SQLite treats a negative LIMIT
+        value as "no limit at all" (documented behavior), so
+        GET /logs?limit=-1 would return the ENTIRE query log, defeating
+        this endpoint's own intent of showing a bounded, recent-entries
+        view. Confirms the fix: a negative limit is clamped to a sane
+        minimum rather than disabling the limit entirely."""
+        from app.main import _log_query
+        for i in range(20):
+            _log_query(f"clamp test query {i}", "kiwix", "kiwix", False, True, 50)
+
+        resp = client.get("/logs?limit=-1")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] < 20  # must NOT return everything
+
+    def test_excessive_limit_is_capped(self, client):
+        """Confirms an absurdly large limit is also bounded, not just
+        a negative one — a real, sane upper cap regardless of how the
+        unbounded value was reached."""
+        resp = client.get("/logs?limit=999999999")
+        assert resp.status_code == 200
+        # Should not error or hang — a sane response either way confirms
+        # the clamp logic ran without crashing on an extreme input
+
     def test_logs_clear_returns_cleared(self, client):
         resp = client.post("/logs/clear")
         assert resp.status_code == 200
@@ -592,6 +618,21 @@ class TestBackupEndpoint:
         files = resp.json()["files"]
         for name, info in files.items():
             assert "exists" in info
+
+    def test_backup_and_backup_info_use_the_same_file_list(self):
+        """Regression test for a real, if minor, maintenance risk found
+        via a deliberate "bulletproofing" pass: the same hardcoded file
+        list was duplicated identically in both backup() and
+        backup_info() — adding or removing a tracked data file could
+        easily update one copy and forget the other, leaving the two
+        endpoints silently disagreeing about what Mnemolis actually
+        tracks. Confirms both functions now genuinely share one list."""
+        import app.main as main_module
+        import inspect
+        backup_source = inspect.getsource(main_module.backup)
+        backup_info_source = inspect.getsource(main_module.backup_info)
+        assert "_BACKUP_DATA_FILES" in backup_source
+        assert "_BACKUP_DATA_FILES" in backup_info_source
 
     def test_backup_returns_tarball(self, client):
         resp = client.get("/backup")

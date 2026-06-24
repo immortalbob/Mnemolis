@@ -4,6 +4,31 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.37.0]
+
+### Investigation Note — Completing the `app/main.py` Bulletproofing Pass
+Finished reading `app/main.py` top to bottom. Several areas were checked carefully and confirmed genuinely correct rather than fixed: the `/search` auto-routing cache-key reconstruction (verified with a direct test against `route_with_source()`'s real internal key, not just a source comparison), `/changes`'s `hours` parameter with a negative value (confirmed it produces a future cutoff timestamp that safely returns zero rows rather than anything dangerous — a real, minor UX confusion but not worth a fix given the low stakes), and `/snapshots/trigger`'s unbounded `concurrent.futures.wait()` (confirmed every underlying source call already has a real, finite timeout, bounding the realistic worst case).
+
+### Fixed — `/logs`'s `limit` Parameter Could Return the Entire Query Log
+SQLite treats a negative `LIMIT` value as "no limit at all" (confirmed directly, not assumed) — `GET /logs?limit=-1` would return the entire query log, defeating the endpoint's own intent of showing a bounded, recent-entries view. Low real-world severity at realistic homelab scale, but a real correctness gap. Fixed with a sane clamp (`max(1, min(limit, 1000))`).
+
+### Fixed — A Real Maintenance Risk: Duplicated Backup File List
+The same hardcoded list of tracked data files was duplicated identically in both `backup()` and `backup_info()` — a real risk that adding or removing a tracked file could update one copy and forget the other, leaving the two endpoints silently disagreeing about what Mnemolis actually tracks. Fixed with a single shared `_BACKUP_DATA_FILES` module-level constant.
+
+### Fixed — Dead Code: a Built-But-Never-Used Variable in `backup()`
+`included` (tracking which data files genuinely existed and got backed up) was built but never used for anything — not returned, not logged, just discarded. Since `/backup` returns a raw file download rather than JSON, there's no clean way to surface this in the response itself, but logging it costs nothing and gives real diagnostic value for confirming a backup genuinely included everything expected.
+
+### Added (Tests)
+- 2 new tests for the `/logs` limit clamp: a negative limit no longer returns the entire log, and an excessive limit doesn't error or hang
+- 1 new test confirming `/backup` and `/backup/info` genuinely share the same file list constant
+
+### Changed
+- Version bumped to 3.37.0
+
+**Total test count: 967**
+
+---
+
 ## [3.36.1]
 
 ### Investigation Note
