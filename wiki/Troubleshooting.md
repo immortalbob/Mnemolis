@@ -25,7 +25,7 @@ If you're calling the API directly and a genuinely compound query still isn't sp
 
 ## A proper noun pair got split apart when it shouldn't have (or vice versa)
 
-This exact category of bug has a long, real history — see [The Proper-Noun-Pair Saga](The-Proper-Noun-Pair-Saga) for the full account of four sequential bugs found in this specific logic. If you're seeing a fifth, it's worth checking whether your query combines a protected pair with adjacent real content in a way the existing fixes don't account for — that's exactly the shape the fourth bug took.
+This exact category of bug has a long, real history — see [The Proper-Noun-Pair Saga](The-Proper-Noun-Pair-Saga) for the full account of five sequential bugs found in this specific logic, including one found via a deliberate code-reading investigation rather than a failing test. If you're seeing a sixth, it's worth checking whether your query combines a protected pair with adjacent real content in a way the existing fixes don't account for, or whether a different always-capitalized word (beyond the pronoun "I," already excluded) is producing a similar false positive.
 
 ## A conditional question ("if X, Y") didn't get the expected framing
 

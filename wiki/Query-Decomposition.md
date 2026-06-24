@@ -2,7 +2,7 @@
 
 Decomposition is what lets Mnemolis answer a single, casually-phrased compound question — *"what's the weather and are the lights on"* — by splitting it into independent sub-queries, routing each one separately, and merging the results back into one response. It runs once, on the full original query, before any per-sub-query [Routing](Routing) happens.
 
-This page covers the splitting logic in detail, including four real bugs found and fixed in the part of it that protects proper-noun pairs from being split apart — the single most-revised piece of logic in this project's history. The full narrative, in the order the bugs were actually found, is in [The Proper-Noun-Pair Saga](The-Proper-Noun-Pair-Saga); this page covers the mechanism as it stands today.
+This page covers the splitting logic in detail, including five real bugs found and fixed in the part of it that protects proper-noun pairs from being split apart — the single most-revised piece of logic in this project's history. The full narrative, in the order the bugs were actually found, is in [The Proper-Noun-Pair Saga](The-Proper-Noun-Pair-Saga); this page covers the mechanism as it stands today.
 
 ## The splitting mechanism
 
@@ -57,7 +57,7 @@ Not every `" and "` is a conjunction joining two intents. Three separate guards 
    └─────────────────────────────────────┘
 ```
 
-That middle layer — "per-occurrence, not global" — is doing a lot of work, and it's exactly where three of the four real bugs lived. An earlier version's guard was a global veto: finding *any* proper-noun pair anywhere in the query canceled splitting entirely, which meant *"check the weather, and Iran and Israel news, and is the door locked"* lost its other two genuine intents just because one harmless pair happened to be present somewhere in the sentence. The current guard checks each conjunction occurrence independently, protecting only the specific pair it found while leaving every other real split point alone.
+That middle layer — "per-occurrence, not global" — is doing a lot of work, and it's exactly where three of the five real bugs lived (the global-veto bug and its own fix's follow-up bug, specifically — the other two live elsewhere in the same guard). An earlier version's guard was a global veto: finding *any* proper-noun pair anywhere in the query canceled splitting entirely, which meant *"check the weather, and Iran and Israel news, and is the door locked"* lost its other two genuine intents just because one harmless pair happened to be present somewhere in the sentence. The current guard checks each conjunction occurrence independently, protecting only the specific pair it found while leaving every other real split point alone.
 
 ## Colloquial phrasing
 

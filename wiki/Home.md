@@ -12,6 +12,7 @@ This wiki holds the deep-dive material that doesn't belong in the [README](https
 - **[First-Time Setup](First-Time-Setup)** — full stack vs. Mnemolis-only install paths, the actual order of operations, and the things that bite people on a first install
 - **[Configuration Reference](Configuration-Reference)** — every environment variable, grouped by what it actually controls, with the reasoning behind each default, including optional API key authentication
 - **[Home Assistant Integration](Home-Assistant-Integration)** — token setup, the analytical queries the `ha` source handles beyond HA's own built-in intents, and how it participates in fusion
+- **[Known Limitations](Known-Limitations)** — a single, honest list of what Mnemolis doesn't do well, written for evaluating fit before diving into mechanism pages
 - **[Troubleshooting](Troubleshooting)** — the real problems found and fixed this project's life, indexed by symptom (start here if something's broken)
 
 ## Core Concepts
@@ -47,7 +48,7 @@ This wiki holds the deep-dive material that doesn't belong in the [README](https
 
 These pages exist because the lessons are genuinely worth keeping, not just because something broke once. Each one is a real investigation — root cause traced, fix verified against production data, sometimes with a second bug found in the first fix.
 
-- **[The Proper-Noun-Pair Saga](The-Proper-Noun-Pair-Saga)** — four distinct, sequential bugs in one piece of logic protecting "Iran and Israel" style phrases from incorrect splitting
+- **[The Proper-Noun-Pair Saga](The-Proper-Noun-Pair-Saga)** — five distinct bugs in one piece of logic protecting "Iran and Israel" style phrases from incorrect splitting
 - **[The Discourse-Framing Investigation](The-Discourse-Framing-Investigation)** — why "everyone's obsessed with X" queries routed past Kiwix, and why the fix needed two separate parts
 - **[The SearXNG Timeout Lesson](The-SearXNG-Timeout-Lesson)** — a correctly-edited config file that silently didn't take effect, and how `/health` caught it
 - **[The Recursion Design Bug](The-Recursion-Design-Bug)** — how an over-cautious depth counter in conditional detection blocked its own necessary logic, and the simpler design that replaced it
