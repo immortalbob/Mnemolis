@@ -4,6 +4,27 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.27.0]
+
+### Investigation Note
+A twelfth complexity-investigation pass this release cycle, applied to `app/sources/home_assistant.py`'s `_matches_filter()` (D, 24) — the actual entity-matching engine `search()` relies on, never read carefully on its own despite a real bug already found and fixed nearby in 3.22.0 (the area-filtered branch not calling this function correctly at all). Reading it fresh this time surfaced something different: not a missing call, but a genuinely dead feature flag.
+
+### Removed — Dead `strict` Mode, Never Actually Implemented
+A comment above `_matches_filter()`'s strict-mode branch claimed: *"only match domain OR device_class, not entity keywords bleeding in."* In practice, the strict and non-strict code branches checked the exact same four conditions in the exact same order, both falling through to the same final `return False` — genuinely, byte-for-byte behaviorally identical. Verified comprehensively before concluding this, not just from a quick read: a sweep across all 13 real `_QUERY_MAP` entries that set `strict: True`, tested against 9 varied synthetic entities (117 total combinations), found **zero** behavioral differences anywhere. The flag had been carried through `_build_filter()`'s merge logic and 13 separate `_QUERY_MAP` entries this whole time without ever actually changing what got matched.
+
+Removed entirely: from `_matches_filter()`'s filter-spec handling, from `_build_filter()`'s merge logic, and from every `_QUERY_MAP` entry that set it.
+
+**A real, pre-existing test quality issue was found and fixed along the way.** Two existing tests (`test_strict_mode_blocks_entity_keyword_bleed`, `test_strict_mode_allows_domain_match`) claimed to verify strict mode's behavior — but both constructed filters with no `entity_keywords` set at all, meaning there was nothing for entity_keywords to "bleed" from regardless of the strict flag's value. Both tests had been passing for the wrong reason since they were written: the scenario they constructed never actually exercised the behavior their names claimed to test. Replaced with a test that documents the real finding directly, including why those two prior tests never could have caught this.
+
+### Changed
+- `_matches_filter`: D(24) → C(15) — a substantial, genuine reduction from removing real dead branching, not just code reorganization
+- `_build_filter`: B(8) → B(7)
+- Version bumped to 3.27.0
+
+**Total test count: 929** (net -1: two misleading pre-existing tests removed, one new, accurate regression test added in their place)
+
+---
+
 ## [3.26.0]
 
 ### Investigation Note

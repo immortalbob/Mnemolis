@@ -638,7 +638,7 @@ class TestMatchesFilter:
         base = {
             "domains": set(), "device_classes": set(), "entity_keywords": set(),
             "exclude_entity_keywords": set(), "event_keywords": set(),
-            "state_filter": None, "strict": False, "include_motion": False,
+            "state_filter": None, "include_motion": False,
         }
         base.update(kwargs)
         return base
@@ -685,17 +685,41 @@ class TestMatchesFilter:
         f = self._filter(device_classes={"temperature"}, exclude_entity_keywords={"cotech"})
         assert _matches_filter(entity, f) is False
 
-    def test_strict_mode_blocks_entity_keyword_bleed(self):
-        from app.sources.home_assistant import _matches_filter
-        # In strict mode, entity_keywords must explicitly match — domain/dc alone still works
-        entity = self._entity("switch.random_thing")
-        f = self._filter(strict=True, domains={"light"})
-        assert _matches_filter(entity, f) is False
+    def test_strict_parameter_removed_after_being_found_dead(self):
+        """Regression test documenting a real finding from a deliberate
+        complexity-investigation pass: `_matches_filter()` used to take
+        a `strict` flag in its filter spec, with a comment claiming
+        strict mode should "only match domain OR device_class, not
+        entity keywords bleeding in." In practice, the strict and
+        non-strict code branches were byte-for-byte behaviorally
+        identical — verified with a comprehensive sweep across all 13
+        real `_QUERY_MAP` entries that set `strict: True` and 9 varied
+        test entities (117 combinations), finding zero behavioral
+        differences anywhere. Removed entirely — both from
+        `_matches_filter()`'s filter-spec handling and from every
+        `_QUERY_MAP` entry that set it, since the flag carried no actual
+        meaning.
 
-    def test_strict_mode_allows_domain_match(self):
+        Two PRE-EXISTING tests (test_strict_mode_blocks_entity_keyword_bleed,
+        test_strict_mode_allows_domain_match) claimed to verify strict
+        mode's behavior but never actually could have — both constructed
+        filters with NO entity_keywords set at all, meaning there was
+        nothing for entity_keywords to "bleed" from regardless of the
+        strict flag's value. Both tests passed before this change for
+        the wrong reason (the scenario they tested never exercised the
+        claimed behavior) and continue to pass after this change for
+        the right reason (the filter dict no longer has a strict key at
+        all, and `_matches_filter()` correctly ignores any extra keys a
+        caller's dict might still contain)."""
         from app.sources.home_assistant import _matches_filter
         entity = self._entity("light.bedroom")
-        f = self._filter(strict=True, domains={"light"})
+        # A filter dict with no "strict" key at all — confirms
+        # _matches_filter() doesn't require the key to be present
+        f = {
+            "domains": {"light"}, "device_classes": set(), "entity_keywords": set(),
+            "exclude_entity_keywords": set(), "event_keywords": set(),
+            "state_filter": None, "include_motion": False,
+        }
         assert _matches_filter(entity, f) is True
 
     def test_event_domain_matches_by_keyword(self):

@@ -51,18 +51,18 @@ _QUERY_MAP: dict[str, dict] = {
     "locked": {"domains": ["lock"], "device_classes": ["door"]},
     "door": {"domains": ["lock"], "device_classes": ["door"]},
     "secure": {"domains": ["lock"], "device_classes": ["door"]},
-    "security status": {"domains": ["lock"], "device_classes": ["door", "motion", "occupancy"], "strict": True, "include_motion": True},
-    "security": {"domains": ["lock"], "device_classes": ["door", "motion", "occupancy"], "strict": True},
+    "security status": {"domains": ["lock"], "device_classes": ["door", "motion", "occupancy"], "include_motion": True},
+    "security": {"domains": ["lock"], "device_classes": ["door", "motion", "occupancy"]},
     # Motion
     "motion": {"domains": ["event"], "event_keywords": ["motion"]},
     "camera": {"domains": ["event"], "event_keywords": ["motion"]},
     "activity": {"domains": ["event"], "event_keywords": ["motion"]},
     # Battery
-    "battery": {"device_classes": ["battery"], "strict": True},
-    "charging": {"device_classes": ["battery"], "strict": True},
-    "low battery": {"device_classes": ["battery"], "strict": True},
-    "battery levels": {"device_classes": ["battery"], "strict": True},
-    "battery status": {"device_classes": ["battery"], "strict": True},
+    "battery": {"device_classes": ["battery"]},
+    "charging": {"device_classes": ["battery"]},
+    "low battery": {"device_classes": ["battery"]},
+    "battery levels": {"device_classes": ["battery"]},
+    "battery status": {"device_classes": ["battery"]},
     # Environmental — indoor only
     "temperature": {"device_classes": ["temperature"], "exclude_entity_keywords": ["cotech", "processor", "esp32", "va_temperature"]},
     "temp": {"device_classes": ["temperature"], "exclude_entity_keywords": ["cotech", "processor", "esp32", "va_temperature"]},
@@ -73,19 +73,19 @@ _QUERY_MAP: dict[str, dict] = {
     "air": {"device_classes": ["carbon_dioxide", "humidity", "temperature"], "exclude_entity_keywords": ["cotech", "processor", "esp32", "va_temperature"]},
     "indoor": {"device_classes": ["carbon_dioxide", "humidity", "temperature"], "exclude_entity_keywords": ["cotech", "processor", "esp32", "va_temperature"]},
     # Outdoor / weather station
-    "outdoor conditions": {"entity_keywords": ["cotech"], "strict": True},
-    "outside conditions": {"entity_keywords": ["cotech"], "strict": True},
+    "outdoor conditions": {"entity_keywords": ["cotech"]},
+    "outside conditions": {"entity_keywords": ["cotech"]},
     "outdoor": {"entity_keywords": ["cotech"]},
     "outside": {"entity_keywords": ["cotech"]},
     "weather station": {"entity_keywords": ["cotech"]},
     "wind": {"entity_keywords": ["wind"]},
     "rain": {"entity_keywords": ["rain"]},
     # Power
-    "power": {"entity_keywords": ["consumption"], "strict": True},
-    "consumption": {"entity_keywords": ["consumption"], "strict": True},
-    "energy": {"device_classes": ["energy", "power"], "strict": True},
+    "power": {"entity_keywords": ["consumption"]},
+    "consumption": {"entity_keywords": ["consumption"]},
+    "energy": {"device_classes": ["energy", "power"]},
     # House summary
-    "status": {"domains": ["light", "lock"], "device_classes": ["door", "battery", "motion"], "strict": True},
+    "status": {"domains": ["light", "lock"], "device_classes": ["door", "battery", "motion"]},
     "summary": {"domains": ["light", "lock"], "device_classes": ["door", "battery", "carbon_dioxide", "humidity", "temperature"], "exclude_entity_keywords": ["cotech", "processor", "esp32", "va_temperature"], "include_motion": True},
     "house": {"domains": ["light", "lock"], "device_classes": ["door", "battery", "carbon_dioxide", "humidity", "temperature"], "exclude_entity_keywords": ["cotech", "processor", "esp32", "va_temperature"], "include_motion": True},
     "home": {"domains": ["light", "lock"], "device_classes": ["door", "battery", "carbon_dioxide", "humidity", "temperature"], "exclude_entity_keywords": ["cotech", "processor", "esp32", "va_temperature"], "include_motion": True},
@@ -288,7 +288,6 @@ def _build_filter(query: str) -> dict:
     event_keywords = set()
     exclude_entity_keywords = set()
     state_filter = None
-    strict = False
     include_motion = False
 
     # Match longest phrases first to avoid partial matches
@@ -312,8 +311,6 @@ def _build_filter(query: str) -> dict:
         exclude_entity_keywords.update(spec.get("exclude_entity_keywords", []))
         if spec.get("state_filter"):
             state_filter = spec["state_filter"]
-        if spec.get("strict"):
-            strict = True
         if spec.get("include_motion"):
             include_motion = True
         matched_any = True
@@ -329,7 +326,6 @@ def _build_filter(query: str) -> dict:
         "event_keywords": event_keywords,
         "exclude_entity_keywords": exclude_entity_keywords,
         "state_filter": state_filter,
-        "strict": strict,
         "include_motion": include_motion,
     }
 
@@ -350,18 +346,6 @@ def _matches_filter(entity: dict, f: dict) -> bool:
 
     # Exclude entity keywords (indoor sensors should exclude cotech etc)
     if f["exclude_entity_keywords"] and any(kw in entity_id for kw in f["exclude_entity_keywords"]):
-        return False
-
-    # Strict mode — only match domain OR device_class, not entity keywords bleeding in
-    if f["strict"]:
-        if domain == "event" and f["event_keywords"]:
-            return any(kw in entity_id for kw in f["event_keywords"])
-        if f["entity_keywords"] and any(kw in entity_id for kw in f["entity_keywords"]):
-            return True
-        if domain in f["domains"]:
-            return True
-        if dc in f["device_classes"]:
-            return True
         return False
 
     # Event domain — match by entity name keywords
