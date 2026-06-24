@@ -4,6 +4,29 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.46.2]
+
+### Fixed — Adversarial Self-Testing: Real Flag-Visibility Gap
+Code review (not a reported failure) caught a real, meaningful gap the previous design had explicitly documented as deliberate: `last_flagged_reason` got overwritten to `NULL` whenever the same fingerprint happened to be re-rolled and ran clean, and since the dedup logic only checked "have I seen this at all" (not "was it flagged"), a previously-flagged combination could silently vanish from `GET /adversarial/flagged` with no human ever reviewing or dismissing it — a real risk specifically for intermittent anomalies (a flaky latency outlier, a transient bug that doesn't reproduce on every run).
+
+"Currently flagged" and "ever flagged" are now genuinely separate, tracked facts. New columns: `ever_flagged` (sticky, never auto-resets), `first_flagged_reason`/`first_flagged_timestamp` (the original anomaly, preserved across any number of later clean runs), `review_status`. `GET /adversarial/flagged` now returns the union of currently-flagged and ever-flagged-but-not-dismissed rows by default, with `currently_flagged` exposed explicitly so a human can still tell "still broken right now" apart from "flagged once, currently clean, still needs a look." New endpoint: `POST /adversarial/dismiss?fingerprint=...` — the actual human action that closes a review out; history is never deleted, and a genuinely new flag on a previously-dismissed fingerprint correctly resurfaces it.
+
+A real schema migration handles every already-deployed 3.46.x database (including the live one on MiniDock, two real days of history) — `init_adversarial_db()` adds the four new columns via guarded `ALTER TABLE` and backfills `ever_flagged`/`first_flagged_*` for any row already flagged before this fix shipped, so no history is lost on upgrade.
+
+Writing this fix surfaced two more real bugs in its own first draft, both caught by failing tests rather than found by inspection: a migration-ordering bug (an index was created on the new `ever_flagged` column before the column itself existed on a pre-existing table, raising `no such column: ever_flagged` on every real already-deployed database — the migration order was corrected), and a missing `review_status` reset (a dismissed combination that got a genuinely new, different flag later stayed permanently invisible, since nothing cleared the earlier dismissal — `_record_result()` now clears `review_status` back to `NULL` specifically when a new flag fires on an already-flagged row).
+
+### Fixed — Two Smaller Issues From the Same Review
+- A dead code comment referencing `expand_seed_vocabulary()` — a function that doesn't exist anywhere in the codebase. Corrected to clearly state this is a not-yet-built follow-up, not something already wired in.
+- A factually wrong wiki claim: the "part-count mismatch under fallback" known limitation stated a header-less fallback result "always reads as 1 header." Traced directly against `_HEADER_PATTERN`: a header-less string produces zero matches, not one, and `_check_multi_intent_part_count`'s own `n_headers > 0` guard already excludes that case correctly. There was no real limitation here — the claim has been removed from the wiki rather than corrected to a different wrong one, with two new regression tests locking in the correct behavior (including the real, narrower case — a genuine partial fallback with at least one header present — that DOES still correctly flag).
+
+### Changed
+- Version bumped to 3.46.2
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) rewritten to document the actual fixed flag-tracking design and the new endpoint, with the corrected known-limitations section
+
+**Total test count: 1076**
+
+---
+
 ## [3.46.1]
 
 ### Added — Adversarial Self-Testing: Real On/Off Switch and Tunable Thresholds

@@ -74,7 +74,11 @@ def init_adversarial_db():
                 last_source_used TEXT,
                 last_latency_ms INTEGER,
                 last_flagged_reason TEXT,
-                last_run_timestamp TEXT NOT NULL
+                last_run_timestamp TEXT NOT NULL,
+                ever_flagged INTEGER NOT NULL DEFAULT 0,
+                first_flagged_reason TEXT,
+                first_flagged_timestamp TEXT,
+                review_status TEXT
             )
         """)
         con.execute("""
@@ -82,6 +86,59 @@ def init_adversarial_db():
                 ON adversarial_combinations (last_flagged_reason)
                 WHERE last_flagged_reason IS NOT NULL
         """)
+
+        # Schema migration for databases created before ever_flagged
+        # tracking existed (every real deployment running 3.46.x before
+        # this fix, including the live one on MiniDock with two real
+        # days of history already in it) — CREATE TABLE IF NOT EXISTS
+        # above is a no-op on an existing table, so the four new
+        # columns need to be added explicitly to any table that
+        # predates them. Each ALTER is independently guarded since
+        # SQLite has no "ADD COLUMN IF NOT EXISTS" — only run the ALTER
+        # for a column genuinely missing from THIS table, never for a
+        # fresh table the CREATE TABLE above already covered.
+        #
+        # MUST run before the ever_flagged index below — found via a
+        # real failing test: creating an index on a column before an
+        # old-schema table has had that column added via ALTER raises
+        # "no such column: ever_flagged", since CREATE TABLE IF NOT
+        # EXISTS is correctly a no-op on a pre-existing table and never
+        # retroactively adds the new columns by itself.
+        existing_columns = {row[1] for row in con.execute("PRAGMA table_info(adversarial_combinations)").fetchall()}
+        migrations = [
+            ("ever_flagged", "ALTER TABLE adversarial_combinations ADD COLUMN ever_flagged INTEGER NOT NULL DEFAULT 0"),
+            ("first_flagged_reason", "ALTER TABLE adversarial_combinations ADD COLUMN first_flagged_reason TEXT"),
+            ("first_flagged_timestamp", "ALTER TABLE adversarial_combinations ADD COLUMN first_flagged_timestamp TEXT"),
+            ("review_status", "ALTER TABLE adversarial_combinations ADD COLUMN review_status TEXT"),
+        ]
+        for column_name, ddl in migrations:
+            if column_name not in existing_columns:
+                con.execute(ddl)
+
+        # Now safe to index ever_flagged — guaranteed to exist on every
+        # table at this point, whether freshly created above or just
+        # migrated by the loop immediately preceding this.
+        con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_adversarial_ever_flagged
+                ON adversarial_combinations (ever_flagged)
+                WHERE ever_flagged = 1
+        """)
+
+        # Backfill ever_flagged for any pre-existing row that already
+        # has a last_flagged_reason from before this migration ran —
+        # without this, a row flagged yesterday (before this fix
+        # shipped) that happens to come back clean on its very next
+        # run today would still vanish from history, the exact gap
+        # this fix exists to close. Only backfills rows where
+        # ever_flagged is still the freshly-migrated default of 0.
+        con.execute("""
+            UPDATE adversarial_combinations
+            SET ever_flagged = 1,
+                first_flagged_reason = last_flagged_reason,
+                first_flagged_timestamp = last_run_timestamp
+            WHERE last_flagged_reason IS NOT NULL AND ever_flagged = 0
+        """)
+
         con.commit()
         con.close()
         _LOGGER.info("Adversarial testing DB initialized")
@@ -92,9 +149,12 @@ def init_adversarial_db():
 # ---------------------------------------------------------------------------
 # Seed vocabulary — section 4.3's "generate a resource once, reuse many
 # times" LLM-use boundary. These are hardcoded starting points; periodic
-# (weekly, not per-cycle) LLM-assisted expansion of these specific lists is
-# the one place an LLM call is worth its cost for this feature — see
-# expand_seed_vocabulary() below. Nothing here is itself an LLM call.
+# (weekly, not per-cycle) LLM-assisted expansion of these specific lists
+# would be the one place an LLM call is worth its cost for this feature —
+# NOT YET BUILT. No expand_seed_vocabulary() function exists anywhere in
+# this module; the seed lists below are currently expanded by hand only.
+# See the wiki's Adversarial Self-Testing page for this as a documented,
+# deliberate follow-up, not something already wired in here.
 # ---------------------------------------------------------------------------
 
 # Real proper-noun pairs — the exact one that found bug 5, plus other
@@ -530,45 +590,114 @@ def _record_result(
 ):
     """Upsert one combination's result. INSERT on first sighting, UPDATE
     (incrementing times_generated, overwriting the 'last_*' columns) on
-    every subsequent sighting of the same fingerprint — per section 8's
-    answer to open question 4, flagged reasons are never auto-cleared by
-    a later clean run; a NEW clean run simply overwrites last_flagged_reason
-    to NULL only if this run found nothing, which IS the literal behavior
-    the design doc's open question leaves as a deliberate, documented
-    choice in the opposite direction (no auto-resolve) — so a flag here is
-    intentionally sticky only at the human-review layer (GET
-    /adversarial/flagged should be reviewed/dismissed by a person), not
-    artificially preserved by withholding the latest factual result.
+    every subsequent sighting of the same fingerprint.
+
+    last_flagged_reason still gets overwritten to NULL on a clean run,
+    same as before — GET /adversarial/flagged's "currently flagged"
+    view should reflect the most recent real result, not an artificially
+    preserved stale flag. But a fingerprint that has EVER been flagged,
+    even once, now stays marked via ever_flagged (sticky — never reset
+    back to 0) with the ORIGINAL anomaly preserved in
+    first_flagged_reason/first_flagged_timestamp, regardless of how many
+    later clean runs overwrite the last_* columns.
+
+    Fixes a real gap a reviewer caught: the previous version only ever
+    tracked "currently flagged," so an intermittent anomaly (a flaky
+    latency outlier, a transient bug that doesn't reproduce on every
+    run) could be flagged once, then silently vanish from
+    /adversarial/flagged the moment the same fingerprint happened to be
+    re-rolled and came back clean — with no human ever having reviewed
+    or dismissed it. "Currently flagged" and "ever flagged" are now
+    genuinely separate, queryable facts; GET /adversarial/flagged
+    defaults to showing the union of both (see get_flagged_combinations)
+    rather than only the narrower, disappearing "currently flagged" set.
     """
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         con = _connect(ADVERSARIAL_DB)
         existing = con.execute(
-            "SELECT times_generated FROM adversarial_combinations WHERE fingerprint = ?",
+            "SELECT times_generated, ever_flagged FROM adversarial_combinations WHERE fingerprint = ?",
             (fingerprint_json,)
         ).fetchone()
         if existing is None:
+            ever_flagged = 1 if flagged_reason else 0
             con.execute(
                 """INSERT INTO adversarial_combinations
                    (fingerprint, recipe_name, first_seen_timestamp, times_generated,
                     last_query_text, last_source_used, last_latency_ms,
-                    last_flagged_reason, last_run_timestamp)
-                   VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)""",
+                    last_flagged_reason, last_run_timestamp,
+                    ever_flagged, first_flagged_reason, first_flagged_timestamp)
+                   VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (fingerprint_json, recipe_name, now, query, source_used, latency_ms,
-                 flagged_reason, now)
+                 flagged_reason, now,
+                 ever_flagged, flagged_reason if ever_flagged else None, now if ever_flagged else None)
             )
         else:
-            con.execute(
-                """UPDATE adversarial_combinations
-                   SET times_generated = times_generated + 1,
-                       last_query_text = ?,
-                       last_source_used = ?,
-                       last_latency_ms = ?,
-                       last_flagged_reason = ?,
-                       last_run_timestamp = ?
-                   WHERE fingerprint = ?""",
-                (query, source_used, latency_ms, flagged_reason, now, fingerprint_json)
-            )
+            already_ever_flagged = bool(existing[1])
+            if flagged_reason and not already_ever_flagged:
+                # First time this specific fingerprint has ever been
+                # flagged — record the original anomaly permanently.
+                con.execute(
+                    """UPDATE adversarial_combinations
+                       SET times_generated = times_generated + 1,
+                           last_query_text = ?,
+                           last_source_used = ?,
+                           last_latency_ms = ?,
+                           last_flagged_reason = ?,
+                           last_run_timestamp = ?,
+                           ever_flagged = 1,
+                           first_flagged_reason = ?,
+                           first_flagged_timestamp = ?
+                       WHERE fingerprint = ?""",
+                    (query, source_used, latency_ms, flagged_reason, now,
+                     flagged_reason, now, fingerprint_json)
+                )
+            elif flagged_reason and already_ever_flagged:
+                # A NEW flag firing on a fingerprint that's been flagged
+                # before — including one a human already dismissed.
+                # Clears review_status back to NULL so it resurfaces in
+                # get_flagged_combinations()'s default view: a fresh
+                # anomaly is a new event genuinely worth a fresh look,
+                # not something an earlier, unrelated dismissal should
+                # keep permanently suppressed.
+                #
+                # Found via a real failing test, not written defensively
+                # up front: the first version of this function only ever
+                # SET review_status via dismiss_flagged_combination(),
+                # and nothing anywhere ever cleared it back — so a
+                # dismissed-then-reflagged combination stayed invisible
+                # forever, the opposite of the intended behavior. The
+                # first_flagged_* columns are still deliberately left
+                # untouched here — those preserve the ORIGINAL anomaly,
+                # not the newest one.
+                con.execute(
+                    """UPDATE adversarial_combinations
+                       SET times_generated = times_generated + 1,
+                           last_query_text = ?,
+                           last_source_used = ?,
+                           last_latency_ms = ?,
+                           last_flagged_reason = ?,
+                           last_run_timestamp = ?,
+                           review_status = NULL
+                       WHERE fingerprint = ?""",
+                    (query, source_used, latency_ms, flagged_reason, now, fingerprint_json)
+                )
+            else:
+                # A clean run — whether on a never-flagged combination
+                # or one with flag history. review_status is left
+                # completely untouched here: a clean result is not a
+                # reason to un-dismiss something a human already closed.
+                con.execute(
+                    """UPDATE adversarial_combinations
+                       SET times_generated = times_generated + 1,
+                           last_query_text = ?,
+                           last_source_used = ?,
+                           last_latency_ms = ?,
+                           last_flagged_reason = ?,
+                           last_run_timestamp = ?
+                       WHERE fingerprint = ?""",
+                    (query, source_used, latency_ms, flagged_reason, now, fingerprint_json)
+                )
         con.commit()
         con.close()
     except Exception as e:
@@ -656,8 +785,14 @@ def get_adversarial_test_summary() -> dict:
     try:
         con = _connect(ADVERSARIAL_DB)
         total_row = con.execute("SELECT COUNT(*) FROM adversarial_combinations").fetchone()
+        # Matches get_flagged_combinations()'s default (include_dismissed=
+        # False) definition exactly — the count here and the actual rows
+        # returned by GET /adversarial/flagged must never silently
+        # disagree about what "flagged for review" means.
         flagged_row = con.execute(
-            "SELECT COUNT(*) FROM adversarial_combinations WHERE last_flagged_reason IS NOT NULL"
+            "SELECT COUNT(*) FROM adversarial_combinations "
+            "WHERE (last_flagged_reason IS NOT NULL OR ever_flagged = 1) "
+            "AND (review_status IS NULL OR review_status != 'dismissed')"
         ).fetchone()
         last_run_row = con.execute(
             "SELECT MAX(last_run_timestamp) FROM adversarial_combinations"
@@ -698,18 +833,44 @@ def get_adversarial_test_summary() -> dict:
     }
 
 
-def get_flagged_combinations(limit: int = 50) -> list[dict]:
-    """Return flagged rows for GET /adversarial/flagged — the literal
-    'logs results for periodic review' mechanism the roadmap entry called
-    for, now with a real, specific, queryable home."""
+def get_flagged_combinations(limit: int = 50, include_dismissed: bool = False) -> list[dict]:
+    """Return rows for GET /adversarial/flagged for human review.
+
+    Returns the UNION of "currently flagged" (last_flagged_reason IS NOT
+    NULL) and "ever flagged, not yet dismissed" (ever_flagged = 1 AND
+    review_status IS NOT 'dismissed') — not just the narrower "currently
+    flagged" set a previous version of this function used.
+
+    Fixes a real gap a reviewer caught: under the old query, a
+    fingerprint flagged once for an intermittent anomaly (a flaky
+    latency outlier, a transient bug) would silently vanish from this
+    endpoint the moment it happened to be re-rolled and came back clean
+    — with no human ever having reviewed or dismissed it. A row now only
+    leaves this list once a human explicitly dismisses it via
+    dismiss_flagged_combination(), regardless of how many later clean
+    runs overwrite last_flagged_reason back to NULL.
+
+    Set include_dismissed=True to also see rows a human has already
+    reviewed and closed out — useful for an audit trail, not the
+    default working view.
+    """
     try:
         con = _connect(ADVERSARIAL_DB)
+        if include_dismissed:
+            where_clause = "WHERE last_flagged_reason IS NOT NULL OR ever_flagged = 1"
+        else:
+            where_clause = (
+                "WHERE (last_flagged_reason IS NOT NULL OR ever_flagged = 1) "
+                "AND (review_status IS NULL OR review_status != 'dismissed')"
+            )
         rows = con.execute(
-            """SELECT fingerprint, recipe_name, first_seen_timestamp, times_generated,
+            f"""SELECT fingerprint, recipe_name, first_seen_timestamp, times_generated,
                       last_query_text, last_source_used, last_latency_ms,
-                      last_flagged_reason, last_run_timestamp
+                      last_flagged_reason, last_run_timestamp,
+                      ever_flagged, first_flagged_reason, first_flagged_timestamp,
+                      review_status
                FROM adversarial_combinations
-               WHERE last_flagged_reason IS NOT NULL
+               {where_clause}
                ORDER BY last_run_timestamp DESC
                LIMIT ?""",
             (limit,)
@@ -723,5 +884,43 @@ def get_flagged_combinations(limit: int = 50) -> list[dict]:
         "fingerprint", "recipe_name", "first_seen_timestamp", "times_generated",
         "last_query_text", "last_source_used", "last_latency_ms",
         "last_flagged_reason", "last_run_timestamp",
+        "ever_flagged", "first_flagged_reason", "first_flagged_timestamp",
+        "review_status",
     ]
-    return [dict(zip(columns, row)) for row in rows]
+    results = [dict(zip(columns, row)) for row in rows]
+    for r in results:
+        r["ever_flagged"] = bool(r["ever_flagged"])
+        # currently_flagged is the same condition the OLD version of
+        # this function used as its only filter — kept as an explicit
+        # field so a caller can still distinguish "actively anomalous
+        # right now" from "has a history but currently clean."
+        r["currently_flagged"] = r["last_flagged_reason"] is not None
+    return results
+
+
+def dismiss_flagged_combination(fingerprint: str) -> bool:
+    """Mark a fingerprint as reviewed and dismissed by a human — the
+    real action that actually closes the loop the ever_flagged tracking
+    exists to support. Returns True if a matching row was found and
+    updated, False otherwise (unknown fingerprint, or a DB error).
+
+    Deliberately does NOT clear ever_flagged or first_flagged_* — the
+    historical fact that this combination was once flagged should
+    survive a dismissal, for the same reason court records aren't
+    deleted when a case is closed. review_status is the layer that
+    actually controls visibility in get_flagged_combinations()'s
+    default view, not the underlying history.
+    """
+    try:
+        con = _connect(ADVERSARIAL_DB)
+        cursor = con.execute(
+            "UPDATE adversarial_combinations SET review_status = 'dismissed' WHERE fingerprint = ?",
+            (fingerprint,)
+        )
+        con.commit()
+        updated = cursor.rowcount > 0
+        con.close()
+        return updated
+    except Exception as e:
+        _LOGGER.warning("Could not dismiss flagged combination %r: %s", fingerprint, e)
+        return False

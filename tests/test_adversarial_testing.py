@@ -33,6 +33,7 @@ from app.adversarial_testing import (
     run_adversarial_test_cycle,
     get_adversarial_test_summary,
     get_flagged_combinations,
+    dismiss_flagged_combination,
 )
 
 
@@ -245,6 +246,30 @@ class TestAnomalyDetection:
         result = "[KIWIX — A] x\n[WEB — B] y\n[NEWS — C] z"  # 3 headers for 3 intents
         reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news"], result)
         assert reason is None
+
+    def test_check_multi_intent_part_count_never_flags_header_less_fallback(self):
+        """Regression test for a real wiki inaccuracy a reviewer caught:
+        the wiki previously claimed a header-less fallback result
+        "always reads as 1 header" and listed that as a known
+        limitation. Traced directly: _HEADER_PATTERN finds ZERO matches
+        in a plain, header-less fallback string, not one — and the
+        n_headers > 0 guard below already excludes this case correctly.
+        There was never a real limitation here; this test locks in the
+        correct behavior so the wiki and code can't drift apart on this
+        point again."""
+        result = "No results found."  # genuinely zero headers, not one
+        reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news", "uptime"], result)
+        assert reason is None
+
+    def test_check_multi_intent_part_count_flags_genuine_partial_fallback(self):
+        """The real, narrower case that DOES legitimately deserve a flag:
+        one source resolved with a real header, the rest fell back to
+        plain header-less text — only 1 of 4 intended sources is even
+        visible in the result, which is exactly the kind of discrepancy
+        a human should look at."""
+        result = "[KIWIX — TOPIC] some real content\nplain web fallback text, no header here"
+        reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news", "uptime"], result)
+        assert reason is not None
 
     def test_check_multi_intent_part_count_only_applies_to_its_own_recipe(self):
         result = "[KIWIX — TOPIC] some content"
@@ -496,6 +521,214 @@ class TestHealthSummaryAndFlaggedEndpointData:
             assert flagged[0]["last_query_text"] == "bad query"
             assert flagged[0]["last_flagged_reason"] == "crash: boom"
 
+    def test_regression_intermittent_flag_does_not_silently_vanish_on_clean_reroll(self, tmp_path):
+        """The exact bug a reviewer caught: a fingerprint flagged once
+        for an intermittent anomaly must NOT disappear from
+        get_flagged_combinations() just because the same fingerprint
+        happened to be re-rolled and came back clean on a later run.
+        This test would have FAILED against the pre-fix version of
+        get_flagged_combinations(), which only checked
+        last_flagged_reason IS NOT NULL."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            fp = json.dumps(["flaky-fingerprint"])
+            # First run: a real, intermittent anomaly fires.
+            _record_result(fp, "multi_intent_chain", "first run query", "kiwix", 100, "latency_outlier: flaky")
+            flagged_after_flag = get_flagged_combinations()
+            assert len(flagged_after_flag) == 1
+
+            # Second run, SAME fingerprint: comes back clean (the
+            # intermittent issue didn't reproduce this time).
+            _record_result(fp, "multi_intent_chain", "second run query", "kiwix", 100, None)
+            flagged_after_clean_reroll = get_flagged_combinations()
+
+            # The combination must still be visible — it has a real
+            # history of being flagged, even though it's currently clean.
+            assert len(flagged_after_clean_reroll) == 1
+            row = flagged_after_clean_reroll[0]
+            assert row["ever_flagged"] is True
+            assert row["currently_flagged"] is False  # accurately reflects the clean re-roll
+            assert row["first_flagged_reason"] == "latency_outlier: flaky"  # original anomaly preserved
+            assert row["last_flagged_reason"] is None  # most recent result, also accurately reflected
+            assert row["last_query_text"] == "second run query"  # last_* still updates normally
+
+    def test_first_flagged_fields_survive_multiple_later_clean_runs(self, tmp_path):
+        """The original anomaly must survive not just one but many
+        subsequent clean runs — first_flagged_* is write-once per
+        fingerprint, not just 'most recent flag'."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            fp = json.dumps(["repeat-clean-fingerprint"])
+            _record_result(fp, "multi_intent_chain", "q0", "kiwix", 100, "crash: original anomaly")
+            for i in range(5):
+                _record_result(fp, "multi_intent_chain", f"q{i+1}", "kiwix", 100, None)
+            flagged = get_flagged_combinations()
+            assert len(flagged) == 1
+            assert flagged[0]["first_flagged_reason"] == "crash: original anomaly"
+            assert flagged[0]["times_generated"] == 6
+
+    def test_first_flagged_fields_do_not_overwrite_on_a_second_different_flag(self, tmp_path):
+        """If a fingerprint is flagged again later for a DIFFERENT
+        reason, first_flagged_reason must still hold the ORIGINAL
+        anomaly, not the newest one — last_flagged_reason is the place
+        for the newest information."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            fp = json.dumps(["two-different-flags"])
+            _record_result(fp, "multi_intent_chain", "q0", "kiwix", 100, "crash: first anomaly")
+            _record_result(fp, "multi_intent_chain", "q1", "kiwix", 100, None)
+            _record_result(fp, "multi_intent_chain", "q2", "kiwix", 100, "unexpected_empty: second anomaly")
+            flagged = get_flagged_combinations()
+            assert len(flagged) == 1
+            assert flagged[0]["first_flagged_reason"] == "crash: first anomaly"
+            assert flagged[0]["last_flagged_reason"] == "unexpected_empty: second anomaly"
+
+    def test_currently_flagged_field_is_accurate_for_a_combination_never_flagged(self, tmp_path):
+        """A combination that has never once been flagged must not
+        appear in get_flagged_combinations() at all — the union only
+        adds rows with real flag history, it doesn't surface everything."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            _record_result(json.dumps(["always-clean"]), "no_intent_fallthrough", "clean query", "kiwix", 100, None)
+            flagged = get_flagged_combinations()
+            assert len(flagged) == 0
+
+    def test_dismiss_removes_combination_from_default_view(self, tmp_path):
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            fp = json.dumps(["to-be-dismissed"])
+            _record_result(fp, "no_intent_fallthrough", "bad query", "kiwix", 100, "crash: boom")
+            assert len(get_flagged_combinations()) == 1
+
+            dismissed = dismiss_flagged_combination(fp)
+            assert dismissed is True
+            assert len(get_flagged_combinations()) == 0
+
+    def test_dismiss_does_not_delete_history_visible_with_include_dismissed(self, tmp_path):
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            fp = json.dumps(["dismissed-but-preserved"])
+            _record_result(fp, "no_intent_fallthrough", "bad query", "kiwix", 100, "crash: boom")
+            dismiss_flagged_combination(fp)
+
+            assert len(get_flagged_combinations()) == 0
+            visible_with_history = get_flagged_combinations(include_dismissed=True)
+            assert len(visible_with_history) == 1
+            assert visible_with_history[0]["first_flagged_reason"] == "crash: boom"
+
+    def test_dismiss_unknown_fingerprint_returns_false(self, tmp_path):
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            result = dismiss_flagged_combination(json.dumps(["never-existed"]))
+            assert result is False
+
+    def test_a_new_flag_after_dismissal_resurfaces_in_default_view(self, tmp_path):
+        """A genuinely NEW anomaly on a previously-dismissed fingerprint
+        must reappear normally — dismissal isn't a permanent suppression
+        of all future flags on that combination, only a closing of the
+        specific earlier review."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            fp = json.dumps(["dismissed-then-reflagged"])
+            _record_result(fp, "no_intent_fallthrough", "q0", "kiwix", 100, "crash: first issue")
+            dismiss_flagged_combination(fp)
+            assert len(get_flagged_combinations()) == 0
+
+            # A genuinely new flag fires on a later run.
+            _record_result(fp, "no_intent_fallthrough", "q1", "kiwix", 100, "unexpected_empty: new issue")
+            flagged = get_flagged_combinations()
+            assert len(flagged) == 1
+            assert flagged[0]["last_flagged_reason"] == "unexpected_empty: new issue"
+
+    def test_health_summary_flagged_for_review_matches_endpoint_definition(self, tmp_path):
+        """The /health summary's flagged_for_review count must use the
+        exact same union-minus-dismissed definition as
+        get_flagged_combinations()'s default view — these two numbers
+        must never silently disagree."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            # One combination flagged then cleaned (still counts).
+            fp1 = json.dumps(["counted-1"])
+            _record_result(fp1, "no_intent_fallthrough", "q", "kiwix", 100, "crash: x")
+            _record_result(fp1, "no_intent_fallthrough", "q2", "kiwix", 100, None)
+            # One combination flagged and dismissed (should NOT count).
+            fp2 = json.dumps(["dismissed-2"])
+            _record_result(fp2, "no_intent_fallthrough", "q", "kiwix", 100, "crash: y")
+            dismiss_flagged_combination(fp2)
+            # One combination never flagged (should NOT count).
+            fp3 = json.dumps(["clean-3"])
+            _record_result(fp3, "no_intent_fallthrough", "q", "kiwix", 100, None)
+
+            summary = get_adversarial_test_summary()
+            flagged = get_flagged_combinations()
+            assert summary["flagged_for_review"] == len(flagged) == 1
+
+    def test_schema_migration_backfills_ever_flagged_for_preexisting_rows(self, tmp_path):
+        """A database created by an OLDER version of this module (before
+        ever_flagged existed) must have its existing flagged rows
+        correctly backfilled when init_adversarial_db() runs again under
+        the new schema — confirms a real upgrade path for the live
+        database already running in production, not just a fresh DB."""
+        import sqlite3
+        import json
+        temp_db = str(tmp_path / "test_adversarial.db")
+
+        # Simulate the OLD schema, pre-migration, with one already-
+        # flagged row sitting in it exactly as it would on a real,
+        # already-deployed instance.
+        con = sqlite3.connect(temp_db)
+        con.execute("""
+            CREATE TABLE adversarial_combinations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fingerprint TEXT NOT NULL UNIQUE,
+                recipe_name TEXT NOT NULL,
+                first_seen_timestamp TEXT NOT NULL,
+                times_generated INTEGER NOT NULL DEFAULT 1,
+                last_query_text TEXT NOT NULL,
+                last_source_used TEXT,
+                last_latency_ms INTEGER,
+                last_flagged_reason TEXT,
+                last_run_timestamp TEXT NOT NULL
+            )
+        """)
+        con.execute(
+            """INSERT INTO adversarial_combinations
+               (fingerprint, recipe_name, first_seen_timestamp, times_generated,
+                last_query_text, last_source_used, last_latency_ms,
+                last_flagged_reason, last_run_timestamp)
+               VALUES (?, 'no_intent_fallthrough', '2026-06-24T12:00:00Z', 3,
+                       'pre-migration query', 'kiwix', 100, 'crash: pre-existing', '2026-06-24T12:00:00Z')""",
+            (json.dumps(["pre-migration-fp"]),)
+        )
+        con.commit()
+        con.close()
+
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()  # runs the migration against the old-schema DB
+            flagged = get_flagged_combinations()
+            assert len(flagged) == 1
+            assert flagged[0]["ever_flagged"] is True
+            assert flagged[0]["first_flagged_reason"] == "crash: pre-existing"
+            assert flagged[0]["first_flagged_timestamp"] == "2026-06-24T12:00:00Z"
+
     def test_get_flagged_combinations_respects_limit(self, tmp_path):
         temp_db = str(tmp_path / "test_adversarial.db")
         with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
@@ -576,6 +809,62 @@ class TestEndpointsViaTestClient:
                 response = client.get("/health")
                 assert response.status_code == 200
                 assert response.json()["adversarial_testing"] == {"status": "disabled"}
+
+    def test_dismiss_endpoint_closes_a_flagged_combination(self, tmp_path):
+        from fastapi.testclient import TestClient
+        import app.main as main
+        import app.adversarial_testing as at_module
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", True):
+            import json
+            at_module.init_adversarial_db()
+            fp = json.dumps(["endpoint-dismiss-test"])
+            at_module._record_result(fp, "no_intent_fallthrough", "bad query", "kiwix", 100, "crash: boom")
+
+            with TestClient(main.app) as client:
+                before = client.get("/adversarial/flagged")
+                assert before.json()["count"] == 1
+
+                dismiss_response = client.post("/adversarial/dismiss", params={"fingerprint": fp})
+                assert dismiss_response.status_code == 200
+                assert dismiss_response.json()["status"] == "dismissed"
+
+                after = client.get("/adversarial/flagged")
+                assert after.json()["count"] == 0
+
+    def test_dismiss_endpoint_404s_on_unknown_fingerprint(self, tmp_path):
+        from fastapi.testclient import TestClient
+        import app.main as main
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", True):
+            with TestClient(main.app) as client:
+                response = client.post("/adversarial/dismiss", params={"fingerprint": "[\"nonexistent\"]"})
+                assert response.status_code == 404
+
+    def test_flagged_endpoint_include_dismissed_query_param_works(self, tmp_path):
+        from fastapi.testclient import TestClient
+        import app.main as main
+        import app.adversarial_testing as at_module
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", True):
+            import json
+            at_module.init_adversarial_db()
+            fp = json.dumps(["include-dismissed-test"])
+            at_module._record_result(fp, "no_intent_fallthrough", "bad query", "kiwix", 100, "crash: boom")
+            at_module.dismiss_flagged_combination(fp)
+
+            with TestClient(main.app) as client:
+                default_view = client.get("/adversarial/flagged")
+                assert default_view.json()["count"] == 0
+
+                with_history = client.get("/adversarial/flagged", params={"include_dismissed": "true"})
+                assert with_history.json()["count"] == 1
 
     def test_scheduler_does_not_register_job_when_disabled(self, tmp_path):
         """The real lifespan startup must skip scheduler.add_job() for

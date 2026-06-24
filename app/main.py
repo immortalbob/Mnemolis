@@ -45,6 +45,7 @@ from app.adversarial_testing import (
     run_adversarial_test_cycle,
     get_adversarial_test_summary,
     get_flagged_combinations,
+    dismiss_flagged_combination,
 )
 from app.config import settings
 
@@ -257,7 +258,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.46.1",
+    version="3.46.2",
     lifespan=lifespan,
 )
 
@@ -748,12 +749,27 @@ def trigger_adversarial_test():
 
 
 @app.get("/adversarial/flagged")
-def adversarial_flagged(limit: int = 50):
+def adversarial_flagged(limit: int = 50, include_dismissed: bool = False):
     """
-    Return adversarial self-testing combinations currently flagged for
-    human review — the real, queryable home for the "logs results for
-    periodic review" mechanism the roadmap's Adversarial Self-Testing
-    entry called for.
+    Return adversarial self-testing combinations for human review — the
+    real, queryable home for the "logs results for periodic review"
+    mechanism the roadmap's Adversarial Self-Testing entry called for.
+
+    Returns the UNION of "currently flagged" and "ever flagged, not yet
+    dismissed" — not just rows actively anomalous on their most recent
+    run. Fixes a real gap a reviewer caught: a combination flagged once
+    for an intermittent anomaly could previously vanish from this
+    endpoint the moment it happened to be re-rolled and came back
+    clean, with no human ever having reviewed or dismissed it. Each row
+    includes ever_flagged, first_flagged_reason/timestamp (the ORIGINAL
+    anomaly, preserved even after later clean runs), and
+    currently_flagged (true only if last_flagged_reason is still set
+    right now) so a human can tell "still actively broken" apart from
+    "flagged once, currently clean, still needs a look."
+
+    Pass include_dismissed=true to also see rows already reviewed and
+    closed via POST /adversarial/dismiss — useful for an audit trail,
+    not the default working view.
 
     Deliberately left unauthenticated, same as /health and /areas: this
     exposes only synthetic, generated test queries and their structural
@@ -769,11 +785,37 @@ def adversarial_flagged(limit: int = 50):
     """
     if not settings.adversarial_test_enabled:
         return {"status": "disabled", "count": 0, "flagged": []}
-    flagged = get_flagged_combinations(limit=limit)
+    flagged = get_flagged_combinations(limit=limit, include_dismissed=include_dismissed)
     return {
         "count": len(flagged),
         "flagged": flagged,
     }
+
+
+@app.post("/adversarial/dismiss")
+def adversarial_dismiss(fingerprint: str):
+    """
+    Mark a flagged combination as reviewed and dismissed by a human —
+    the action that actually closes the loop the ever_flagged tracking
+    exists to support. A dismissed combination stops appearing in the
+    default GET /adversarial/flagged view (still visible with
+    include_dismissed=true), but its history is never deleted — a
+    fresh, NEW flag on the same fingerprint later will resurface it
+    normally, since a new anomaly is a new event worth a fresh look
+    even if an earlier one was already closed out.
+
+    fingerprint is the exact JSON string from a flagged row's own
+    "fingerprint" field, copied verbatim from a prior
+    GET /adversarial/flagged response — not something to construct by
+    hand.
+
+    Returns {"status": "dismissed"} on success, or a 404 if the
+    fingerprint doesn't match any known combination.
+    """
+    success = dismiss_flagged_combination(fingerprint)
+    if not success:
+        raise HTTPException(status_code=404, detail="No combination found with that fingerprint")
+    return {"status": "dismissed", "fingerprint": fingerprint}
 
 
 @app.get("/logs/stats")
