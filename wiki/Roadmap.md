@@ -23,6 +23,20 @@ Three real gaps, found through deliberate review rather than reported failures, 
 
 Full mechanism detail for the operational maturity work lives in [Health & Observability](Health-and-Observability) and [Caching](Caching).
 
+## Bulletproofing Pass — complete
+
+A deliberate, full read of every file in `app/`, top to bottom — specifically ignoring complexity scores and looking at the kind of small, simple-looking code that score-driven review naturally skips. Found and fixed real bugs in nearly every file touched, several of them significant:
+
+- ✅ `home_assistant.py` — a severe word-boundary bug ("is the front door locked" silently returning no results) and four related fixes
+- ✅ `kiwix.py` — non-deterministic book selection, broken table-of-contents stripping, a single-character search-term bug, and an unbounded retry loop with a real multi-minute worst case
+- ✅ `fusion.py` — a real crash on `FUSION_MAX_SOURCES=0`
+- ✅ `snapshots.py` — uptime history only covering 9.6 real hours instead of a full week
+- ✅ `router.py` / `fusion.py` — a cross-file drift in the shared "did this source actually fail" logic that silently disabled the `news`→`web` fallback for unconfigured sources
+- ✅ `forecast.py` — an unconfigured deployment silently returning real weather data for the wrong place on Earth
+- ✅ `llm.py` — thinking models on the OpenAI-compatible backend silently returning no answer at all
+
+`mcp_server.py`, `query_expansion.py`, and `searxng.py` were read with the same scrutiny and came back genuinely clean — a real, useful outcome in its own right, confirming prior work in those files holds up.
+
 ## Documentation Restructuring — in progress
 
 - 🔄 This wiki

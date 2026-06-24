@@ -7,6 +7,9 @@ The README's [Adding a New Source](https://github.com/immortalbob/Mnemolis/blob/
 1. **`app/sources/your_source.py`** — a `search(query: str) -> str` function. That's the entire contract. It can do whatever it needs internally; the rest of Mnemolis only ever calls it as a plain function and treats whatever string comes back as the answer.
 2. **`app/config.py`** and **`docker-compose.yml`** — any config your source needs (a URL, an API key, a threshold), following the same pattern every existing source already uses.
 3. **`app/router.py`** — four registration points: `SOURCE_MAP` (name → function), `INTENT_MAP` (keyword triggers, for the fast pre-LLM routing path), `SOURCE_DESCRIPTIONS` (the one-line description the LLM sees when deciding whether your source applies), and `CACHE_TTL` (how long a result should be trusted before re-fetching).
+
+**A real pitfall to watch for when choosing trigger phrases:** keep them long enough, or specific enough, that they can't accidentally match as a substring inside an unrelated word. A short, bare trigger like `"on"` will match inside `"front"`, `"long"`, or `"among"` — a real, severe bug found this exact way in `home_assistant.py`'s own internal keyword matching, where it silently broke entity lookups for completely unrelated queries. Multi-word phrases are naturally much safer; a single short word is the riskiest shape a trigger can take.
+
 4. **Optionally, `FALLBACK_CHAIN`** — if your source should fall back to another when it returns nothing useful (the way `kiwix` and `news` both fall back to `web`). This is tracked and surfaced in [Health & Observability](Health-and-Observability), so a source with a real, well-matched fallback target gets the same visibility the built-in ones do.
 
 ## Why this is explicit, not auto-discovered

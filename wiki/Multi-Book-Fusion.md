@@ -6,6 +6,8 @@ Kiwix usually holds several distinct ZIM books — Wikipedia, a handful of Stack
 
 Book selection happens once, up front, before any searching: the LLM is asked to rank the available books for the query and return up to `KIWIX_MAX_BOOKS` (default **2**) of them. Most of the time this naturally collapses to one book, since most questions really do belong cleanly to one source. When it returns two, both get searched — and that's the actual trigger for fusion ever being considered at all. A single selected book never reaches the fusion-decision step, because there's nothing to fuse.
 
+**The same query now reliably picks the same book(s) every time, even across container restarts.** When the LLM's response doesn't exactly match a real book name and falls back to fuzzy substring matching, the candidate books used to be checked in an order that wasn't actually guaranteed to stay the same between runs — meaning a genuinely ambiguous LLM response (e.g. a truncated name matching both a "maxi" and a "nopic" variant of the same Wikipedia dump) could resolve to a different one of the two after a restart, for no visible reason. Fixed by checking candidates in a fixed, sorted order.
+
 ## Deciding whether to actually fuse, or just pick the winner
 
 Having two books selected doesn't automatically mean both get used. The LLM picking a second, only tangentially-related book "just in case" shouldn't produce a forced two-book response when one book clearly has the real answer and the other has noise. The actual decision:

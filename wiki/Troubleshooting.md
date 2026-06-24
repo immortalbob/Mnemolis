@@ -39,6 +39,26 @@ Almost always a Docker volume-naming mismatch, not a real failure — see [Backu
 
 Check `/health`'s `snapshot_jobs` field — see [Health & Observability](Health-and-Observability#background-job-health) for what each status (`ok`, `stale`, `never_ran`, `unknown`) actually means and how the staleness threshold is calculated.
 
+## "No matching entities found" for a Home Assistant question that should clearly have an answer
+
+See [Home Assistant Integration](Home-Assistant-Integration#if-a-specific-entity-question-ever-came-back-empty) — a real, now-fixed bug used to cause exactly this for specific entity questions like "is the front door locked." If you're still seeing it, check that the entity actually exists and is named the way you'd expect — `GET /areas` lists what Mnemolis can currently see.
+
+## A source you forgot to configure returned its own raw error message instead of falling back to web search
+
+Check [Routing](Routing#fallback-when-a-source-comes-back-empty) — `kiwix` and `news` are both supposed to fall back to `web` automatically when they come back empty, including when they're simply unconfigured. This used to fail silently for certain "not configured"/"could not connect" messages specifically; fixed now, but worth confirming the source you expected to fall back from is actually the intended one, since not every source has a configured fallback target.
+
+## Weather forecast looks completely wrong for your location
+
+If `forecast` is returning real-looking weather data that's nowhere near where you actually live, check that `FORECAST_LATITUDE` and `FORECAST_LONGITUDE` are genuinely set — leaving them blank used to silently default to `(0, 0)`, a real, valid ocean coordinate, so the forecast would "work" without ever telling you it was answering for the wrong place on Earth. This is fixed now: an unconfigured forecast correctly returns a "not configured" message instead.
+
+## A query about a single-letter or single-digit topic (like "the C language" or "vitamin D") returns oddly generic, off-topic results
+
+A real bug used to drop single-character search terms entirely while scoring and building search queries, since they were filtered out the same way stray punctuation is — meaning a query about "R programming" could lose the one word that actually distinguished it from any other programming language. Fixed now; single letters and digits are kept.
+
+## A fusion query (`source="fusion"`) returns an error instead of results
+
+If `FUSION_MAX_SOURCES` is set to `0`, this used to crash with a raw error; it now correctly reports "no valid sources specified" instead. If you're trying to limit fusion to fewer sources, set it to a positive number — `0` was never a valid way to disable fusion, just a configuration mistake that's now handled gracefully instead of crashing.
+
 ## General debugging principle, if none of the above applies
 
 Several of the real bugs documented in [Design History](Home#design-history-real-bugs-real-fixes) were only correctly diagnosed by adding genuine debug tracing and reading the actual output, rather than guessing at a plausible-sounding cause. If something's behaving unexpectedly and none of the documented cases above match, check the application logs directly (`docker logs mnemolis`) for the actual routing/decomposition/conditional-detection decision being made, rather than inferring it from the final response alone — the log lines at each of those stages are usually specific enough to show exactly where a query's handling diverged from what was expected.

@@ -14,13 +14,15 @@
 
 This is the same normalized-content-overlap idea [Kiwix Scoring](Kiwix-Scoring) uses, for the same reason: a raw keyword-hit count would systematically favor longer text, regardless of whether that text is actually more relevant.
 
+**Single-letter and single-digit keywords now count.** A query about "R" the programming language, or "C," used to lose that one distinguishing word entirely during keyword extraction — meaning a genuinely relevant result about the right language could score *lower* than an unrelated result about a different one, since the only words left to compare were generic ones both shared ("programming," "tutorial"). Fixed; a result actually about the topic you asked for should now correctly outrank one that isn't, even when the topic itself is a single character.
+
 ## The generic-result penalty
 
 A surprising amount of real search noise isn't *wrong*, it's just *not actually an article* — a site's homepage, an "about us" page, a bare category listing. `_is_generic_result()` catches three different shapes of this:
 
 - **Title is a known generic label** — things that read like a site name rather than article content
 - **Content reads like a site description** — matches a small set of known boilerplate phrasing patterns
-- **The URL is a bare domain root with suspiciously short content** — no path beyond a trailing slash, and under 40 characters of actual text. A real article almost always has a path (`/article/some-slug`) and more than a sentence fragment of content; a landing page often has neither.
+- **The URL is a bare domain root with suspiciously short content** — no path beyond a trailing slash *and a query string stripped first* (a tracking parameter like `?utm_source=twitter` on an otherwise bare homepage used to defeat this check entirely, treating the homepage as if it had a real article path), and under 40 characters of actual text. A real article almost always has a path (`/article/some-slug`) and more than a sentence fragment of content; a landing page often has neither.
 
 Any one of these triggers a flat −20 penalty, generally enough to push a generic result below anything genuinely on-topic without needing three separate penalty tiers.
 

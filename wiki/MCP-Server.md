@@ -24,6 +24,8 @@ This mirrors `POST /search`'s own request shape almost exactly — `query`, `sou
 
 MCP's `search` tool calls `route()`, the simpler, backward-compatible wrapper that returns just the result string — not `route_with_source()`, which is what the REST API's `/search` endpoint uses to also report `source_used` (including whether a [fallback](Routing#fallback-when-a-source-comes-back-empty) occurred). This means an MCP client gets the plain answer text, the same content a REST caller would get, but **never** learns which source actually answered, or whether a fallback happened along the way. If you need that metadata, you need the REST API — MCP's contract is intentionally just "ask a question, get an answer," with no provenance attached.
 
+**Errors come back as plain text, not an MCP protocol-level error.** If something genuinely goes wrong, the tool returns a normal, successful response whose content happens to start with `"Error: ..."` rather than raising `ToolError` or setting an MCP-level error flag. This is a deliberate choice, not an oversight — every source backing Mnemolis already returns a descriptive failure string instead of raising for expected, recoverable problems (a misconfigured source, an unreachable backend), and the MCP tool is a thin wrapper around that same `route()` call, so it inherits that same contract. If you're building automation against this tool, check the response text itself rather than relying on the call "failing" in the protocol sense.
+
 ## How it's actually transported
 
 MCP runs over **Streamable HTTP**, mounted at `/mcp` on the main FastAPI app as a sub-application — shares the same container, port, and network exposure as the REST API, no separate process to manage.

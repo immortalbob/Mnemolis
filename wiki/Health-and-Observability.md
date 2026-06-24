@@ -58,9 +58,15 @@ This is tracked with a single boolean column (`fallback_occurred`) on the query 
 
 **Why the breakdown says `kiwix_or_news_fallback_to_web`, not separate counts for each** — `kiwix` and `news` both fall back to the same target, `web`. A single boolean genuinely cannot tell you which of the two originally intended sources triggered any specific fallback; querying per-original-source would run the identical SQL query under two different labels and double-count the same underlying rows. Reporting an honest, combined label is the correct tradeoff here — it's less granular than attributing fallbacks to a specific source, but it's *true*, which a confidently-wrong per-source breakdown would not have been.
 
+`/logs/stats` also reports `latency_by_source` (average latency per source) and `top_queries` (your 10 most-repeated queries, each with its hit count and average latency).
+
+`latency_by_source` is an overall average — it includes both cold queries (a real backend call) and warm ones (a cache hit), not warm-only. That's deliberate: a warm-only number would look almost identical across every source regardless of how slow that source actually is when it has real work to do, since cache hits are fast no matter the source.
+
+Each entry in `top_queries` reports the source that answered it **most recently**, not whichever source happened to answer it most often historically. This matters if routing behavior for a query has changed over time — you'll see what it does *now*, not a stale answer from before a routing change.
+
 ## `/logs` — the raw query log
 
-`GET /logs?limit=N` returns recent entries directly: timestamp, query, source requested, source used, cached flag, success, latency in milliseconds, and `fallback_occurred`. Useful for spot-checking a specific recent query's behavior without waiting for it to show up in aggregate stats.
+`GET /logs?limit=N` returns recent entries directly: timestamp, query, source requested, source used, cached flag, success, latency in milliseconds, and `fallback_occurred`. `limit` is clamped to a sane range (1-1000) — SQLite treats a negative `LIMIT` as "no limit at all," so `?limit=-1` used to return the entire query log rather than the bounded, recent-entries view this endpoint is meant to provide. Useful for spot-checking a specific recent query's behavior without waiting for it to show up in aggregate stats.
 
 ## A real example of this paying off immediately
 

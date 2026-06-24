@@ -66,6 +66,8 @@ Full setup details (generating a long-lived access token, the exact config vars)
 
 `ha`'s lock/unlock and door open/closed states are the other two structured, binary signals conditional detection can give a confident yes/no verdict against.
 
+**If "is the front door locked" or similar specific entity questions ever returned "no matching entities found" even though the entity clearly existed, that's fixed now** — see [Home Assistant Integration](Home-Assistant-Integration#if-a-specific-entity-question-ever-came-back-empty) for what happened and what to check if anything still looks wrong.
+
 ## `changes` — What's Different Since X
 
 Not a live backend at all — it reads from Mnemolis's own snapshot history, captured every 2–60 minutes (interval varies per source) by a background scheduler, and diffs the most recent snapshot against an earlier one to report what actually changed: outages and recoveries, meaningful weather shifts, new headlines, lock/door/battery state changes.

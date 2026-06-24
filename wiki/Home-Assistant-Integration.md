@@ -27,6 +27,10 @@ HA's own built-in conversation/intent system is genuinely good at single-entity 
 
 `GET /areas` lists every HA area Mnemolis has detected, along with entity counts and the natural-language aliases it recognizes for each — useful for confirming Mnemolis actually sees your area structure the way you expect, and for understanding what phrasing will correctly scope a query to one part of the house rather than the whole thing.
 
+## If a specific entity question ever came back empty
+
+If a query like *"is the front door locked"* ever returned "no matching entities found" even though the entity clearly existed in Home Assistant with current data, that's fixed now. A real bug meant short internal keywords (like the one used to detect "lights on" queries) could accidentally match as a substring inside an unrelated word in your question ("front"), silently filtering out the exact entity you were asking about. The same root cause could also misidentify which area a query was about. Both now use proper word-boundary matching, so this shouldn't recur — but if you hit something that still looks wrong, `GET /areas` and checking the entity's exact name/state in Home Assistant directly are the fastest way to rule out a naming mismatch versus an actual bug.
+
 ## Fusion and conditional detection
 
 `ha` participates in [Fusion](Fusion) like any other source — "house status and what's the weather" automatically fuses `ha` + `forecast` into one response, no special handling needed for this specific combination.

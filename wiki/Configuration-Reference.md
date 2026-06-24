@@ -40,14 +40,14 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `MORNING_START_HOUR` | `6` | What hour (local time, 0-23) "this morning" looks back to in [`changes`](Snapshot-Engine-and-Changes#time-window-phrases) queries |
+| `MORNING_START_HOUR` | `6` | What hour (local time, 0-23) "this morning" looks back to in [`changes`](Snapshot-Engine-and-Changes#time-window-phrases) queries. A value outside 0-23 (e.g. `24` for midnight, a natural mistake) is wrapped via modulo rather than rejected — `24` is treated as `0` |
 | `WORK_START_HOUR` | `9` | Same, for "while at work" / "since work" |
 
 ## Fusion
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `FUSION_MAX_SOURCES` | `4` | Hard cap on how many sources one [fusion](Fusion) query can touch |
+| `FUSION_MAX_SOURCES` | `4` | Hard cap on how many sources one [fusion](Fusion) query can touch. Setting this to `0` doesn't disable fusion — it correctly returns "no valid sources specified" rather than the raw crash it used to produce |
 | `FUSION_MAX_CHARS_PER_SOURCE` | `1500` | Per-source truncation before merging |
 | `FUSION_TIMEOUT_SECONDS` | `15` | How long any single source gets before fusion moves on without it |
 

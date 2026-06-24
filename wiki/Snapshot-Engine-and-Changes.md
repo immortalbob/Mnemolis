@@ -13,7 +13,11 @@ Four jobs run on independent schedules, each calling its own snapshot function:
 | `snapshot_forecast` | 30 minutes | Current weather forecast |
 | `snapshot_news` | 60 minutes | Current RSS feed contents |
 
-Each snapshot is timestamped and stored in a dedicated `snapshots` table, with old entries pruned per-source via `_RETENTION_PER_SOURCE` — a count scaled to each source's own real interval so every source genuinely retains a full week's worth of data, not a single shared count that happened to undersize the fastest-snapshotted sources. Found via a deliberate "bulletproofing" pass: the original code used one shared `MAX_SNAPSHOTS_PER_SOURCE = 288` constant for every source, with a comment claiming "24 hours at 5-minute intervals" — true only for `ha` specifically. `uptime` (every 2 minutes, the most frequent of any source) only retained 9.6 real hours under that shared constant, even though [Conditional Query Detection](Conditional-Query-Detection)'s own time-window phrases explicitly support "since yesterday" (48h) and "this week" (168h) for every source — a real query for either would have silently returned an incomplete picture for `uptime` specifically, with no indication the underlying data simply no longer existed. Every snapshot job already catches its own exceptions internally and just logs a warning on failure — it never crashes, never stops the scheduler, and (until a real gap was found and fixed — see [Health & Observability](Health-and-Observability)) produced zero externally visible signal beyond a log line if it started failing on every single run.
+Each snapshot is timestamped and stored in a dedicated `snapshots` table. Old entries get pruned per source, and **how much history each source keeps is scaled to how often it's snapshotted** — `uptime` (every 2 minutes) keeps 5040 snapshots, `ha` (every 5 minutes) keeps 2016, `forecast` (every 30 minutes) keeps 336, `news` (every 60 minutes) keeps 168 — so every source genuinely has at least a full week of real history available, regardless of how often it gets snapshotted.
+
+That wasn't always true: a single shared retention count used to apply to every source equally, sized around `ha`'s 5-minute interval. Since `uptime` snapshots far more often, the same count only covered 9.6 real hours for it — meaning a "since yesterday" or "this week" query for service uptime specifically could have silently come back incomplete, even though those same time windows worked correctly for every other source. Found via a deliberate code-reading pass, not a reported failure, and fixed by scaling retention per source instead of sharing one number across all of them.
+
+Every snapshot job already catches its own exceptions internally and just logs a warning on failure — it never crashes, never stops the scheduler, and (until a real gap was found and fixed — see [Health & Observability](Health-and-Observability)) produced zero externally visible signal beyond a log line if it started failing on every single run.
 
 ## Net change vs. individual events
 
@@ -43,6 +47,8 @@ Forecast changes are only reported if the temperature shift exceeds `FORECAST_TE
 ## Time-window phrases
 
 *"What changed this morning"* and *"what happened since I left for work"* need to resolve to an actual hour count before they can be passed to `get_changes(since_hours=N)`. Two configured hours anchor this: `MORNING_START_HOUR` (default 6) and `WORK_START_HOUR` (default 9), both in your local timezone. "This morning" resolves to however many hours have passed since 6am today; "since work" resolves to however many hours have passed since 9am today. Outside of a recognized phrase, `changes` defaults to a flat 24-hour lookback.
+
+This resolution genuinely produces a fractional hour count, not just a round number — "this morning" at, say, 2:36pm with a 6am anchor is 8.6 hours, not a clean 9. `format_changes()` rounds this for display regardless of what's passed in, rather than relying on every caller to round it correctly first — found via a deliberate bulletproofing pass: a real caller (the natural-language path described above) genuinely produces an unrounded float, and without this, a real response could have displayed something like *"no significant changes detected in the last 23.939205609166667 hours"* directly to a user.
 
 ## Manually triggering a refresh
 

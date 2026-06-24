@@ -33,6 +33,10 @@ This is a genuinely larger key space than it might first appear. Every unique co
 
 A defensive cap also applies when loading the routing cache back from disk at startup — a file saved before the size limit existed could theoretically still be over it, so loading trims to the most recently-written entries if so, rather than silently allowing an over-limit cache to persist indefinitely across restarts.
 
+**A bad LLM response used to get "stuck."** If routing or Kiwix disambiguation ever picked an obviously-wrong generic fallback for a query, repeating the exact same query used to keep giving you that same wrong fallback for up to an hour, even though the LLM would likely have gotten it right on a retry. That's fixed now — only genuine successes get cached, never a fallback default, so a bad answer doesn't outlive its own cause.
+
+For anyone curious why this happened: three separate functions (fusion source selection, single-source routing, and Kiwix disambiguation candidates) each cached their own bare-fallback result under the same key a real success would use. A transient LLM hiccup would permanently lock that specific query into the fallback for the full routing cache TTL. The Kiwix case needed one extra distinction to fix correctly — the same fallback *result* can happen for two different *reasons*: the LLM call failing outright (worth retrying) versus the LLM genuinely answering with something that just didn't pass a sanity check (not worth retrying, since the same prompt would likely fail the same way again). The fix only skips caching for the first case.
+
 ## What's visible without digging through code
 
 [Health & Observability](Health-and-Observability) covers this in full, but briefly: `/health` reports both caches' current entry counts alongside their configured max sizes, so growth toward either bound is visible at a glance. `GET /cache` and `GET /cache/routing` show every individual entry with age and remaining TTL; the corresponding `/clear` endpoints wipe a cache from both memory and disk.
