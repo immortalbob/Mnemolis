@@ -4,6 +4,24 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.36.1]
+
+### Investigation Note
+Continuing the bulletproofing pass into `app/main.py`, read top to bottom. Found and verified the cache-key reconstruction in `/search`'s auto-routing path (`f"fusion[{','.join(sorted(intent))}]:{request.query}"`) genuinely matches `route_with_source()`'s own internal key construction exactly — confirmed with a direct test, not just a side-by-side source comparison, since string-matching across two files has looked right before and turned out subtly wrong elsewhere this project's life. It's correct.
+
+### Fixed — `/search` Reported a Meaningless `source_used` on Failure
+When the auto-routing path raised an exception, the failure response's `source_used` field was set to `request.source` — which is just the literal string `"auto"` whenever auto-routing was requested, not a real source name. `intent` (already computed earlier in the same function, specifically to build the cache-check key) is the actual source this query was about to be routed to before the exception occurred. Fixed to report that real, already-known intent instead — a single source name when intent resolved to one, `"fusion"` when intent resolved to a list, and the original `request.source` unchanged when an explicit (non-auto) source was requested in the first place.
+
+### Added (Tests)
+- 3 new tests covering all three real cases: auto-routing resolving to a single source, auto-routing resolving to a fusion list, and an explicit source request — all verified to report the genuinely correct `source_used` on failure
+
+### Changed
+- Version bumped to 3.36.1
+
+**Total test count: 964**
+
+---
+
 ## [3.36.0]
 
 ### Fixed — A Significant, Confirmed-Real Bug: Thinking Models Silently Broken on the OpenAI-Compatible LLM Path

@@ -227,7 +227,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.36.0",
+    version="3.36.1",
     lifespan=lifespan,
 )
 
@@ -491,11 +491,27 @@ def search(request: SearchRequest):
         )
     except Exception as e:
         latency_ms = int((time.monotonic() - start) * 1000)
-        _log_query(request.query, request.source, request.source, was_cached, False, latency_ms)
+        # Found via a deliberate "bulletproofing" pass: this used to
+        # report source_used=request.source on failure, which is just
+        # the literal string "auto" whenever auto-routing was requested
+        # — not a real source name, and meaningfully less informative
+        # than what was already known. `intent` (computed above, before
+        # the try block, specifically to build the cache-check key) is
+        # the actual source this query was about to be routed to before
+        # the exception occurred — reporting it instead gives a real,
+        # genuinely useful answer to "what was this query trying to
+        # do" rather than echoing back a non-answer.
+        if intent is None:
+            failure_source = request.source
+        elif isinstance(intent, list):
+            failure_source = "fusion"
+        else:
+            failure_source = intent
+        _log_query(request.query, request.source, failure_source, was_cached, False, latency_ms)
         _LOGGER.error("Search failed for query '%s': %s", request.query, e)
         return SearchResponse(
             query=request.query,
-            source_used=request.source,
+            source_used=failure_source,
             result="",
             success=False,
             cached=False,

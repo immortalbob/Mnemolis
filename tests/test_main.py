@@ -421,6 +421,49 @@ class TestFallbackDetection:
         assert fallback_by_target["kiwix_or_news_fallback_to_web"] == 2
 
 
+class TestSearchFailureReportsRealSource:
+    """Regression tests for a real, significant bug found via a
+    deliberate "bulletproofing" pass: when /search's auto-routing path
+    raised an exception, source_used was set to request.source — which
+    is just the literal string "auto" whenever auto-routing was
+    requested, not a real source name. `intent` (computed before the
+    try block specifically to build the cache-check key) is the actual
+    source this query was about to be routed to before the exception
+    occurred — reporting it instead gives a genuinely useful answer to
+    "what was this query trying to do" rather than echoing back a
+    non-answer."""
+
+    def test_auto_routing_failure_reports_resolved_single_source(self, client):
+        from unittest.mock import patch
+        with patch("app.main.route_with_source", side_effect=Exception("simulated failure")), \
+             patch("app.main.detect_intent", return_value="kiwix"):
+            resp = client.post("/search", json={"query": "test auto failure", "source": "auto"})
+        data = resp.json()
+        assert data["success"] is False
+        assert data["source_used"] == "kiwix"
+
+    def test_auto_routing_failure_with_fusion_intent_reports_fusion(self, client):
+        from unittest.mock import patch
+        with patch("app.main.route_with_source", side_effect=Exception("simulated failure")), \
+             patch("app.main.detect_intent", return_value=["kiwix", "web"]):
+            resp = client.post("/search", json={"query": "test fusion failure", "source": "auto"})
+        data = resp.json()
+        assert data["success"] is False
+        assert data["source_used"] == "fusion"
+
+    def test_explicit_source_failure_still_reports_that_source(self, client):
+        """Confirms the fix didn't change behavior for an explicitly-
+        requested source — `intent` is None in that case (intent
+        detection only runs for source="auto"), so the original
+        request.source is still correctly reported."""
+        from unittest.mock import patch
+        with patch("app.main.route_with_source", side_effect=Exception("simulated failure")):
+            resp = client.post("/search", json={"query": "test explicit failure", "source": "forecast"})
+        data = resp.json()
+        assert data["success"] is False
+        assert data["source_used"] == "forecast"
+
+
 class TestAPIKeyAuth:
     """Tests for API key authentication on /search and /changes."""
 
