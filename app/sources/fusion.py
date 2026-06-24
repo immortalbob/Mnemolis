@@ -78,7 +78,16 @@ def _deduplicate(results: dict[str, str]) -> dict[str, str]:
 
 
 def _merge_same_source(parts: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """Merge consecutive results from the same source into one block."""
+    """Merge consecutive results from the same source into one block.
+
+    Genuinely shared with app/router.py's _merge_decomposed_parts(),
+    which used to carry a byte-for-byte identical copy of this exact
+    logic — found during a deliberate complexity-investigation pass on
+    this function. router.py already imports this module directly
+    (it calls fusion.search() for internal multi-source dispatch), so
+    this is the safe import direction; fusion.py never imports from
+    router.py, avoiding a circular import the reverse direction would
+    create."""
     if not parts:
         return parts
     merged = []
@@ -165,18 +174,43 @@ def search(query: str, sources: list[str] | None = None) -> str:
             executor.submit(SOURCE_MAP[s], query): s
             for s in valid
         }
-        for future in concurrent.futures.as_completed(futures, timeout=fusion_timeout):
-            source = futures[future]
-            try:
-                result = future.result(timeout=fusion_timeout)
-                results[source] = result
-                _LOGGER.info("Fusion: source '%s' returned %d chars", source, len(result))
-            except concurrent.futures.TimeoutError:
-                _LOGGER.warning("Fusion: source '%s' timed out", source)
-                results[source] = None
-            except Exception as e:
-                _LOGGER.warning("Fusion: source '%s' failed: %s", source, e)
-                results[source] = None
+        try:
+            for future in concurrent.futures.as_completed(futures, timeout=fusion_timeout):
+                source = futures[future]
+                try:
+                    result = future.result(timeout=fusion_timeout)
+                    results[source] = result
+                    _LOGGER.info("Fusion: source '%s' returned %d chars", source, len(result))
+                except concurrent.futures.TimeoutError:
+                    _LOGGER.warning("Fusion: source '%s' timed out", source)
+                    results[source] = None
+                except Exception as e:
+                    _LOGGER.warning("Fusion: source '%s' failed: %s", source, e)
+                    results[source] = None
+        except concurrent.futures.TimeoutError:
+            # Found via a deliberate complexity-investigation pass: this
+            # is as_completed()'s OWN overall timeout, distinct from the
+            # per-future future.result(timeout=...) timeout caught
+            # inside the loop above. as_completed() raises this for the
+            # entire iteration once the deadline passes, regardless of
+            # how many individual futures had already completed — and
+            # since this was previously uncaught here, a single slow
+            # source mixed with a fast one crashed the ENTIRE fusion
+            # call, discarding the fast source's genuinely successful
+            # result along with it, even though that data already
+            # existed and was sitting in `results`. This directly
+            # undermined fusion's own documented graceful-degradation
+            # design — "filters empty or failed results... if only one
+            # source returns results, it is returned directly" — by
+            # turning a partial success into a total, opaque failure
+            # instead. Any future not already in `results` by the time
+            # this fires is genuinely still running past the deadline;
+            # mark it as failed without losing whatever real results
+            # were already gathered before the timeout.
+            _LOGGER.warning("Fusion: overall timeout reached, %d source(s) still running", len(futures) - len(results))
+            for future, source in futures.items():
+                if source not in results:
+                    results[source] = None
 
     # Filter successful non-empty results — preserve original source order
     successful = {

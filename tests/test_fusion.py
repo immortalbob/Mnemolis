@@ -176,6 +176,46 @@ class TestFusionFailureHandling:
             result = fusion.search("test query", ["kiwix", "web"])
         assert "no results" in result.lower()
 
+    def test_slow_source_does_not_crash_or_discard_fast_source_result(self):
+        """Regression test for a real, significant bug found via a
+        deliberate complexity-investigation pass: as_completed()'s own
+        OVERALL timeout (distinct from the per-future
+        future.result(timeout=...) timeout already handled inside the
+        loop) was previously uncaught — a single slow source mixed with
+        a fast one crashed the ENTIRE fusion call with an unhandled
+        TimeoutError, discarding the fast source's genuinely successful
+        result along with it, even though that data already existed.
+        This directly undermined fusion's own documented graceful-
+        degradation design ("if only one source returns results, it is
+        returned directly") by turning a partial success into a total,
+        opaque failure. The fix wraps the as_completed iteration itself
+        in a try/except, marking any future not yet in `results` as
+        failed without losing whatever results were already gathered
+        before the overall timeout fired."""
+        import time
+        from app.sources import fusion
+        from app.config import settings
+
+        def fast_source(q):
+            time.sleep(0.05)
+            return "Real fast result content."
+
+        def slow_source(q):
+            time.sleep(10)
+            return "should never be seen — exceeds the timeout"
+
+        source_map = {"kiwix": fast_source, "web": slow_source}
+        original_timeout = settings.fusion_timeout_seconds
+        settings.fusion_timeout_seconds = 1
+        try:
+            with patch("app.router.SOURCE_MAP", source_map):
+                result = fusion.search("test query", ["kiwix", "web"])  # must not raise
+        finally:
+            settings.fusion_timeout_seconds = original_timeout
+
+        assert "Real fast result content." in result
+        assert "should never be seen" not in result
+
 
 class TestFusionCacheKey:
     """Tests for fusion cache key behavior in router."""

@@ -933,6 +933,44 @@ class TestDiscourseFramingRoutingBias:
         assert "kiwix" in result
 
 
+class TestMergeDecomposedPartsSharedWithFusion:
+    """Tests confirming _merge_decomposed_parts() genuinely shares its
+    consecutive-same-source merging logic with fusion.py's own
+    _merge_same_source(), rather than maintaining a separate, duplicate
+    copy. Found via a deliberate complexity-investigation pass on
+    fusion.search() — the two implementations were byte-for-byte
+    identical before being unified. The shared function lives in
+    fusion.py (router.py already imports fusion directly, e.g. to call
+    fusion.search() for internal multi-source dispatch; the reverse
+    direction would create a circular import)."""
+
+    def test_router_genuinely_calls_the_shared_fusion_function(self):
+        """Confirms the sharing is real, not coincidental — patches
+        fusion._merge_same_source itself and verifies router.py's merge
+        function actually invokes it, rather than just asserting on the
+        final merged output (which could theoretically match by
+        coincidence if the two implementations had silently diverged
+        again in the future)."""
+        from app.router import _merge_decomposed_parts
+        from unittest.mock import patch
+
+        with patch("app.router.fusion._merge_same_source", return_value=[("ha", "merged result")]) as mock_merge:
+            _merge_decomposed_parts([("ha", "part 1"), ("ha", "part 2")])
+
+        mock_merge.assert_called_once_with([("ha", "part 1"), ("ha", "part 2")])
+
+    def test_consecutive_same_source_parts_merged_into_one_section(self):
+        from app.router import _merge_decomposed_parts
+        result, source = _merge_decomposed_parts([
+            ("ha", "Indoor sensors result."),
+            ("ha", "Door locks result."),
+        ])
+        assert source == "ha"
+        assert "Indoor sensors result." in result
+        assert "Door locks result." in result
+        assert result.count("[HA") == 1  # one header, not two
+
+
 class TestDiscourseFramingEscalationHelpers:
     """Direct, isolated tests for _escalate_multi_source_for_discourse_
     framing() and _escalate_single_source_for_discourse_framing() —

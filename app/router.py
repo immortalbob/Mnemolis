@@ -1444,24 +1444,20 @@ def _merge_decomposed_parts(parts: list[tuple[str, str]]) -> tuple[str, str]:
 
     Consecutive results from the same source are merged into one block
     first, so e.g. "indoor air quality and are the doors locked" (both
-    resolving to `ha`) returns one [HA] section, not two. A sub-query
-    whose own intent resolved to internal fusion already contains its
-    own per-source [SOURCE — DESC] headers (added by fusion.search()
-    itself) — wrapping that block in another header at this outer level
-    produces a nonsensical "[FUSION — FUSION]" label, since "fusion"
-    isn't a real source with its own entry in _HEADER_LABELS, just
-    self-headered content passing through. Only genuinely single-source
-    results get wrapped here.
+    resolving to `ha`) returns one [HA] section, not two — via
+    fusion._merge_same_source(), genuinely shared with fusion.search()'s
+    own identical need to merge consecutive same-source results
+    (originally a byte-for-byte duplicate, found and unified during a
+    deliberate complexity-investigation pass on fusion.search() itself).
+    A sub-query whose own intent resolved to internal fusion already
+    contains its own per-source [SOURCE — DESC] headers (added by
+    fusion.search() itself) — wrapping that block in another header at
+    this outer level produces a nonsensical "[FUSION — FUSION]" label,
+    since "fusion" isn't a real source with its own entry in
+    _HEADER_LABELS, just self-headered content passing through. Only
+    genuinely single-source results get wrapped here.
     """
-    merged = []
-    current_source, current_result = parts[0]
-    for source, result in parts[1:]:
-        if source == current_source:
-            current_result = current_result.rstrip() + "\n\n" + result.lstrip()
-        else:
-            merged.append((current_source, current_result))
-            current_source, current_result = source, result
-    merged.append((current_source, current_result))
+    merged = fusion._merge_same_source(parts)
 
     sections = []
     for src, result in merged:
