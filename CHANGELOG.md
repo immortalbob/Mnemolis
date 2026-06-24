@@ -4,6 +4,34 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.23.0]
+
+### Investigation Note
+A sixth complexity-investigation pass this release cycle, applied to three related functions in `app/snapshots.py` (`_diff_uptime`, `_diff_forecast`, `_diff_ha`, all C-grade, all sharing a "diff two snapshots, return human-readable changes" purpose). Unlike previous passes, these three turned out to share no genuinely comparable logic worth extracting — each parses a fundamentally different data shape (loose English text, regex-extracted numbers, structured JSON) — so no refactor was forced. Instead, each was read carefully for genuine correctness issues on its own merits, the actual original goal of this investigation. All three turned up something real.
+
+### Fixed — `_diff_uptime`: Pending State Mislabeled as Confirmed Outage
+The previous version collapsed any transition away from "all up" into the same alarming `"Service outage detected"` wording, including a PENDING-only transition. Uptime Kuma's own status model treats "pending" (a retry/grace-period state) as genuinely distinct from a confirmed outage ("down") — using outage wording for a pending-only state is a real, misleading overclaim. Fixed by checking for the literal `"down"` label explicitly, separate from a generic "not all up" catch-all, giving pending-only transitions their own, honestly-worded message (`"Service check pending (possible outage starting)"`) while a mixed down+pending state correctly keeps the more severe outage wording.
+
+### Fixed — `_diff_forecast`: Negative Temperatures Silently Unparseable
+The temperature-extraction regexes (`r"high of (?:about )?(\d+)"`, `r"low of (\d+)"`) had no support for a negative sign, silently returning `None` for any sub-zero forecast text — meaning temperature-change detection would quietly stop working entirely for any Mnemolis deployment in a genuinely cold climate, with no error or warning. Forecast text comes directly from `round()` of Open-Meteo's real temperature data with no floor applied, making this a real, reachable gap for the project's explicitly anywhere-deployable design, not a contrived edge case. Fixed by adding an optional `-?` to both regexes.
+
+### Fixed — `_diff_ha`: Uncaught Crash on a Malformed Entity
+Directly accessing `old_e["state"]`/`new_e["state"]` with bracket notation raised an uncaught `KeyError` if either entity was missing that field — crashing the diff for *every other entity in the same snapshot too*, not just the malformed one. `snapshot_ha()` itself always writes a `state` field today, so this specific scenario isn't reachable through the current writer — but snapshots persist in a long-lived SQLite file and get read back potentially much later, so data written by an older version of this code, or before a future schema change, could genuinely still exist. Fixed by skipping (not crashing on) any entity missing the required field, verified with a test confirming one malformed entity no longer prevents a different, well-formed entity in the same snapshot from being correctly diffed.
+
+### Changed
+- `_diff_uptime`: C(15) → C(13) — a small, real complexity improvement alongside the wording fix
+- `_diff_ha`: C(16) → C(18) — an honest, accepted small increase as the cost of the crash-prevention fix, consistent with the same tradeoff made for the router caching fix (3.21.1) and the HA exclusion-keyword fix (3.22.0) earlier this release cycle
+- Version bumped to 3.23.0
+
+### Added (Tests)
+- 3 new tests for `_diff_uptime`: pending-only uses accurate wording (not "outage detected"), a confirmed down transition still uses outage wording, and a mixed down+pending state keeps the more severe wording
+- 2 new tests for `_diff_forecast`: negative low temperature correctly detected, negative high temperature correctly detected
+- 2 new tests for `_diff_ha`: a malformed entity missing the state field doesn't crash, and one malformed entity doesn't prevent a different, well-formed entity in the same snapshot from being diffed correctly
+
+**Total test count: 922**
+
+---
+
 ## [3.22.3]
 
 ### Changed — Extracted `_interpret_binary_state()`: D(28) → B(8), the Biggest Reduction This Release Cycle
