@@ -993,6 +993,35 @@ class TestDiscourseFramingRoutingBias:
         assert "kiwix" in result
 
 
+class TestLlmDetectFailureNotCached:
+    """Regression tests for a real, significant bug found via the same
+    deliberate complexity-investigation pass that found the identical
+    pattern in _llm_pick_fusion_sources(): _llm_detect() used to cache
+    its "kiwix" fallback under the exact same key a genuine LLM success
+    would use, when the LLM returned an unrecognized source name. A
+    single transient LLM hiccup would permanently lock a specific query
+    into kiwix for the full routing cache TTL, even though a retry
+    moments later would likely have succeeded with the actual, correct
+    source."""
+
+    def test_unrecognized_source_fallback_is_not_cached(self):
+        from app.router import _llm_detect, clear_routing_cache
+        from unittest.mock import patch
+        clear_routing_cache()
+        query = "some genuinely ambiguous query that fails once"
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="garbage_not_a_source"):
+            result1 = _llm_detect(query)
+        assert result1 == "kiwix"
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="forecast") as mock_complete:
+            result2 = _llm_detect(query)
+        assert mock_complete.called  # genuinely re-queried, not short-circuited by a cached failure
+        assert result2 == "forecast"
+
+
 class TestMergeDecomposedPartsSharedWithFusion:
     """Tests confirming _merge_decomposed_parts() genuinely shares its
     consecutive-same-source merging logic with fusion.py's own
@@ -1319,6 +1348,35 @@ class TestLlmPickFusionSources:
                 with patch("app.router._get_routing", return_value=None):
                     result = _llm_pick_fusion_sources("some query xyz")
         assert result == ["kiwix", "web"]
+
+    def test_failure_fallback_is_not_cached_allowing_later_success(self):
+        """Regression test for a real, significant bug found via a
+        deliberate complexity-investigation pass: this function used to
+        cache the ["kiwix", "web"] failure fallback under the exact same
+        key a genuine success would use — a single transient LLM hiccup
+        would permanently lock a specific query into the generic
+        fallback for the full routing cache TTL, even though a retry
+        moments later would likely have succeeded with a better, more
+        specific source selection. Confirms the fix directly: a query
+        that fails once and would genuinely succeed on a second attempt
+        actually reaches the LLM the second time, rather than the cached
+        failure short-circuiting the function before the real call."""
+        from app.router import _llm_pick_fusion_sources, clear_routing_cache
+        from unittest.mock import patch
+        clear_routing_cache()
+        query = "a query that fails once then succeeds"
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="not_a_real_source"):
+            result1 = _llm_pick_fusion_sources(query)
+        assert result1 == ["kiwix", "web"]
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="forecast, news, uptime") as mock_complete:
+            result2 = _llm_pick_fusion_sources(query)
+        assert mock_complete.called  # the LLM was genuinely re-queried, not short-circuited by a cached failure
+        assert "forecast" in result2
+        assert "news" in result2
 
     def test_caps_at_three_sources(self):
         from app.router import _llm_pick_fusion_sources, clear_routing_cache

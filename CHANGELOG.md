@@ -4,6 +4,27 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.33.0]
+
+### Investigation Note
+A twentieth complexity-investigation pass this release cycle, applied to `_llm_pick_fusion_sources()` (C, 15) — the last genuinely untouched function in `router.py`, and the function deciding which sources get fused together for an explicit fusion query. The investigation found a real, significant bug, then traced the same pattern into a sibling function and fixed both consistently.
+
+### Fixed — A Real, Systemic Bug: Caching a Failure as if It Were a Genuine Success
+`_llm_pick_fusion_sources()` cached its own `["kiwix", "web"]` failure fallback under the exact same routing-cache key a genuine LLM success would use, whenever the LLM returned an unrecognized or malformed response. Confirmed directly: a single transient LLM hiccup (a truncated response, a momentary parsing glitch) would permanently lock that specific query into the generic fallback for the **full routing cache TTL** — a retry moments later that would have genuinely succeeded with a better, more specific source selection never even reached the LLM, since the cached failure short-circuited the function before the real call could happen.
+
+**The same pattern was found in `_llm_detect()`**, the sibling function for single/multi-source routing — confirmed reachable with an identical direct test before deciding to fix both rather than just the one this investigation originally targeted. Both functions now correctly return their fallback value on a failed LLM response without caching it, giving every subsequent identical query a fresh, real chance at a correct decision rather than being permanently degraded by one bad LLM response.
+
+### Added (Tests)
+- 2 new tests, one per fixed function: each confirms a query that fails once and would genuinely succeed on a second attempt actually re-queries the LLM the second time, rather than being short-circuited by a cached failure
+
+### Changed
+- `_llm_pick_fusion_sources` and `_llm_detect`: complexity unchanged (removing one cache-write line each doesn't change branch count)
+- Version bumped to 3.33.0
+
+**Total test count: 955**
+
+---
+
 ## [3.32.0]
 
 ### Investigation Note

@@ -718,7 +718,14 @@ def _llm_detect(query: str) -> str | list[str]:
     if raw:
         _LOGGER.warning("LLM returned unknown source '%s', falling back to kiwix", raw)
 
-    _set_routing(f"source:{query}", "kiwix")
+    # Found alongside the same real bug in _llm_pick_fusion_sources(),
+    # via the same complexity-investigation pass: this used to cache
+    # the kiwix fallback under the same key a genuine success would
+    # use, permanently locking a query into kiwix for the full routing
+    # cache TTL after a single transient LLM hiccup — even though a
+    # retry moments later would likely have succeeded with the actual,
+    # correct source. Not caching the fallback gives every subsequent
+    # identical query a fresh, real chance at a correct decision.
     return "kiwix"
 
 
@@ -766,10 +773,23 @@ def _llm_pick_fusion_sources(query: str) -> list[str]:
         _set_routing(cache_key, ",".join(chosen))
         return chosen[:3]
 
+    # Found via a deliberate complexity-investigation pass: this used to
+    # cache the failure-default fallback under the exact same key as a
+    # genuine success — a single transient LLM hiccup (a truncated
+    # response, a momentary parsing glitch) would permanently lock this
+    # specific query into the generic ["kiwix", "web"] fallback for the
+    # full routing cache TTL, even though a retry moments later would
+    # likely have succeeded with a better, more specific source
+    # selection. Confirmed directly: a query that failed once and would
+    # have genuinely succeeded on a second attempt never even reached
+    # the LLM the second time, since the cached failure short-circuited
+    # the function before the real call. Not caching the fallback means
+    # every subsequent identical query gets a fresh, real chance at
+    # success, at the (acceptable, since this is a per-query auto-fusion
+    # path, not the hot single-source routing path) cost of re-querying
+    # the LLM each time until it actually succeeds.
     _LOGGER.warning("LLM returned invalid fusion sources '%s', using defaults", raw)
-    defaults = ["kiwix", "web"]
-    _set_routing(cache_key, ",".join(defaults))
-    return defaults
+    return ["kiwix", "web"]
 
 
 def detect_intent(query: str) -> str | list[str]:
