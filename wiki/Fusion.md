@@ -61,6 +61,14 @@ This happened because `route_with_source()` can itself report `"fusion"` as the 
 
 This exact bug was found and fixed **twice** in this project's history — once in [Query Decomposition](Query-Decomposition)'s original merge loop, and a second time at a brand-new call site added for [Conditional Query Detection](Conditional-Query-Detection)'s remainder-merging feature, which hadn't existed yet when the first fix shipped. The fix is the same both times: check whether the source being wrapped is literally the string `"fusion"`, and if so, pass the result through unwrapped rather than double-headering it. Worth remembering as a real, recurring footgun any time new code merges multiple `route_with_source()` outputs together — the check has to be applied at every merge site individually, since there's no single chokepoint that catches it automatically.
 
+## The mixed-speed timeout crash
+
+A real, significant bug existed in the concurrent-fetch logic for a long stretch of this project's life, found only via a deliberate, careful re-read of `search()` during a complexity-investigation pass — not by any failing test, since no existing test happened to mix a fast source with one slow enough to hit the timeout.
+
+`concurrent.futures.as_completed(futures, timeout=fusion_timeout)` has its own overall timeout, raised as a `TimeoutError` for the *entire iteration* the moment the deadline passes — a genuinely separate mechanism from the per-future `future.result(timeout=...)` timeout used inside the loop to gracefully mark one slow source as failed. The outer one was never caught. **Querying two sources where one responds quickly and the other exceeds the timeout crashed the entire fusion call**, discarding the fast source's real, already-successful result along with it — turning what should have been a clean partial success (exactly what [single-source fallback](#why-single-source-results-skip-the-header) is designed to handle) into a total, opaque failure.
+
+The fix wraps the `as_completed` iteration itself in a `try/except`, and on a timeout, marks any future not already recorded in `results` as failed — without discarding whatever real results had already been gathered before the deadline hit. Verified directly: a fast source paired with one exceeding `FUSION_TIMEOUT_SECONDS` now correctly returns the fast source's content, with the slow one logged and excluded, instead of crashing.
+
 ## Configuration
 
 | Setting | Default | What it actually controls |

@@ -4,6 +4,29 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.25.0]
+
+### Fixed — A Significant, Real Crash Bug: Fusion Failed Entirely When Mixing Fast and Slow Sources
+A tenth complexity-investigation pass this release cycle, applied to `app/sources/fusion.py`'s `search()` (D, 22) — the actual cross-source merge engine behind every multi-source answer Mnemolis gives, including real production queries verified earlier this cycle. Reading the concurrent-fetch logic carefully surfaced a genuine, significant bug: `concurrent.futures.as_completed(futures, timeout=fusion_timeout)` raises its own `TimeoutError` for the **entire iteration** once the overall deadline passes — a separate, distinct mechanism from the per-future `future.result(timeout=...)` timeout already correctly caught inside the loop. This outer exception was previously uncaught, meaning **a single slow source mixed with a fast one crashed the entire fusion call**, discarding the fast source's genuinely successful result along with it, even though that data already existed in memory. This directly undermined fusion's own documented graceful-degradation design ("if only one source returns results, it is returned directly") by turning a partial success into a total, opaque failure (`error: "1 (of 2) futures unfinished"`) instead.
+
+Confirmed via direct testing: before the fix, a fast source (0.1s) paired with a source exceeding the configured timeout crashed `fusion.search()` entirely. After the fix, the fast source's real result is returned cleanly, with the slow source correctly logged as timed out — exactly matching the intended design. The `/search` REST endpoint's own outer exception handler meant this never produced a raw 500 error, but it did mean every fusion query touching a slow source returned `success: false` with an opaque error message, discarding a real, already-available partial result every time.
+
+### Changed — Unified a Genuine Cross-File Duplicate: `router.py`'s `_merge_decomposed_parts` Now A(5)
+The same investigation found `fusion.py`'s `_merge_same_source()` was byte-for-byte identical to logic living inside `router.py`'s `_merge_decomposed_parts()` (extracted during the 3.21.0 pass on `route_with_source()`, without realizing fusion.py already had the same function). Verified both callers genuinely share the same input/output contract (`list[tuple[str, str]]` in, same shape out) before unifying — `router.py` already imports `fusion` directly (it calls `fusion.search()` for internal multi-source dispatch), making `fusion.py` the safe home for the shared function; the reverse import direction would create a circular import. `_merge_decomposed_parts()` dropped from carrying its own copy of this logic to a single call into `fusion._merge_same_source()`, landing at A(5).
+
+### Added (Tests)
+- A real, slow-running (~10s) regression test confirming a slow source mixed with a fast one no longer crashes `fusion.search()` and correctly returns the fast source's real result
+- 2 new tests confirming the router/fusion merge-logic unification is genuine: one patches `fusion._merge_same_source` directly to confirm `router.py` actually calls into it (not just happens to produce matching output), one confirms consecutive same-source parts still correctly merge into one headered section end to end
+
+### Changed
+- `fusion.search`: D(22) → D(25) — an honest, accepted small increase as the cost of the crash-prevention fix, consistent with every other correctness-over-complexity-score tradeoff made this release cycle
+- `router.py`'s `_merge_decomposed_parts`: dropped to A(5) as a direct result of the unification
+- Version bumped to 3.25.0
+
+**Total test count: 927**
+
+---
+
 ## [3.24.0]
 
 ### Fixed — A Significant, Real Bug: the Pronoun "I" Mistaken for a Proper Noun
