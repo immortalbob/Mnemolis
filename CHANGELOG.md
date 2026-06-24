@@ -4,6 +4,25 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.36.0]
+
+### Fixed — A Significant, Confirmed-Real Bug: Thinking Models Silently Broken on the OpenAI-Compatible LLM Path
+Continuing the bulletproofing pass into `app/llm.py`. `_complete_ollama()` already has a real, working fallback for "thinking models (qwen3 etc) that return empty response with thinking field" — but `_complete_openai()`, the code path for this project's actual real LLM backend (llama-server with Qwen3-Coder-30B), had no equivalent at all.
+
+Confirmed this is a genuine, well-known, widely-reported failure mode before fixing it — not a theoretical concern: multiple independent real-world bug reports (across different projects, different OpenAI-compatible servers, and different thinking-model families) all describe the exact same symptom — a thinking model served via an OpenAI-compatible `/v1/chat/completions` endpoint routinely returns an **empty `content` field**, with all of the real output sitting in a separate `reasoning_content` field instead. `llama.cpp`'s own server documentation confirms this is the default `reasoning_format` behavior (`"deepseek"` style: thoughts go to `message.reasoning_content`, `message.content` stays empty). Without a fallback, every single completion on this path would silently return `None` — not a contrived edge case, but the literal default behavior for the specific kind of model this project's own README documents using on this exact backend.
+
+Fixed by mirroring `_complete_ollama()`'s already-proven fallback pattern exactly: if `content` is empty, check `reasoning_content` (and `reasoning`, a variant some servers use instead) and extract the last non-empty line as a best-effort answer.
+
+### Added (Tests)
+- 3 new tests: the `reasoning_content` fallback works correctly, the `reasoning` field variant is also checked, and the case where both `content` and `reasoning_content` are genuinely empty still correctly returns `None`
+
+### Changed
+- Version bumped to 3.36.0
+
+**Total test count: 961**
+
+---
+
 ## [3.35.0]
 
 ### Investigation Note — Opening a New Phase: Bulletproofing

@@ -228,6 +228,58 @@ class TestCompleteOpenAI:
             result = complete("test")
         assert result is None
 
+    def test_falls_back_to_reasoning_content_when_content_empty(self):
+        """Regression test for a real, significant bug found via a
+        deliberate "bulletproofing" pass, confirmed against multiple
+        independent real-world bug reports of this exact failure mode:
+        thinking models served via an OpenAI-compatible endpoint (the
+        actual real backend this project uses — llama-server with
+        Qwen3-Coder-30B) routinely return an EMPTY content field with
+        all real output sitting in a separate reasoning_content field
+        instead. llama.cpp's server defaults to exactly this "deepseek"
+        reasoning_format convention. Without this fallback, a thinking
+        model on this code path would silently return None for every
+        single completion — mirrors the exact fallback _complete_ollama
+        already has for Ollama's own "thinking" field."""
+        from app.llm import complete
+        mock_resp = self._mock_response({
+            "choices": [{"message": {
+                "content": "",
+                "reasoning_content": "Let me think about this.\nThe query is about weather.\nforecast"
+            }}]
+        })
+        with patch("app.llm.requests.post", return_value=mock_resp):
+            result = complete("test")
+        assert result == "forecast"
+
+    def test_falls_back_to_reasoning_field_variant(self):
+        """Some OpenAI-compatible servers use 'reasoning' instead of
+        'reasoning_content' for the same concept — confirms both
+        variants are checked."""
+        from app.llm import complete
+        mock_resp = self._mock_response({
+            "choices": [{"message": {
+                "content": "",
+                "reasoning": "Thinking it through.\nuptime"
+            }}]
+        })
+        with patch("app.llm.requests.post", return_value=mock_resp):
+            result = complete("test")
+        assert result == "uptime"
+
+    def test_returns_none_when_content_and_reasoning_both_empty(self):
+        """Confirms the fix doesn't change behavior when there's
+        genuinely no usable content anywhere — the existing
+        test_returns_none_when_content_empty case, re-verified alongside
+        its new sibling to confirm both genuinely coexist correctly."""
+        from app.llm import complete
+        mock_resp = self._mock_response({
+            "choices": [{"message": {"content": "", "reasoning_content": ""}}]
+        })
+        with patch("app.llm.requests.post", return_value=mock_resp):
+            result = complete("test")
+        assert result is None
+
     def test_returns_none_on_connection_error(self):
         from app.llm import complete
         with patch("app.llm.requests.post", side_effect=req.exceptions.ConnectionError()):

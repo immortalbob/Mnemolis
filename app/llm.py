@@ -89,5 +89,28 @@ def _complete_openai(prompt: str, max_tokens: int, temperature: float) -> str | 
     if not choices:
         return None
 
-    raw = choices[0].get("message", {}).get("content", "").strip()
+    message = choices[0].get("message", {})
+    raw = message.get("content", "").strip()
+
+    # Found via a deliberate "bulletproofing" pass, confirmed against
+    # multiple independent real-world bug reports of this exact failure
+    # mode: thinking models served via an OpenAI-compatible endpoint
+    # (the actual real backend this project uses — llama-server with
+    # Qwen3-Coder-30B) routinely return an EMPTY content field with all
+    # real output sitting in a separate reasoning_content field instead
+    # — the same underlying problem _complete_ollama already has a
+    # real, working fallback for via Ollama's own "thinking" field, just
+    # never mirrored here. llama.cpp's server defaults to this exact
+    # "deepseek" reasoning_format convention (message.reasoning_content),
+    # which is also the convention most other OpenAI-compatible servers
+    # use. Without this fallback, a thinking model on this code path
+    # would silently return None for every single completion — not a
+    # contrived edge case, but the literal default behavior for the
+    # specific kind of model this project's own README documents using
+    # on this backend.
+    if not raw:
+        reasoning = message.get("reasoning_content", "") or message.get("reasoning", "")
+        lines = [line.strip() for line in reasoning.splitlines() if line.strip()]
+        raw = lines[-1] if lines else ""
+
     return raw.strip(".").strip() or None
