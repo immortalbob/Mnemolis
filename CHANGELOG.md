@@ -4,6 +4,26 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.46.0]
+
+### Added — Adversarial Self-Testing
+A background job, on the same `apscheduler` infrastructure the snapshot engine already runs on, that generates structurally-novel queries by combining Mnemolis's own real ingredient vocabulary (`router.INTENT_MAP`, `router._CONJUNCTIONS`, `router._NOSPLIT_PATTERNS`, `kiwix.DISCOURSE_FRAMING_PATTERNS`), runs each through the real `route_with_source()` pipeline, and flags structural anomalies for human review. Institutionalizes the adversarial megaquery testing approach that found most of the bugs documented in the wiki's Design History, instead of relying on someone constructing a nasty test sentence by hand.
+
+Generation is pure-Python combinatorics — seven recipes, zero LLM calls in the hot path — fingerprint-deduplicated so repeated cycles bias toward never-seen ingredient combinations before falling back to a repeat. Every anomaly check verifies a documented Mnemolis behavioral guarantee against what the real pipeline actually did (does a multi-intent query produce a matching number of result sections, does a discourse-framing query actually keep kiwix in the result, does the result match a known empty/error phrase) — never a correctness judgment about response content, the same distinction that made an LLM-as-judge approach a non-starter for this exact problem shape in published research.
+
+New endpoint: `GET /adversarial/flagged` — every currently-flagged combination, most recent first. New `/health` field: `adversarial_testing`, same `ok`/`stale`/`never_ran` shape as `snapshot_jobs`. New settings: `ADVERSARIAL_TEST_INTERVAL_MINUTES` (default 60), `ADVERSARIAL_TEST_BATCH_SIZE` (default 8). New backup file: `adversarial_testing.db` (synthetic generated queries only, never real user data) — `_BACKUP_DATA_FILES` is now five entries, not four.
+
+Full design rationale, the seven recipes, and a real false-negative bug the discourse-framing check caught in itself during its own unit testing: wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing).
+
+### Changed
+- Version bumped to 3.46.0
+- Wiki's Roadmap, Backup & Restore, Configuration Reference, and Health & Observability pages updated to reflect the new feature
+- README's Backup & Restore section updated to "five files," matching the new file count
+
+**Total test count: 1049**
+
+---
+
 ## [3.45.0]
 
 ### Investigation Note — A Config-Completeness Audit, After Battle Testing and Bulletproofing

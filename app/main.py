@@ -40,6 +40,12 @@ from app.snapshots import (
     format_changes,
     get_snapshot_job_health,
 )
+from app.adversarial_testing import (
+    init_adversarial_db,
+    run_adversarial_test_cycle,
+    get_adversarial_test_summary,
+    get_flagged_combinations,
+)
 from app.config import settings
 
 # Configure logging at startup — without this, the root logger defaults to
@@ -99,6 +105,7 @@ _BACKUP_DATA_FILES = [
     "/app/data/routing_cache.json",
     "/app/data/query_log.db",
     "/app/data/snapshots.db",
+    "/app/data/adversarial_testing.db",
 ]
 
 
@@ -215,6 +222,7 @@ async def lifespan(app: FastAPI):
         await loop.run_in_executor(None, load_routing_cache)
         await loop.run_in_executor(None, _init_log_db)
         await loop.run_in_executor(None, init_snapshot_db)
+        await loop.run_in_executor(None, init_adversarial_db)
 
         # Start snapshot scheduler
         scheduler = BackgroundScheduler()
@@ -222,6 +230,11 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(snapshot_forecast, "interval", minutes=30, id="snapshot_forecast")
         scheduler.add_job(snapshot_news, "interval", minutes=60, id="snapshot_news")
         scheduler.add_job(snapshot_ha, "interval", minutes=5, id="snapshot_ha")
+        scheduler.add_job(
+            run_adversarial_test_cycle, "interval",
+            minutes=settings.adversarial_test_interval_minutes,
+            id="adversarial_testing",
+        )
         scheduler.start()
         _LOGGER.info("Snapshot scheduler started")
 
@@ -240,7 +253,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.45.0",
+    version="3.46.0",
     lifespan=lifespan,
 )
 
@@ -390,6 +403,7 @@ def health():
         "routing_cache_entries": len(get_routing_cache_stats()),
         "routing_cache_max_size": settings.routing_cache_max_size,
         "snapshot_jobs": get_snapshot_job_health(),
+        "adversarial_testing": get_adversarial_test_summary(),
         "sources": sources,
     }
 
@@ -709,6 +723,33 @@ def trigger_snapshots():
         ]
         concurrent.futures.wait(futures)
     return {"status": "ok", "snapshots_triggered": ["uptime", "forecast", "news", "ha"]}
+
+
+@app.get("/adversarial/flagged")
+def adversarial_flagged(limit: int = 50):
+    """
+    Return adversarial self-testing combinations currently flagged for
+    human review — the real, queryable home for the "logs results for
+    periodic review" mechanism the roadmap's Adversarial Self-Testing
+    entry called for.
+
+    Deliberately left unauthenticated, same as /health and /areas: this
+    exposes only synthetic, generated test queries and their structural
+    anomaly flags, never real user queries or cache contents, so it sits
+    outside API_KEYS' documented scope (POST /search and GET /changes
+    only) the same principled way those two endpoints already do. This
+    was a deliberate decision, not a default left unconsidered — see the
+    design doc's section 8 for the reasoning.
+
+    Each row is a structural anomaly, never a correctness judgment — see
+    app/adversarial_testing.py's module docstring for why that distinction
+    is the single hardest requirement on this whole feature.
+    """
+    flagged = get_flagged_combinations(limit=limit)
+    return {
+        "count": len(flagged),
+        "flagged": flagged,
+    }
 
 
 @app.get("/logs/stats")

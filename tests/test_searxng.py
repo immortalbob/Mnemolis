@@ -167,6 +167,27 @@ class TestSearxngSearch:
         mock.raise_for_status.return_value = None
         return mock
 
+    def test_request_timeout_is_configurable(self):
+        """Regression test for a real gap found via a deliberate config-
+        completeness audit: this client-side timeout was hardcoded at
+        10s regardless of what SearXNG's own server-side request_timeout
+        was configured to, meaning the documented fix for "Error
+        reaching SearXNG" (raising SearXNG's max_request_timeout to 20s)
+        wouldn't have fully worked, since Mnemolis's own client would
+        still cut the connection at 10s first. Confirms the configured
+        value is genuinely passed through to the real network call."""
+        from app.sources import searxng
+        from app.config import settings
+        original = settings.searxng_request_timeout_seconds
+        settings.searxng_request_timeout_seconds = 25
+        try:
+            with patch("app.sources.searxng.requests.get", return_value=self._mock_response([])) as mock_get:
+                searxng._fetch_searxng("test query")
+            _, kwargs = mock_get.call_args
+            assert kwargs["timeout"] == 25
+        finally:
+            settings.searxng_request_timeout_seconds = original
+
     def test_returns_formatted_results(self):
         from app.sources import searxng
         mock_results = [

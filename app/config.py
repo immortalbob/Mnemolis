@@ -216,5 +216,22 @@ class Settings(BaseSettings):
     # Comma-separated list of valid keys, e.g. "key1,key2,key3".
     api_keys: str = ""
 
+    # -------------------------------------------------------------------
+    # Adversarial self-testing — background combinatorial query generation
+    # -------------------------------------------------------------------
+    # How often the adversarial test scheduler tick runs. 60 minutes is
+    # frequent enough to accumulate real coverage over days/weeks while
+    # never meaningfully competing with real traffic for resources. Don't
+    # hardcode this — per the project's own config-completeness audit
+    # philosophy, anything with a reasonable default still gets a real
+    # setting rather than a magic number buried in main.py.
+    adversarial_test_interval_minutes: int = 60
+
+    # How many queries to generate per scheduler tick. A small batch costs
+    # nothing extra (no LLM calls in the hot path — generation is pure
+    # combinatorics) and produces more real coverage per tick than
+    # generating one query at a time.
+    adversarial_test_batch_size: int = 8
+
 
 settings = Settings()

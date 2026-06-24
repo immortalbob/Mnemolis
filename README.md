@@ -725,7 +725,7 @@ The new source is automatically available via both REST and MCP — and immediat
 
 ## Backup & Restore
 
-All Mnemolis state — result cache, routing cache, query log, and snapshot history — lives in four files under `/app/data`, backed by the `mnemolis_data` Docker volume (see the volume naming note below for how Docker Compose actually names it).
+All Mnemolis state — result cache, routing cache, query log, snapshot history, and adversarial self-testing history — lives in five files under `/app/data`, backed by the `mnemolis_data` Docker volume (see the volume naming note below for how Docker Compose actually names it).
 
 ### Backing up
 
