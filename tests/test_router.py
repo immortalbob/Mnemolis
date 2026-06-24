@@ -740,6 +740,36 @@ class TestDecompose:
         idx = query.lower().find(" and ")
         assert _is_proper_noun_pair_at(query, idx, len(" and ")) is True
 
+    def test_pronoun_i_before_conjunction_also_not_mistaken_for_proper_noun(self):
+        """Regression test for an asymmetric gap found via a dedicated,
+        fresh, complete re-read of this exact function (its first one,
+        despite having been edited twice already for the after_head "I"
+        case above): "I and Texas" (the unusual word order, "I" directly
+        adjacent to the conjunction with no verb between them) still
+        triggered the false positive even after the after_head fix,
+        since only after_head was checked, never before_tail. Confirmed
+        via direct testing that this specific construction is genuinely
+        low-reachability through natural English — "I" is almost always
+        followed by a verb ("I want", "I think", "I need"), not directly
+        by a conjunction, so this exact asymmetric case essentially
+        never occurs in a real, natural compound request the way the
+        after_head case commonly does. Fixed anyway for completeness,
+        since the fix was cheap and the asymmetry was real."""
+        from app.router import _is_proper_noun_pair_at
+        query = "I and Texas are both fine"
+        idx = query.lower().find(" and ")
+        assert _is_proper_noun_pair_at(query, idx, len(" and ")) is False
+
+    def test_natural_word_order_with_i_after_conjunction_still_works(self):
+        """Confirms the natural, common word order ("Texas and I," not
+        the unusual "I and Texas") still correctly returns False after
+        the symmetric fix — this is the original, already-fixed case,
+        re-verified here alongside its newly-fixed counterpart."""
+        from app.router import _is_proper_noun_pair_at
+        query = "Texas and I are both fine"
+        idx = query.lower().find(" and ")
+        assert _is_proper_noun_pair_at(query, idx, len(" and ")) is False
+
     def test_explicit_source_not_decomposed(self):
         from app.router import route, clear_cache
         import app.router as router_module

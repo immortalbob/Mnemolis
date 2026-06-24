@@ -1078,7 +1078,21 @@ def _is_proper_noun_pair_at(query: str, idx: int, conj_len: int) -> bool:
     # (he/she/they/we) is unconditionally capitalized regardless of
     # context the way "I" uniquely is, so no other word produces this
     # exact false-positive shape.
-    if after_head.rstrip(",.;:").lower() == "i":
+    #
+    # The symmetric check on before_tail closes an asymmetric gap found
+    # during the SAME re-read that found the after_head case above:
+    # "I and Texas" (the unusual word order, "I" directly adjacent to
+    # the conjunction with no verb between them) still triggered the
+    # false positive, even after the after_head fix. Verified this is
+    # genuinely low-reachability through natural English — "I" is
+    # almost always followed by a verb ("I want", "I think", "I need"),
+    # not directly by a conjunction, so before_tail being exactly "I"
+    # essentially never occurs in a real, natural compound request the
+    # way after_head being "I" commonly does ("X, plus I need..."). Low
+    # reachability isn't the same as zero, though, and the fix is cheap
+    # — added for completeness rather than leaving a known, if narrow,
+    # asymmetry in place.
+    if after_head.rstrip(",.;:").lower() == "i" or before_tail.rstrip(",.;:").lower() == "i":
         return False
 
     after_name_is_short = (

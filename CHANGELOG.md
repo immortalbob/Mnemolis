@@ -4,6 +4,25 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.31.1]
+
+### Fixed — An Asymmetric Gap in the Pronoun "I" Proper-Noun-Pair Fix
+An eighteenth complexity-investigation pass this release cycle gave `_is_proper_noun_pair_at()` its first ever complete, dedicated, fresh read — despite having been edited twice already (3.24.0's original "I" exclusion, the fix found via the megaquery investigation). The fresh read found a real, if narrow, asymmetric gap left behind by that original fix: only `after_head` was checked for the pronoun "I," leaving `before_tail` unguarded. `"I and Texas are both fine"` (the unusual word order, "I" directly adjacent to the conjunction with no verb between them) still triggered the same false-positive proper-noun-pair protection that `"Texas, plus I need..."` already correctly avoided.
+
+Assessed real-world reachability carefully before deciding whether to fix it: confirmed via direct testing that this specific construction is genuinely low-reachability through natural English — "I" is almost always followed by a verb ("I want," "I think," "I need"), never directly by a conjunction, so this exact asymmetric case essentially never occurs in a real, natural compound request the way the original `after_head` case commonly does (every natural phrasing tested — `"I want the weather and Texas news"`, `"I think Iran and Israel are the topic"` — correctly avoided the gap on its own, since a verb always separates "I" from the conjunction). Fixed anyway with a symmetric check on `before_tail`, since the asymmetry was real and the fix was cheap.
+
+### Added (Tests)
+- 2 new tests: the previously-asymmetric "I and Texas" case now correctly returns `False`, and the original, natural-word-order "Texas and I" case re-verified alongside it to confirm both sides of the symmetry hold together
+
+### Changed
+- `_is_proper_noun_pair_at`: C(13) → C(14) — a small, honest increase for the new symmetric check
+- [The Proper-Noun-Pair Saga](https://github.com/immortalbob/Mnemolis/wiki/The-Proper-Noun-Pair-Saga) wiki page updated with an honest follow-up note under Bug 5, rather than a new heading, since this was a refinement of that same fix found during a later, separate investigation pass
+- Version bumped to 3.31.1
+
+**Total test count: 950**
+
+---
+
 ## [3.31.0]
 
 ### Investigation Note
