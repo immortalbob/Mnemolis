@@ -4,6 +4,28 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.44.0]
+
+### Investigation Note
+A full, deliberate top-to-bottom re-read of `app/sources/fusion.py`, completing the bulletproofing pass across every source file. Most of the file held up cleanly — `_truncate()`'s last-newline boundary logic, `_deduplicate()`'s `sentences()` helper (including a careful check that abbreviation-induced sentence fragmentation, e.g. "U.S." breaking mid-sentence, doesn't create false-positive dedup matches between genuinely different sources — confirmed it doesn't, since the actual differing content dominates each fragment regardless), and `_HEADER_LABELS`'s coverage against every real `SOURCE_MAP` entry were all checked and confirmed correct.
+
+### Fixed — A Real Crash: `FUSION_MAX_SOURCES=0` Broke Every Fusion Query
+`FUSION_MAX_SOURCES` is a plain, unvalidated int — setting it to `0` (a plausible misconfiguration, e.g. someone trying to "disable" fusion entirely) capped the valid-sources list to empty *after* the function's only existing empty-list check, meaning `ThreadPoolExecutor(max_workers=0)` crashed with a raw `ValueError: max_workers must be greater than 0` instead of the sensible "no valid sources specified" message already used for the genuinely equivalent case just above it. Confirmed end to end before fixing. Fixed by re-checking for emptiness after the capping step, reusing the same, already-correct error path.
+
+### Changed — Removed a Confirmed-Unnecessary Function Call
+Traced through exactly where duplicate sources can and cannot occur in `search()`'s own `parts`-building logic, prompted by a comment claiming a call to `_merge_same_source()` here "fixes duplicate [HA] from decomposition." Confirmed this scenario cannot actually happen at this specific call site: `valid` (the list `parts` is ultimately built from) is already deduplicated via its own `seen` set earlier in the same function, so `parts` here can never contain two entries for the same source. The comment's real scenario — two independently-decomposed sub-queries both resolving to the same source — genuinely happens in `router.py`'s own `_merge_decomposed_parts()`, the *other* real call site for this shared function; that one still needs it, this one never did. Removed the confirmed-dead call here, with a clear explanation of the distinction for future readers.
+
+### Added (Tests)
+- 1 new test confirming `FUSION_MAX_SOURCES=0` no longer crashes and produces the sensible "no valid sources" message instead
+- 1 new test confirming `search()` itself never has duplicate sources reaching its merge step (a duplicate source passed in is correctly deduplicated before `parts` is ever built, producing exactly one section in the output regardless)
+
+### Changed
+- Version bumped to 3.44.0
+
+**Total test count: 1011**
+
+---
+
 ## [3.43.1]
 
 ### Fixed — Unbounded Article-Fetch Fallback Loop

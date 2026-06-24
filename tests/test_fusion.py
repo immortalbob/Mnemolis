@@ -294,6 +294,28 @@ class TestConfigurableFusionLimits:
         # Should not error, and should have capped to 2 sources internally
         assert isinstance(result, str)
 
+    def test_max_sources_zero_does_not_crash(self):
+        """Regression test for a real bug found via a deliberate
+        "bulletproofing" pass: FUSION_MAX_SOURCES is a plain,
+        unvalidated int — setting it to 0 (a plausible
+        misconfiguration, e.g. someone trying to "disable" fusion
+        entirely) capped the valid-sources list to empty AFTER the
+        only existing empty-list check, meaning
+        ThreadPoolExecutor(max_workers=0) crashed with a raw
+        ValueError ("max_workers must be greater than 0") instead of
+        the sensible "no valid sources" message already used for the
+        genuinely equivalent case earlier in the same function."""
+        from app.sources.fusion import search
+        from app.config import settings
+        from unittest.mock import patch
+        settings.fusion_max_sources = 0
+        with patch("app.router.SOURCE_MAP", {
+            "kiwix": lambda q: "kiwix result here",
+            "web": lambda q: "web result here",
+        }):
+            result = search("test", sources=["kiwix", "web"])  # must not raise
+        assert "no valid sources" in result.lower()
+
 
 class TestFormatHeader:
     """Tests for _format_header descriptive fusion section headers."""
@@ -418,6 +440,29 @@ class TestFusionMergeSameSource:
         assert len(merged) == 2
         assert merged[0][0] == "ha"
         assert merged[1][0] == "forecast"
+
+    def test_search_itself_never_has_duplicate_sources_to_merge(self):
+        """Regression test documenting a real finding from a deliberate
+        "bulletproofing" pass: search() used to call _merge_same_source()
+        on its own final `parts` list too, with a comment claiming it
+        "fixes duplicate [HA] from decomposition" — but that scenario
+        cannot actually occur at this call site, since `valid` (the
+        list `parts` is ultimately built from) is already deduplicated
+        via its own `seen` set earlier in the same function. Confirms
+        directly: passing duplicate source names into search() still
+        produces only ONE section per source in the final output, even
+        without _merge_same_source() ever running there — because the
+        duplicates were already removed before `parts` was built at all."""
+        from app.sources.fusion import search
+        from unittest.mock import patch
+        with patch("app.router.SOURCE_MAP", {
+            "ha": lambda q: "Indoor sensors result.",
+            "forecast": lambda q: "Sunny today.",
+        }):
+            # "ha" passed twice — search()'s own dedup should remove
+            # the duplicate before it ever reaches the merge step
+            result = search("test", sources=["ha", "forecast", "ha"])
+        assert result.count("[HA") == 1
 
     def test_empty_parts(self):
         assert self.merge([]) == []

@@ -192,6 +192,16 @@ def search(query: str, sources: list[str] | None = None) -> str:
     if not valid:
         return "No valid sources specified for fusion query."
 
+    # Found via a deliberate "bulletproofing" pass: FUSION_MAX_SOURCES
+    # is a plain, unvalidated int — setting it to 0 (a plausible
+    # misconfiguration, e.g. someone trying to "disable" fusion
+    # entirely) capped `valid` to an empty list AFTER the only existing
+    # empty-list check above, meaning ThreadPoolExecutor(max_workers=0)
+    # crashed with a raw ValueError ("max_workers must be greater than
+    # 0") instead of the sensible "no valid sources" message already
+    # used for the genuinely equivalent case just above. Re-checking
+    # for emptiness after capping reuses that same, already-correct
+    # error path rather than introducing a second one.
     max_sources = settings.fusion_max_sources
     if len(valid) > max_sources:
         _LOGGER.warning(
@@ -199,6 +209,9 @@ def search(query: str, sources: list[str] | None = None) -> str:
             len(valid), max_sources
         )
         valid = valid[:max_sources]
+
+    if not valid:
+        return "No valid sources specified for fusion query."
 
     _LOGGER.info("Fusion query: '%s' sources=%s", query[:50], valid)
 
@@ -274,10 +287,20 @@ def search(query: str, sources: list[str] | None = None) -> str:
     truncated = {s: _truncate(r) for s, r in successful.items()}
 
     # Build parts list preserving source order
+    #
+    # Found via a deliberate "bulletproofing" pass: this used to call
+    # _merge_same_source() here too, with a comment claiming it "fixes
+    # duplicate [HA] from decomposition" — but that scenario can't
+    # actually occur AT THIS CALL SITE. `valid` (built at the top of
+    # this function) is already deduplicated via its own `seen` set
+    # before `parts` is ever built, so `parts` here can never contain
+    # two entries for the same source — there's nothing for
+    # _merge_same_source() to merge. The comment's real scenario (two
+    # independently-decomposed sub-queries both resolving to the same
+    # source, e.g. "ha") genuinely happens in router.py's own
+    # _merge_decomposed_parts(), the OTHER real call site for this
+    # shared function — that one still needs it; this one never did.
     parts = [(s, truncated[s]) for s in valid if s in truncated]
-
-    # Merge consecutive same-source results (fixes duplicate [HA] from decomposition)
-    parts = _merge_same_source(parts)
 
     merged = "\n\n---\n\n".join(
         f"{_format_header(source)}\n{result}" for source, result in parts
