@@ -15,14 +15,31 @@ _GENERAL_QUERIES = {
 }
 
 # Stop words to ignore when checking for a general query
+#
+# Found via a deliberate complexity-investigation pass: the original
+# set only handled formal/grammatical filler ("the", "is", "about"),
+# missing the common REQUEST verbs and modifiers that show up in how
+# people actually phrase a general news ask out loud — "tell me the
+# news", "give me the headlines", "any news today" all failed to be
+# recognized as general queries, since "tell"/"give"/"any"/"today"
+# weren't stop words and survived to make `meaningful` a non-subset of
+# _GENERAL_QUERIES. A direct test against 9 realistic phrasings found 9
+# of 9 failing before this fix. Also added "whats" (no apostrophe) —
+# _GENERAL_QUERIES already handled both apostrophe forms for the full
+# phrase ("what's happening" / "whats happening"), but the bare
+# contracted word itself was never a recognized stop word on its own,
+# so "whats new" still failed even after the verb additions above.
 _STOP_WORDS = {
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
     "have", "has", "had", "do", "does", "did", "will", "would", "could",
     "should", "may", "might", "shall", "can", "need", "dare", "ought",
     "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
-    "as", "into", "through", "about", "what", "which", "who", "whom",
+    "as", "into", "through", "about", "what", "whats", "which", "who", "whom",
     "this", "that", "these", "those", "i", "me", "my", "we", "our",
     "you", "your", "he", "she", "it", "they", "them", "their",
+    "tell", "give", "show", "read", "check", "catch", "get", "find",
+    "bring", "fetch", "pull", "up", "any", "new", "update", "updates",
+    "today", "now", "currently", "please", "and",
 }
 
 # Recency bonus tiers — newer articles score higher, encouraging fresher
@@ -40,6 +57,28 @@ def _is_general_query(query: str) -> bool:
     # Check if the full query matches a general phrase
     if query_lower in _GENERAL_QUERIES:
         return True
+
+    # Multi-word _GENERAL_QUERIES phrases ("what's happening", "my
+    # feeds") checked against the ORIGINAL query text directly,
+    # deliberately independent of stop-word stripping below. A real
+    # interaction bug was found and avoided here: adding "whats" to
+    # _STOP_WORDS (to fix "whats new" as its own case) would otherwise
+    # strip "whats" out of "catch me up on whats happening" before any
+    # phrase check ran, breaking the match against the existing "whats
+    # happening" entry. Checking the raw query keeps the two mechanisms
+    # from being able to interfere with each other regardless of what
+    # either set contains in the future. The remainder (whatever's left
+    # after removing the matched phrase) still has to be entirely stop
+    # words — otherwise "what's happening with bitcoin" would wrongly
+    # match on the embedded substring "what's happening" despite
+    # clearly being a specific-topic question, not a general one.
+    multi_word_phrases = [p for p in _GENERAL_QUERIES if " " in p]
+    for phrase in multi_word_phrases:
+        if phrase in query_lower:
+            remainder_words = set(query_lower.replace(phrase, "").split())
+            if not (remainder_words - _STOP_WORDS):
+                return True
+
     # Check if all meaningful words (after stop word removal) are general terms
     words = set(query_lower.split())
     meaningful = words - _STOP_WORDS

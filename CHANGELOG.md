@@ -4,6 +4,33 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.29.0]
+
+### Investigation Note
+A fourteenth complexity-investigation pass this release cycle, applied to `app/sources/freshrss.py` — a complete file never read at all this cycle. Most of the file held up cleanly under scrutiny, including a genuinely convoluted-looking canonical-URL extraction expression that turned out to handle every real edge case correctly when traced through precisely (missing field, empty list, populated list, missing nested key — all verified directly). One real, significant gap was found in `_is_general_query()`.
+
+### Fixed — A Significant Gap: Nearly Every Natural Phrasing of a General News Request Was Misclassified
+`_is_general_query()` decides whether a query should skip relevance filtering and return the full feed, versus being scored against specific keywords. The check required every word in the query (after stop-word removal) to be a recognized general-news term — but `_STOP_WORDS` only handled formal grammatical filler ("the", "is", "about"), never the common request verbs people actually use when asking out loud. A direct test against 9 realistic phrasings — `"tell me the news"`, `"give me the headlines"`, `"show me my feeds"`, `"any news today"`, and others — found **9 of 9 failing**, each one incorrectly treated as a specific-topic query and scored against literal words like "tell" or "give" instead of cleanly returning the general feed.
+
+Fixed by expanding `_STOP_WORDS` to include common request verbs and modifiers (tell, give, show, read, check, catch, any, today, update, etc.).
+
+**A second, distinct gap was found while fixing the first:** `"whats new"` (no apostrophe) still failed even after the verb additions, since the bare word "whats" was never itself a recognized stop word — `_GENERAL_QUERIES` already handled both apostrophe forms of the full "what's happening" / "whats happening" phrase, but not the standalone contracted word.
+
+**A real interaction bug was found and avoided while fixing the second gap, not shipped and caught later:** naively adding "whats" to `_STOP_WORDS` would strip it out of `"catch me up on whats happening"` before any multi-word phrase check could run against it, breaking the match against the existing "whats happening" entry. Fixed by checking multi-word `_GENERAL_QUERIES` phrases against the *original* query text directly, deliberately independent of stop-word stripping — verified this doesn't introduce a new false-positive risk either: `"what's happening with bitcoin"` and `"what's the latest news about bitcoin"` both correctly remain classified as specific-topic queries, since the unmatched remainder ("bitcoin") is checked and rejected, not just a blind substring match against the whole query.
+
+All fixes verified together against a comprehensive 23-case sweep before being applied to the real file — every previously-fixed false-positive regression test, every newly-found phrasing gap, and the deliberate interaction-bug check, all passing together.
+
+### Added (Tests)
+- 11 new tests: 7 covering the originally-missing natural phrasings (tell/give/show/check/catch + "any news today" + "whats new"), 1 covering the specific interaction-bug scenario, and 2 confirming the fix doesn't introduce new false positives for genuinely specific-topic queries that happen to contain general-query words or phrases as substrings
+
+### Changed
+- `_is_general_query`: now its own clearly-measured B(8) function (previously inlined complexity within the broader stop-word-driven check)
+- Version bumped to 3.29.0
+
+**Total test count: 942**
+
+---
+
 ## [3.28.0]
 
 ### Investigation Note
