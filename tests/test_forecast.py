@@ -41,11 +41,46 @@ class TestForecastSearch:
     def setup_method(self):
         from app.config import settings
         self._original_location_name = settings.forecast_location_name
+        self._original_lat = settings.forecast_latitude
+        self._original_lon = settings.forecast_longitude
         settings.forecast_location_name = ""
+        # Found via a deliberate "bulletproofing" pass: forecast.search()
+        # previously had no check for unconfigured (0.0, 0.0) coordinates
+        # at all — this entire test class was unknowingly relying on
+        # that gap, never setting real coordinates and only "working"
+        # because there was no check yet to catch it. Real, valid
+        # coordinates are required now that the fix correctly rejects
+        # the unconfigured default the same way every other source
+        # file's "not configured" check already does.
+        settings.forecast_latitude = 35.1894
+        settings.forecast_longitude = -114.0530
 
     def teardown_method(self):
         from app.config import settings
         settings.forecast_location_name = self._original_location_name
+        settings.forecast_latitude = self._original_lat
+        settings.forecast_longitude = self._original_lon
+
+    def test_unconfigured_coordinates_return_not_configured_message(self):
+        """Regression test for a real, significant bug found via a
+        deliberate "bulletproofing" pass reading every file in app/ top
+        to bottom, specifically looking past complexity scores at
+        genuinely small, simple-looking code: forecast_latitude and
+        forecast_longitude both default to 0.0 — a falsy value Python
+        treats the same way every other source file's config checks do,
+        EXCEPT this function never actually had the check. (0.0, 0.0)
+        is also a real, valid ocean coordinate off the coast of West
+        Africa, so an unconfigured deployment wouldn't error or warn at
+        all — it would silently return genuine, real weather data for
+        the wrong place on Earth. main.py's own /health endpoint
+        already had this exact check; it just never made it to the
+        function real user queries actually hit."""
+        from app.sources import forecast
+        from app.config import settings
+        settings.forecast_latitude = 0.0
+        settings.forecast_longitude = 0.0
+        result = forecast.search("what's the weather")
+        assert "not configured" in result.lower()
 
     def test_returns_today_tomorrow_and_day3(self):
         from app.sources import forecast
@@ -121,10 +156,16 @@ class TestLocationNamePrefix:
     def setup_method(self):
         from app.config import settings
         self._original_location_name = settings.forecast_location_name
+        self._original_lat = settings.forecast_latitude
+        self._original_lon = settings.forecast_longitude
+        settings.forecast_latitude = 35.1894
+        settings.forecast_longitude = -114.0530
 
     def teardown_method(self):
         from app.config import settings
         settings.forecast_location_name = self._original_location_name
+        settings.forecast_latitude = self._original_lat
+        settings.forecast_longitude = self._original_lon
 
     def test_location_name_included_when_configured(self):
         from app.sources import forecast
@@ -184,11 +225,17 @@ class TestConfigurableThresholds:
         from app.config import settings
         self._orig_precip = settings.forecast_precip_threshold_pct
         self._orig_wind = settings.forecast_wind_threshold_mph
+        self._original_lat = settings.forecast_latitude
+        self._original_lon = settings.forecast_longitude
+        settings.forecast_latitude = 35.1894
+        settings.forecast_longitude = -114.0530
 
     def teardown_method(self):
         from app.config import settings
         settings.forecast_precip_threshold_pct = self._orig_precip
         settings.forecast_wind_threshold_mph = self._orig_wind
+        settings.forecast_latitude = self._original_lat
+        settings.forecast_longitude = self._original_lon
 
     def _mock_resp(self, precip=0, wind=0):
         from unittest.mock import MagicMock

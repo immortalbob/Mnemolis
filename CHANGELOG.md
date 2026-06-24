@@ -4,6 +4,33 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.35.0]
+
+### Investigation Note — Opening a New Phase: Bulletproofing
+The complexity-driven investigation that ran through 3.20.0–3.34.0 has reached its natural end — every function above a meaningful complexity threshold has now had a deliberate, careful look. This release opens a deliberately different phase: reading every file in `app/` top to bottom, specifically looking past complexity scores at genuinely small, simple-looking code, on the theory that simple code earns less scrutiny precisely because nobody expects to find bugs there.
+
+### Fixed — A Real, Significant Gap: Forecast Could Silently Run Unconfigured
+The first file read in this new pass, `app/sources/forecast.py`, is genuinely small (under 100 lines) — and it had no check at all for unconfigured `forecast_latitude`/`forecast_longitude`, both of which default to `0.0`. Every other source file (`home_assistant`, `uptime_kuma`, `freshrss`) explicitly checks for missing required configuration and returns a clear "not configured" message; `forecast.py` had no equivalent.
+
+`(0.0, 0.0)` is also a real, valid ocean coordinate off the coast of West Africa — meaning an unconfigured deployment wouldn't error, warn, or fail in any visible way at all. It would silently make a real, successful network call to Open-Meteo and return genuine, real weather data for the wrong place on Earth. Found a real, telling detail while confirming this: `main.py`'s own `/health` endpoint already has this exact check (`if not settings.forecast_latitude or not settings.forecast_longitude: return {"status": "not_configured"}`) — the project's own author had already recognized and solved this problem for the health-check path, but the fix never made it to the actual function real user queries hit through `/search`.
+
+Fixed by adding the same check, matching the existing `/health` logic and every other source file's established pattern.
+
+### Fixed — An Entire Test Class Unknowingly Relying on the Gap
+Three existing test classes in `test_forecast.py` never configured real coordinates at all, only "working" because there was no check yet to catch the unconfigured default. Fixed by configuring real, valid coordinates in each affected `setup_method`, so these tests now genuinely exercise the configured-and-working path they were always meant to, rather than accidentally depending on a gap this release closes.
+
+### Added (Tests)
+- 1 new test directly confirming the fix: unconfigured `(0.0, 0.0)` coordinates now correctly return a "not configured" message instead of silently fetching weather for the wrong location
+- 3 existing test classes' `setup_method`/`teardown_method` updated to configure and restore real coordinates
+
+### Changed
+- Both [Configuration Reference](https://github.com/immortalbob/Mnemolis/wiki/Configuration-Reference) and the README already correctly documented `FORECAST_LATITUDE`/`FORECAST_LONGITUDE` as required — this fix makes the actual code finally enforce what the documentation already promised, no documentation changes needed
+- Version bumped to 3.35.0
+
+**Total test count: 958**
+
+---
+
 ## [3.34.0]
 
 ### Investigation Note — Closing This Release Cycle's Complexity-Investigation Arc

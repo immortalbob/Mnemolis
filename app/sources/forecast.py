@@ -36,6 +36,25 @@ def _fmt_time(iso: str) -> str:
 
 
 def search(query: str) -> str:
+    # Found via a deliberate "bulletproofing" pass reading every file in
+    # app/ top to bottom, specifically looking past complexity scores at
+    # genuinely small, simple-looking code: forecast_latitude and
+    # forecast_longitude both default to 0.0 — a falsy value Python
+    # treats the same way every other source file's config checks do
+    # ("not settings.ha_url", "not settings.uptime_kuma_url"), EXCEPT
+    # this function never actually had the check. (0.0, 0.0) is also a
+    # real, valid ocean coordinate off the coast of West Africa, so an
+    # unconfigured deployment wouldn't error or warn at all — it would
+    # silently return genuine, real weather data for the wrong place on
+    # Earth. main.py's own /health endpoint already has this exact
+    # check (`if not settings.forecast_latitude or not
+    # settings.forecast_longitude: return {"status": "not_configured"}`)
+    # — the project's own author had already recognized and solved this
+    # for the health-check path, but the fix never made it to the
+    # function real user queries actually hit.
+    if not settings.forecast_latitude or not settings.forecast_longitude:
+        return "Forecast is not configured. Set FORECAST_LATITUDE and FORECAST_LONGITUDE."
+
     try:
         response = requests.get(
             "https://api.open-meteo.com/v1/forecast",
