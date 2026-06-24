@@ -658,6 +658,117 @@ class TestSearchMultiCandidateScoring:
         assert call_count["n"] == 1
 
 
+class TestMultiBookFusionNegativeScoreGuard:
+    """Regression tests for a real logic flaw found via a deliberate
+    complexity-investigation pass: a result can legitimately score
+    negative (a list/index article nets -2 or -7 after its own partial
+    offset, with zero other matches). If the OVERALL best result across
+    every selected book happens to be negative, "score >= top_score *
+    0.5" silently breaks down for a negative top_score (e.g. -10 >= -5
+    is False), meaning even the top result itself wouldn't pass its own
+    bar. This never produced a wrong final answer — when a genuinely
+    good result exists anywhere, it becomes `top` by construction, so
+    the bug could only manifest when every candidate was already poor,
+    in which case falling through to the single best (still poor) result
+    was always the correct outcome anyway. The explicit `top_score > 0`
+    guard makes that intent clear and correct by construction, rather
+    than relying on the threshold math accidentally breaking down to
+    reach the right answer."""
+
+    def test_negative_top_score_skips_multi_book_comparison_without_crashing(self):
+        from app.sources import kiwix
+
+        def fake_search_book(term, book, limit=None):
+            # Both books return only genuinely poor, list-article-style
+            # results with zero real overlap with the query
+            return [{
+                "title": f"List of things in {book}",
+                "excerpt": "completely unrelated filler content",
+                "url": f"http://example.com/{book}",
+                "book": book,
+            }]
+
+        with patch.object(kiwix, "get_books", return_value=[
+                {"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""},
+                {"name": "unix.stackexchange.com_en_all_2026-02", "title": "U", "summary": ""},
+             ]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=[
+                "wikipedia_en_all_maxi_2026-02", "unix.stackexchange.com_en_all_2026-02"
+             ]), \
+             patch.object(kiwix, "_search_book", side_effect=fake_search_book), \
+             patch.object(kiwix, "_fetch_article", return_value="some content"):
+            result = kiwix.search("xyzzyplugh nonexistent gibberish query")  # must not raise
+
+        assert "List of things in" in result  # falls through to single-result path
+
+    def test_genuinely_competitive_positive_scores_still_trigger_fusion(self):
+        """Confirms the new top_score > 0 guard didn't accidentally
+        break the real, intended multi-book fusion case — two genuinely
+        relevant, positively-scored results from different books should
+        still trigger fusion exactly as before."""
+        from app.sources import kiwix
+
+        def fake_search_book(term, book, limit=None):
+            return [{
+                "title": "python",
+                "excerpt": "python programming language gpio raspberry pi",
+                "url": f"http://example.com/{book}",
+                "book": book,
+            }]
+
+        with patch.object(kiwix, "get_books", return_value=[
+                {"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""},
+                {"name": "raspberrypi.stackexchange.com_en_all", "title": "RPI", "summary": ""},
+             ]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=[
+                "wikipedia_en_all_maxi_2026-02", "raspberrypi.stackexchange.com_en_all"
+             ]), \
+             patch.object(kiwix, "_search_book", side_effect=fake_search_book), \
+             patch.object(kiwix, "_fetch_article", return_value="real article content"):
+            result = kiwix.search("python gpio raspberry pi")
+
+        assert "WIKIPEDIA" in result.upper() or "RASPBERRYPI" in result.upper()
+
+
+class TestDisambiguationOnlyAppliesToWikipediaBook:
+    """Regression tests for a real, genuine inefficiency found via the
+    same investigation: disambiguation candidates are specifically
+    Wikipedia-oriented phrasings, but the search loop previously applied
+    them to EVERY selected book when multiple books were chosen —
+    including a non-Wikipedia secondary book the mechanism was never
+    designed for. Never produced a wrong answer (scoring still picks
+    the genuine best result regardless of which term found it), but
+    meant real, unnecessary extra Kiwix requests against a book that had
+    no business being searched with Wikipedia-disambiguation phrasings."""
+
+    def test_non_wikipedia_book_searched_with_plain_terms_not_disambiguation_candidates(self):
+        from app.sources import kiwix
+
+        calls_per_book = {}
+
+        def fake_search_book(term, book, limit=None):
+            calls_per_book.setdefault(book, []).append(term)
+            return []
+
+        with patch.object(kiwix, "get_books", return_value=[
+                {"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""},
+                {"name": "raspberrypi.stackexchange.com_en_all", "title": "RPI", "summary": ""},
+             ]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=[
+                "wikipedia_en_all_maxi_2026-02", "raspberrypi.stackexchange.com_en_all"
+             ]), \
+             patch.object(kiwix, "_should_disambiguate", return_value=True), \
+             patch.object(kiwix, "_get_disambiguation_candidates",
+                          return_value=["galaxy astronomy", "galaxy spiral", "galaxy"]), \
+             patch.object(kiwix, "_search_book", side_effect=fake_search_book), \
+             patch.object(kiwix.settings, "llm_url", "http://fake"), \
+             patch.object(kiwix.settings, "llm_model", "fake-model"):
+            kiwix.search("what is galaxy")
+
+        assert calls_per_book["wikipedia_en_all_maxi_2026-02"] == ["galaxy astronomy", "galaxy spiral", "galaxy"]
+        assert calls_per_book["raspberrypi.stackexchange.com_en_all"] == ["galaxy"]
+
+
 class TestConfigurableMaxBooks:
     """Tests for settings-backed kiwix_max_books default."""
 

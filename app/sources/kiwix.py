@@ -590,19 +590,42 @@ def search(query: str) -> str:
     # disambiguation on "permission" alone, discarding "raspberry"/"pi"/
     # "gpio"/"python" — landing on an unrelated macOS permissions article.
     primary_term = max(search_terms.split(), key=len) if search_terms else search_terms
-    if _should_disambiguate(query, search_terms, selected_books):
-        search_term_candidates = _get_disambiguation_candidates(query, primary_term)
+    disambiguating = _should_disambiguate(query, search_terms, selected_books)
+    if disambiguating:
+        disambiguation_candidates = _get_disambiguation_candidates(query, primary_term)
     else:
-        search_term_candidates = [search_terms]
+        disambiguation_candidates = None
 
-    _LOGGER.info("Kiwix search term candidates: %s (from query: '%s')", search_term_candidates, query[:50])
+    _LOGGER.info(
+        "Kiwix search terms: %s (disambiguating=%s, from query: '%s')",
+        disambiguation_candidates if disambiguating else search_terms, disambiguating, query[:50]
+    )
 
-    # Search each selected book with each candidate term, collect all results,
-    # deduplicate by URL — scoring below picks the actual winner across everything
+    # Search each selected book, collect all results, deduplicate by URL —
+    # scoring below picks the actual winner across everything.
+    #
+    # Found via a deliberate complexity-investigation pass: disambiguation
+    # candidates are specifically Wikipedia-oriented phrasings (built to
+    # resolve encyclopedic ambiguity), but the search loop previously
+    # applied them to EVERY selected book when multiple books were chosen
+    # — including a non-Wikipedia secondary book the disambiguation
+    # mechanism was never designed for. This never produced a wrong final
+    # answer (scoring still picks the genuine best result across
+    # everything, so an irrelevant secondary-book result from a
+    # mismatched disambiguation term would simply score low and lose),
+    # but it meant real, unnecessary extra Kiwix requests against a book
+    # disambiguation has no actual business searching with those specific
+    # terms. Each book now searches with the term list that's actually
+    # appropriate for it — disambiguation candidates for a Wikipedia
+    # book, the plain search_terms for anything else.
     all_results = []
     seen_urls = set()
     for book in selected_books:
-        for term in search_term_candidates:
+        if disambiguating and "wikipedia" in book:
+            terms_for_book = disambiguation_candidates
+        else:
+            terms_for_book = [search_terms]
+        for term in terms_for_book:
             for r in _search_book(term, book):
                 if r["url"] not in seen_urls:
                     seen_urls.add(r["url"])
@@ -624,7 +647,24 @@ def search(query: str) -> str:
     # a tangentially-related book). Only fuse when results from different
     # books are genuinely competitive in relevance, not when one book
     # dominates and the rest are noise.
-    if len(selected_books) > 1:
+    if len(selected_books) > 1 and top_score > 0:
+        # Found via a deliberate complexity-investigation pass: a result
+        # can legitimately score negative (a list/index article nets -2
+        # or -7 after its own partial offset, with zero other matches).
+        # If the OVERALL best result across every book happens to be
+        # negative — every candidate is genuinely poor, not just one
+        # book's — "score >= top_score * 0.5" silently breaks down for
+        # a negative top_score (e.g. -10 >= -5 is False), meaning even
+        # the top result itself wouldn't pass its own bar. This never
+        # produced a wrong final ANSWER — when a genuinely good result
+        # exists anywhere, it becomes `top` by construction, so the
+        # bug can only manifest when literally every candidate is
+        # already poor, in which case falling through to the single
+        # best (still poor) result is the same, correct outcome this
+        # accidentally produced anyway. The explicit `top_score > 0`
+        # guard makes that intent clear and correct by construction,
+        # rather than relying on the threshold math breaking down to
+        # accidentally reach the right answer.
         best_per_book: dict[str, dict] = {}
         for r in scored:
             book = r["book"]

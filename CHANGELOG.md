@@ -4,6 +4,29 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.26.0]
+
+### Investigation Note
+An eleventh complexity-investigation pass this release cycle, applied to `app/sources/kiwix.py`'s `search()` (D, 24) — the actual entry point for every Kiwix query, never read line by line this cycle despite real production traffic flowing through it constantly. Most of the function held up cleanly under scrutiny (the `_build_search_terms` fallback path, the `primary_book` scoring parameter, the discourse-framing-stripped fallback string — all verified correct via direct tests, not just read and assumed). Two real, distinct issues were found and fixed.
+
+### Fixed — A Real Logic Flaw: Negative Scores Broke the Multi-Book Fusion Threshold Check
+A search result can legitimately score negative — a list/index article nets `-2` or `-7` after its own partial offset, with zero other query overlap. If the *overall best result* across every selected book happened to be negative, `score >= top_score * 0.5` silently broke down (e.g. `-10 >= -5` is `False`), meaning even the top result itself wouldn't pass its own bar, leaving the multi-book relevance comparison empty by accident. Traced carefully to assess real impact before fixing: this never produced a *wrong* final answer — when a genuinely good result exists anywhere, it becomes `top` by construction (since `top` is the single best score across everything), so the flaw could only manifest when every available candidate was already poor, in which case falling through to the single best (still poor) result was always the correct outcome anyway. Fixed by adding an explicit `top_score > 0` guard before attempting the multi-book comparison at all — making the existing, accidentally-correct fallthrough behavior intentional and correct by construction, rather than relying on the threshold math breaking down to reach the right answer.
+
+### Changed — Disambiguation Candidates No Longer Applied to Non-Wikipedia Books
+Disambiguation candidates are specifically Wikipedia-oriented phrasings (built to resolve encyclopedic ambiguity — see [Kiwix Disambiguation](Kiwix-Disambiguation)), but the search loop previously applied them to **every** selected book whenever multiple books were chosen and disambiguation triggered — including a non-Wikipedia secondary book the mechanism was never designed for. Never produced a wrong answer (scoring still picks the genuine best result across everything, so an irrelevant secondary-book result from a mismatched disambiguation term would simply score low and lose), but meant real, unnecessary extra Kiwix requests against a book with no actual business being searched using Wikipedia-disambiguation phrasings. Fixed: each selected book now searches with the term list actually appropriate for it — disambiguation candidates for a Wikipedia book, the plain `search_terms` for anything else. Verified directly: a 2-book selection (Wikipedia + Stack Exchange) with disambiguation active now correctly searches Wikipedia with all 3 candidate phrasings and the Stack Exchange book with exactly 1 plain term, down from 3.
+
+### Added (Tests)
+- 2 new tests for the negative-score guard: confirming a genuinely all-poor-results scenario doesn't crash and falls through correctly, and confirming genuinely competitive positive scores still correctly trigger multi-book fusion exactly as before
+- 1 new test directly confirming a non-Wikipedia book in a multi-book disambiguation scenario is searched with plain terms, not Wikipedia-oriented disambiguation candidates
+
+### Changed
+- `kiwix.search`: D(24) → D(28) — an honest, accepted increase as the combined cost of both fixes, consistent with every correctness/efficiency-over-complexity-score tradeoff made this release cycle
+- Version bumped to 3.26.0
+
+**Total test count: 930**
+
+---
+
 ## [3.25.0]
 
 ### Fixed — A Significant, Real Crash Bug: Fusion Failed Entirely When Mixing Fast and Slow Sources
