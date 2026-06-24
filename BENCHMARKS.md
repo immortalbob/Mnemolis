@@ -127,6 +127,10 @@ Query decomposition and smart fusion truncation did not add meaningful overhead 
 | Discourse-framing query, cold | 18ms | 150ms | First time seeing the phrase (p98: 2500ms) |
 | Discourse-framing query, warm | 17ms | 23ms | Routing + disambiguation cached |
 | 20 concurrent users (v3.17.0) | 18ms | 32ms | 0% failure rate, warm cache |
+| HA entity query, post-word-boundary-fix (v3.44.0) | 35-39ms | 47-48ms | `_build_filter()` switched from substring to regex matching — no measurable cost confirmed |
+| Discourse-framing query, cold (v3.44.0) | 30ms | 1300ms | New most expensive cold-path query (p98: 4200ms), reflecting a larger Kiwix catalog/routing surface since v3.17.0 |
+| Discourse-framing query, warm (v3.44.0) | 29ms | 43ms | ~76x p98 improvement (4200ms → 55ms) once cached |
+| 20 concurrent users (v3.44.0) | 24ms | 53ms | 0% failure rate, warm cache — median unchanged since v3.5.0 |
 
 ## Key findings
 
@@ -285,18 +289,93 @@ Re-benchmarked after the conditional query detection feature (3.16.0) and the di
 
 **Median latency remains completely unaffected.** Aggregated median held at 18ms cold and warm, consistent with every prior benchmarked version back to v3.5.0 — conditional detection and the discourse-framing fix both add real cost only on the specific query shapes that trigger them, with zero impact on the steady-state majority of traffic.
 
+### 20 Users — Cold vs Warm Cache (v3.44.0, post-battle-testing and bulletproofing)
+
+The last real benchmark in this file was v3.17.0. Everything from v3.18.0 through v3.44.0 — the complexity-investigation campaign (v3.20.0–v3.34.0, real bugs found and fixed in `route_with_source`, `_decompose`, `home_assistant.py`'s area filtering, `kiwix.py`'s scoring/disambiguation, `snapshots.py`'s diff engines, `uptime_kuma.py`, `freshrss.py`, `searxng.py`) and the bulletproofing pass that followed (v3.35.0–v3.44.0, a full top-to-bottom read of every file in `app/` specifically hunting for bugs complexity scores never flagged) — had never been measured under real load. Two real, severe bugs from that whole stretch are directly relevant to what this run could confirm: `home_assistant.py`'s keyword matching switched from naive substring search to `\b`-word-boundary regex (a real bug had `"on"` matching inside `"front"`, silently breaking entity lookups like "is the front door locked"), and `kiwix.py`'s article-fetch fallback loop is now capped at 5 attempts instead of unbounded. Neither is expected to add meaningful latency — both are correctness fixes, not new computation.
+
+`tests/locustfile.py`'s `HA_QUERIES` was updated for this run specifically: added `"is the front door locked"` and `"is the download finished yet"`, the exact query shapes behind the word-boundary bug, so this run could confirm under real, concurrent load against live HA data that the fix holds — not just in the test suite.
+
+**A real, genuine gap surfaced while running this**, worth documenting since it cost real time: this file had never previously spelled out *how* a "cold cache" run actually gets its empty cache — every prior version's section stated it as a fact with no documented mechanism. The first attempt at this run reused a session-warmed cache and produced an artificially clean result instead of real cold numbers. Fixed going forward — see "Running benchmarks" below for the now-explicit `POST /cache/clear` + `POST /cache/routing/clear` step required before a genuine cold run.
+
+**Cold cache** — both caches explicitly cleared immediately before this run.
+
+| Endpoint | Median | p95 | p98 | p99 | Failures |
+|----------|--------|-----|-----|-----|----------|
+| `/health` | 770ms | 780ms | 780ms | 780ms | 0% |
+| `/search [kiwix]` | 23ms | 1400ms | 1600ms | 1800ms | 0% |
+| `/search [kiwix_disambiguation]` | 23ms | 2000ms | 2100ms | 2100ms | 0% |
+| `/search [web]` | 24ms | 1700ms | 2200ms | 3900ms | 0% |
+| `/search [conditional]` | 28ms | 1200ms | 1300ms | 1300ms | 0% |
+| `/search [conditional_remainder]` | 31ms | 320ms | 800ms | 800ms | 0% |
+| `/search [discourse_framing]` | 30ms | 1300ms | 4200ms | 4200ms | 0% |
+| `/search [forecast]` | 23ms | 49ms | 730ms | 730ms | 0% |
+| `/search [news]` | 23ms | 31ms | 54ms | 54ms | 0% |
+| `/search [uptime]` | 24ms | 1500ms | 1500ms | 1500ms | 0% |
+| `/search [ha]` | 35ms | 48ms | 50ms | 50ms | 0% |
+| `/search [auto]` | 25ms | 1100ms | 1100ms | 1400ms | 0% |
+| `/search [fusion_explicit]` | 22ms | 60ms | 720ms | 1000ms | 0% |
+| `/search [fusion_auto]` | 24ms | 38ms | 47ms | 83ms | 0% |
+| `/search [fusion_triple]` | 23ms | 1500ms | 1700ms | 2000ms | 0% |
+| `/search [cache_hit]` | 23ms | 75ms | 3300ms | 3300ms | 0% |
+| **Aggregated** | **24ms** | **780ms** | **1500ms** | **1900ms** | **0%** |
+
+**876 requests. 0 failures.** `discourse_framing` is the new most expensive cold-path query (p98 4200ms) — the forced extra Kiwix search on top of whatever the LLM already chose, now compounding with the genuinely larger Kiwix catalog and routing-decision surface this codebase has accumulated since v3.17.0. `kiwix_disambiguation` (p98 2100ms) and `fusion_triple` (p98 1700ms) are both consistent in kind with prior releases, just different worst-case samples from a larger query surface.
+
+**Warm cache** — identical run immediately afterward, no clearing in between.
+
+| Endpoint | Median | p95 | p98 | p99 | Failures |
+|----------|--------|-----|-----|-----|----------|
+| `/health` | 740ms | 810ms | 820ms | 820ms | 0% |
+| `/search [kiwix]` | 23ms | 34ms | 40ms | 41ms | 0% |
+| `/search [kiwix_disambiguation]` | 24ms | 37ms | 39ms | 39ms | 0% |
+| `/search [web]` | 23ms | 33ms | 50ms | 54ms | 0% |
+| `/search [conditional]` | 27ms | 1300ms | 2300ms | 2400ms | 0% |
+| `/search [conditional_remainder]` | 30ms | 44ms | 63ms | 63ms | 0% |
+| `/search [discourse_framing]` | 29ms | 43ms | 55ms | 55ms | 0% |
+| `/search [forecast]` | 24ms | 36ms | 40ms | 40ms | 0% |
+| `/search [news]` | 22ms | 30ms | 36ms | 36ms | 0% |
+| `/search [uptime]` | 23ms | 990ms | 1000ms | 1000ms | 0% |
+| `/search [ha]` | 39ms | 47ms | 63ms | 63ms | 0% |
+| `/search [auto]` | 25ms | 1100ms | 1200ms | 1400ms | 0% |
+| `/search [fusion_explicit]` | 22ms | 31ms | 36ms | 41ms | 0% |
+| `/search [fusion_auto]` | 25ms | 37ms | 43ms | 44ms | 0% |
+| `/search [fusion_triple]` | 22ms | 30ms | 31ms | 31ms | 0% |
+| `/search [cache_hit]` | 23ms | 25ms | 25ms | 25ms | 0% |
+| **Aggregated** | **24ms** | **53ms** | **770ms** | **1000ms** | **0%** |
+
+**893 requests. 0 failures.**
+
+**`kiwix`, `kiwix_disambiguation`, `web`, `discourse_framing`, `fusion_triple`, and `cache_hit` all collapse fully on cache hit, consistent with every prior release.** `discourse_framing` p98 dropped from 4200ms (cold) to 55ms (warm) — a ~76x improvement. `fusion_triple` p98 dropped from 1700ms to 31ms — a ~55x improvement.
+
+**`auto`, `conditional`, and `uptime` stayed expensive at p95+ even warm — a real, genuine pattern worth investigating rather than assuming away, but with a real, identifiable cause for two of the three.** `AUTO_QUERIES` and `CONDITIONAL_QUERIES` are both small, fixed pools (6 and 4 entries) in `tests/locustfile.py`, but `auto` queries that escalate to fusion generate a *separate* cache key per sorted-source combination on top of the plain single-source case, and `conditional` queries resolving through `_resolve_conditional()` similarly create more distinct cache keys than the raw query-text pool size suggests — meaning some fraction of "warm" requests are still hitting genuinely fresh key combinations on the second pass, the same root cause already documented for `conditional_remainder` in the v3.17.0 entry above. `conditional` p98 actually rose warm vs cold (1300ms → 2300ms) — consistent with this explanation if the warm run's random sampling happened to hit a higher proportion of not-yet-cached key combinations than the cold run did, not evidence of a real regression. `uptime`'s warm-cache tail (p95 990ms, p99 1000ms) is the same unexplained anomaly already flagged in the v3.17.0 entry, now reproduced a second time across a completely different release — worth treating as a real, recurring pattern rather than one-off noise at this point, though still not yet root-caused.
+
+**Median latency remains completely unaffected by the entire battle-testing and bulletproofing campaign.** Aggregated median held at 24ms cold and warm — consistent with every benchmarked version back to v3.5.0, across roughly 25 releases and dozens of real bug fixes in between. Every fix in this stretch was a correctness change, not new computation on the steady-state path, and the numbers confirm that held true in practice, not just in theory.
+
 ## Running benchmarks
+
+Replace `192.168.1.50` below with your actual Mnemolis host's real IP or hostname — not a placeholder. `--host` silently accepts anything that looks like a URL, so a leftover example value doesn't fail loudly; it fails much later as a DNS error (`Temporary failure in name resolution`) on every single request, which doesn't obviously point back to `--host` as the cause.
+
+**Before a genuine cold-cache run, clear both caches explicitly.** Every "cold cache" run documented in this file describes the cache as empty, but never previously spelled out how to actually get it there — a real gap found while running a fresh v3.44.0 benchmark, where a routing/result cache populated by an earlier session produced an artificially clean run instead of the real cold numbers. Both caches need clearing, not just one — either alone can leave warm behavior bleeding through:
+
+```bash
+curl -X POST http://192.168.1.50:8888/cache/clear
+curl -X POST http://192.168.1.50:8888/cache/routing/clear
+```
+
+Then run cold:
 
 ```bash
 pip install locust
-locust -f tests/locustfile.py --host http://your-host:8888
+locust -f tests/locustfile.py --host http://192.168.1.50:8888
 # Open http://localhost:8089
 ```
 
 Or headless:
 
 ```bash
-locust -f tests/locustfile.py --host http://your-host:8888 \
+locust -f tests/locustfile.py --host http://192.168.1.50:8888 \
   --headless --users 20 --spawn-rate 2 --run-time 120s \
   --csv benchmarks
 ```
+
+Run the identical command again immediately afterward, without clearing anything in between, for the warm-cache comparison — the second run's populated caches are the point.

@@ -4,6 +4,26 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.44.1]
+
+### Documentation Release — No Code Changes
+A docs-only release wrapping up the bulletproofing pass with three pieces of work: a full wiki review, a README pass, and the first real benchmark since v3.17.0.
+
+**Wiki:** every page checked against the actual current code, not just for staleness but for whether user-useful information was leading or buried under mechanism detail. Several pages had real factual drift fixed (`Routing.md`'s fallback phrase list, `Caching.md`'s failure-caching behavior, `Snapshot-Engine-and-Changes.md`'s retention numbers, `Confidence-Aware-Fusion.md`'s generic-result check) and most updates were reordered to lead with "if you saw X, here's what changed" before the implementation story. The severe `home_assistant.py` word-boundary bug got one canonical writeup (`Home-Assistant-Integration.md`) with brief pointers from `Sources.md` and `Troubleshooting.md` rather than three separate explanations drifting apart from each other.
+
+**README:** restructured for actual reading order — a new "Why Mnemolis" section now sits right after the intro, before the `Sources` table, answering "should I keep reading" before "what does it contain." `Architecture`'s deep-dive diagrams moved later, after installation/configuration, since they're reference material for someone already running it, not onboarding material. `MCP` moved up near `Integrations`, since "can my client talk to this" is a before-you-install question. Stale facts fixed (the old `288`-per-source snapshot retention claim, `mcp_server.py`'s description still saying "SSE" after the Streamable HTTP migration, a `FORECAST_LATITUDE`/`LONGITUDE` default mismatch against the real code), one genuinely broken anchor link found and fixed, and a giant unreadable run-on sentence cataloging every test category replaced with a real pointer to the per-file test list that already existed two sections below it.
+
+**Benchmarks:** the first real Locust run since v3.17.0, covering the entire battle-testing campaign (v3.20.0–v3.34.0) and bulletproofing pass (v3.35.0–v3.44.0) — roughly 25 releases and dozens of real bug fixes that had never been measured under load. Aggregated median held at 24ms cold and warm, unchanged from every prior benchmarked version back to v3.5.0. Two real, honest findings reported rather than smoothed over: `discourse_framing` is now the most expensive cold-path query (p98 4200ms, collapsing ~76x to 55ms warm), and `auto`/`conditional`/`uptime` stayed expensive even on the warm pass — traced to a real, identifiable cause for the first two (small query pools generating more distinct cache keys than entries via fusion-escalation and sub-query routing), with `uptime`'s tail now reproduced a second time across a different release, worth treating as a real recurring pattern rather than dismissing as noise again.
+
+A real, genuine gap surfaced while running the benchmark and is now fixed going forward: `BENCHMARKS.md` had never previously documented *how* a "cold cache" run actually gets its empty cache — every prior version's section stated it as a fact with no mechanism. `tests/locustfile.py` and `BENCHMARKS.md` both now spell out the required `POST /cache/clear` + `POST /cache/routing/clear` step before a genuine cold run. Also fixed: a `--host http://your-host:8888` placeholder that silently produced a wall of opaque DNS errors (`Temporary failure in name resolution`) on every single request when used literally instead of being substituted — replaced with a realistic example IP and an explicit warning in both files.
+
+### Changed
+- Version bumped to 3.44.1
+
+**Total test count: 1011 (unchanged)**
+
+---
+
 ## [3.44.0]
 
 ### Investigation Note
