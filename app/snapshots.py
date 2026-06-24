@@ -189,19 +189,39 @@ def _diff_uptime(old: str, new: str) -> list[str]:
     if old == new:
         return changes
 
+    old_lower, new_lower = old.lower(), new.lower()
+    old_all_up = "all" in old_lower and "up" in old_lower
+    new_all_up = "all" in new_lower and "up" in new_lower
+
     # Both "all up" — no change
-    if "all" in old.lower() and "up" in old.lower() and "all" in new.lower() and "up" in new.lower():
+    if old_all_up and new_all_up:
         return changes
 
-    # Service went down
-    if "all" in old.lower() and "up" in old.lower() and ("down" in new.lower() or "all" not in new.lower()):
-        changes.append(f"Service outage detected: {new.strip()}")
-
-    # Service came back up
-    elif ("down" in old.lower() or "all" not in old.lower()) and "all" in new.lower() and "up" in new.lower():
+    if old_all_up and not new_all_up:
+        # Found via a deliberate complexity-investigation pass (checking
+        # whether this function or its siblings in this file were
+        # genuinely buggy, not just complex): the previous version
+        # collapsed any non-"all up" transition into the same
+        # "Service outage detected" wording, including a PENDING-only
+        # transition — Uptime Kuma's own status model (status code 2)
+        # treats "pending" as a distinct, less severe state from a
+        # confirmed outage (status code 0, "down"), typically meaning a
+        # check is in a retry/grace period, not necessarily a real
+        # outage yet. Checking for the literal "down" label explicitly,
+        # separately from a generic "not all up" catch-all, means a
+        # pending-only transition gets its own, honestly-worded message
+        # instead of borrowing the more alarming "outage" wording.
+        # Checking "down" before "pending" also means a mixed state
+        # (some services down, others pending) correctly keeps the more
+        # severe "outage" wording rather than downgrading it.
+        if "down" in new_lower:
+            changes.append(f"Service outage detected: {new.strip()}")
+        elif "pending" in new_lower:
+            changes.append(f"Service check pending (possible outage starting): {new.strip()}")
+        else:
+            changes.append(f"Service status changed: {new.strip()}")
+    elif not old_all_up and new_all_up:
         changes.append("All services restored — previously reported outage resolved")
-
-    # Different outage states
     elif old != new:
         changes.append(f"Service status changed: {new.strip()}")
 
@@ -216,11 +236,22 @@ def _diff_forecast(old: str, new: str) -> list[str]:
         return changes
 
     def extract_high(text: str) -> float | None:
-        m = re.search(r"high of (?:about )?(\d+)", text)
+        # Found via a deliberate complexity/correctness investigation:
+        # the regex had no support for a negative sign at all, silently
+        # returning None for any sub-zero forecast text. Since Mnemolis
+        # is explicitly designed to be deployable anywhere, not just in
+        # warm climates, a deployment somewhere genuinely cold would
+        # have temperature-change detection silently stop working below
+        # freezing — no error, just a quiet no-op for that part of the
+        # diff. The forecast text comes directly from
+        # round(Open-Meteo's temperature_2m_max/min), with no floor
+        # applied, so a negative value is a real, reachable case, not a
+        # contrived one.
+        m = re.search(r"high of (?:about )?(-?\d+)", text)
         return float(m.group(1)) if m else None
 
     def extract_low(text: str) -> float | None:
-        m = re.search(r"low of (\d+)", text)
+        m = re.search(r"low of (-?\d+)", text)
         return float(m.group(1)) if m else None
 
     old_high = extract_high(old)
@@ -302,6 +333,22 @@ def _diff_ha(old: str, new: str) -> list[str]:
         old_e = old_entities.get(entity_id)
         if old_e is None:
             continue  # new entity, not a state change
+
+        # Found via a deliberate complexity/correctness investigation:
+        # accessing old_e["state"]/new_e["state"] directly with bracket
+        # notation would raise an uncaught KeyError if either entity is
+        # missing that field, crashing the whole diff for every OTHER
+        # entity in the same snapshot too — not just the malformed one.
+        # snapshot_ha() itself always writes a "state" field today, so
+        # this isn't reachable through the current writer, but snapshots
+        # are persisted in a long-lived SQLite file and read back
+        # potentially much later; data written by an older version of
+        # this code, or before a future schema change, could genuinely
+        # still be sitting there. Skipping a malformed entity instead of
+        # crashing keeps every other entity in the same snapshot
+        # correctly diffable regardless.
+        if "state" not in old_e or "state" not in new_e:
+            continue
 
         name = new_e.get("friendly_name", entity_id)
         domain = entity_id.split(".")[0]

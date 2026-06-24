@@ -39,6 +39,49 @@ class TestDiffUptime:
         changes = self.diff(old, new)
         assert len(changes) > 0
 
+    def test_pending_only_transition_uses_accurate_wording_not_outage(self):
+        """Regression test for a real bug found via a deliberate
+        complexity/correctness investigation: the previous version
+        labeled ANY non-"all up" transition with the same alarming
+        "Service outage detected" wording, including a PENDING-only
+        transition. Uptime Kuma's own status model treats "pending"
+        (status code 2, typically a retry/grace period) as distinct
+        from a confirmed outage (status code 0, "down") — using "outage
+        detected" (a confirmed-outage claim) for a pending-only state is
+        a real, misleading overclaim. The fix's actual wording
+        ("possible outage starting") deliberately still contains the
+        word "outage" as a softer hedge, so this checks for the
+        confirmed-sounding "outage detected" phrase specifically, not a
+        blanket absence of the word "outage" anywhere in the message."""
+        old = "All 15 monitored services are up."
+        new = "PENDING (1): SomeService. 14 of 15 services are up."
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "pending" in changes[0].lower()
+        assert "outage detected" not in changes[0].lower()
+
+    def test_confirmed_down_transition_still_uses_outage_wording(self):
+        """Confirms the fix didn't accidentally soften the wording for a
+        GENUINE confirmed outage — only the pending-only case should get
+        the gentler phrasing."""
+        old = "All 15 monitored services are up."
+        new = "DOWN (1): Ollama. 14 of 15 services are up."
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "outage" in changes[0].lower()
+
+    def test_mixed_down_and_pending_keeps_more_severe_outage_wording(self):
+        """A real state Uptime Kuma can genuinely report — some services
+        confirmed down, others pending — should keep the more severe,
+        accurate "outage" wording rather than being downgraded to the
+        gentler "pending" phrasing just because a pending service is
+        also present."""
+        old = "All 15 monitored services are up."
+        new = "DOWN (1): Postgres. PENDING (1): Redis. 13 of 15 services are up."
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "outage" in changes[0].lower()
+
 
 class TestDiffForecast:
     """Tests for _diff_forecast weather change detection."""
@@ -50,6 +93,29 @@ class TestDiffForecast:
     def test_no_change_when_identical(self):
         forecast = "Today will be clear with a high of about 96 and a low of 76."
         assert self.diff(forecast, forecast) == []
+
+    def test_detects_negative_temperature_change(self):
+        """Regression test for a real bug found via a deliberate
+        complexity/correctness investigation: the extraction regexes had
+        no support for a negative sign at all, silently returning None
+        for any sub-zero forecast text — meaning temperature-change
+        detection would quietly stop working entirely for any deployment
+        in a genuinely cold climate. Forecast text comes directly from
+        round(Open-Meteo's temperature data) with no floor applied, so a
+        negative value is a real, reachable case for Mnemolis's
+        explicitly anywhere-deployable design, not a contrived edge case."""
+        old = "Today will be clear with a high of about 20 and a low of -5."
+        new = "Today will be clear with a high of about 20 and a low of -15."
+        changes = self.diff(old, new)
+        assert len(changes) > 0
+        assert any("low" in c.lower() for c in changes)
+
+    def test_negative_high_temperature_also_extracted_correctly(self):
+        old = "Today will be clear with a high of about -2 and a low of -10."
+        new = "Today will be clear with a high of about 8 and a low of -10."
+        changes = self.diff(old, new)
+        assert len(changes) > 0
+        assert any("high" in c.lower() for c in changes)
 
     def test_detects_high_temp_increase(self):
         old = "Today will be clear with a high of about 80 and a low of 60."
@@ -211,6 +277,42 @@ class TestDiffHA:
     def test_no_change_when_identical(self):
         snap = self._snapshot([self._entity("lock.front_door", "locked", "Front Door")])
         assert self.diff(snap, snap) == []
+
+    def test_entity_missing_state_field_is_skipped_not_crashed(self):
+        """Regression test for a real bug found via a deliberate
+        complexity/correctness investigation: directly accessing
+        old_e["state"]/new_e["state"] with bracket notation raised an
+        uncaught KeyError if either entity was missing that field —
+        crashing the diff for every OTHER entity in the same snapshot
+        too, not just the malformed one. snapshot_ha() itself always
+        writes a "state" field today, so this specific scenario isn't
+        reachable through the current writer — but snapshots persist in
+        a long-lived SQLite file and get read back potentially much
+        later, so data written by an older version of this code (or
+        before a future schema change) could genuinely still exist."""
+        import json
+        old = json.dumps([{"entity_id": "lock.front_door"}])  # missing "state" entirely
+        new = json.dumps([{"entity_id": "lock.front_door", "state": "locked"}])
+        changes = self.diff(old, new)  # must not raise
+        assert changes == []
+
+    def test_one_malformed_entity_does_not_prevent_others_from_being_diffed(self):
+        """Confirms the fix's actual real-world value — a single
+        malformed entity shouldn't take down the diff for every other,
+        well-formed entity in the same snapshot."""
+        import json
+        old = json.dumps([
+            {"entity_id": "lock.front_door"},  # malformed — missing "state"
+            {"entity_id": "lock.back_door", "state": "locked", "friendly_name": "Back Door"},
+        ])
+        new = json.dumps([
+            {"entity_id": "lock.front_door", "state": "locked"},
+            {"entity_id": "lock.back_door", "state": "unlocked", "friendly_name": "Back Door"},
+        ])
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "Back Door" in changes[0]
+        assert "unlocked" in changes[0]
 
     def test_detects_lock_unlocked(self):
         old = self._snapshot([self._entity("lock.front_door", "locked", "Front Door")])
