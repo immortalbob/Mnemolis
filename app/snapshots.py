@@ -14,8 +14,50 @@ _LOGGER = logging.getLogger(__name__)
 
 SNAPSHOT_DB = "/app/data/snapshots.db"
 
-# How many snapshots to retain per source
-MAX_SNAPSHOTS_PER_SOURCE = 288  # 24 hours at 5-minute intervals
+# Each background snapshot job's scheduled interval, matching main.py's
+# scheduler.add_job() calls exactly — kept here rather than in main.py
+# since this module is what actually needs to reason about "how overdue
+# is this job" using its own stored timestamps. Moved earlier in the
+# file (was previously defined further down) so _RETENTION_PER_SOURCE
+# below can be built from it directly.
+JOB_INTERVALS_MINUTES = {
+    "uptime": 2,
+    "forecast": 30,
+    "news": 60,
+    "ha": 5,
+}
+
+# How many snapshots to retain per source, scaled so EVERY source
+# genuinely supports the longest documented time-window phrase
+# ("this week" / "since last week" → 168 hours, see
+# _resolve_changes_hours() in router.py).
+#
+# Found via a deliberate "bulletproofing" pass: the original code used
+# a single, shared MAX_SNAPSHOTS_PER_SOURCE = 288 constant for every
+# source, with a comment claiming "24 hours at 5-minute intervals" —
+# true only for `ha` specifically (the source whose interval the
+# constant was apparently chosen around). Confirmed directly with a
+# constructed scenario: `uptime` (snapshotted every 2 minutes, the most
+# frequent of any source) only retained 9.6 real hours of data under
+# that shared constant — a real query like "what changed with my
+# services since yesterday" (48h) or "any outages this week" (168h)
+# would silently return an incomplete picture, missing 80%+ of the
+# requested window, with no indication to the user that the underlying
+# data simply didn't exist anymore. `news` (60-minute interval), by
+# contrast, was retaining 288 real HOURS (12 days) under the same
+# shared constant — far more than ever needed, while `uptime` had far
+# less than the system's own documented features required.
+#
+# Scaled per-source from each source's real interval so every source
+# consistently supports the full week — `uptime` needs the most rows
+# (5040) to cover a week at its 2-minute cadence, still genuinely small
+# for SQLite at realistic homelab scale (each row is a short text
+# string, not a meaningful storage concern even at this count).
+_RETENTION_TARGET_HOURS = 168
+_RETENTION_PER_SOURCE = {
+    source: int((_RETENTION_TARGET_HOURS * 60) / interval_minutes)
+    for source, interval_minutes in JOB_INTERVALS_MINUTES.items()
+}
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -55,13 +97,23 @@ def _store_snapshot(source: str, content: str):
             "INSERT INTO snapshots (timestamp, source, content) VALUES (?, ?, ?)",
             (now, source, content)
         )
-        # Prune old snapshots — keep only the most recent N per source
+        # Prune old snapshots — keep only the most recent N per source,
+        # scaled per-source (see _RETENTION_PER_SOURCE above) so every
+        # source genuinely supports the longest documented time-window
+        # phrase. Falls back to the 24-hour-at-5-minute-intervals
+        # default (288) for any source not yet in the dict, rather than
+        # crashing — defensive against a future new snapshot source
+        # being added to JOB_INTERVALS_MINUTES without a corresponding
+        # update reaching this lookup, the same kind of two-places-to-
+        # update risk already found and fixed elsewhere this release
+        # cycle (the duplicated /backup file list in main.py).
+        retention = _RETENTION_PER_SOURCE.get(source, 288)
         con.execute("""
             DELETE FROM snapshots WHERE source = ? AND id NOT IN (
                 SELECT id FROM snapshots WHERE source = ?
                 ORDER BY id DESC LIMIT ?
             )
-        """, (source, source, MAX_SNAPSHOTS_PER_SOURCE))
+        """, (source, source, retention))
         con.commit()
         con.close()
     except Exception as e:
@@ -81,18 +133,6 @@ def _get_last_snapshots(source: str, limit: int = 2) -> list[str]:
     except Exception as e:
         _LOGGER.warning("Could not fetch snapshots for '%s': %s", source, e)
         return []
-
-
-# Each background snapshot job's scheduled interval, matching main.py's
-# scheduler.add_job() calls exactly — kept here rather than in main.py
-# since this module is what actually needs to reason about "how overdue
-# is this job" using its own stored timestamps.
-JOB_INTERVALS_MINUTES = {
-    "uptime": 2,
-    "forecast": 30,
-    "news": 60,
-    "ha": 5,
-}
 
 
 def get_snapshot_job_health() -> dict[str, dict]:
@@ -286,12 +326,23 @@ def _diff_news(old: str, new: str) -> list[str]:
         return changes
 
     def extract_headlines(text: str) -> set[str]:
+        # Found via a deliberate "bulletproofing" pass: this used to
+        # have two branches — one for a bare "**headline**" with
+        # nothing after the closing **, one for "**headline** (source)"
+        # with a trailing suffix. Confirmed the first branch was
+        # genuinely unreachable through any real code path: every
+        # format string freshrss.py actually produces is
+        # "**{title}** ({source})", always with a parenthetical suffix,
+        # never a bare closing "**" with nothing after. More than just
+        # dead, it was also redundant — the second branch's own logic
+        # (find the closing "**" via .index(), regardless of what
+        # follows it) already correctly handles the bare-closing case
+        # too, verified directly. Simplified to the one genuinely
+        # general check both branches were trying to express.
         headlines = set()
         for line in text.splitlines():
             line = line.strip()
-            if line.startswith("**") and line.endswith("**"):
-                headlines.add(line.strip("*").strip())
-            elif line.startswith("**") and "**" in line[2:]:
+            if line.startswith("**") and "**" in line[2:]:
                 headline = line[2:line.index("**", 2)].strip()
                 if headline:
                     headlines.add(headline)
@@ -521,7 +572,24 @@ def get_changes(since_hours: int | float = 24) -> dict[str, list[dict[str, str]]
 
 
 def format_changes(changes: dict, since_hours: int | float = 24) -> str:
-    """Format changes dict into a human-readable summary."""
+    """Format changes dict into a human-readable summary.
+
+    Rounds since_hours for display regardless of what the caller
+    passed in — found via a deliberate "bulletproofing" pass: this
+    function's own type signature (int | float) explicitly invites a
+    raw float, and a real caller (router.py's _search_changes(), for
+    "this morning"-style natural-language resolution) genuinely
+    produces one. Both of this function's current real callers happen
+    to already avoid the problem (one passes a REST endpoint's plain
+    int parameter, the other already rounds before calling), so this
+    wasn't reachable today — but formatting a number reasonably for
+    human display is this function's own job, not something it should
+    rely on every present and future caller to remember correctly.
+    Without this, a future caller passing the unrounded float through
+    would display something like "in the last 23.939205609166667
+    hours" directly to a real user.
+    """
+    since_hours = round(since_hours, 1)
     if not changes:
         return f"No significant changes detected in the last {since_hours} hours."
 

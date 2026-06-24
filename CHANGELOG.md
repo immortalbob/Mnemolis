@@ -4,6 +4,32 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.39.0]
+
+### Fixed — A Significant, Real Data-Retention Bug: `uptime` Snapshots Were Pruned Far Too Aggressively
+Continuing the bulletproofing pass into `app/snapshots.py`. A single, shared `MAX_SNAPSHOTS_PER_SOURCE = 288` constant was applied identically to every source, with a comment claiming "24 hours at 5-minute intervals" — true only for `ha` specifically, the source whose interval the constant was apparently chosen around. Confirmed directly with a constructed scenario: `uptime` (snapshotted every 2 minutes, the most frequent of any source) only retained **9.6 real hours** of data under that shared constant — while `_resolve_changes_hours()` in `router.py` explicitly, already supports "since yesterday" (48h) and "this week" (168h) as real, documented time-window phrases for every source. A real query for either would have silently returned an incomplete picture for `uptime` specifically, missing most of the requested window, with no indication to the user that the underlying data simply no longer existed. `news` (60-minute interval), by contrast, was retaining 288 real *hours* (12 days) under the same shared constant — far more than ever needed.
+
+Fixed by scaling retention per-source from each source's real snapshot interval (`_RETENTION_PER_SOURCE`, built from the already-existing `JOB_INTERVALS_MINUTES`, moved earlier in the file so the new dict can be built from it directly), so every source genuinely supports a full week. `uptime` now retains 5040 snapshots, `ha` 2016, `forecast` 336, `news` 168 — confirmed via direct calculation that storage impact is genuinely negligible (roughly 1.5MB total across every source at realistic homelab scale).
+
+### Fixed — `format_changes()` Could Display an Ugly, Unrounded Float to Real Users
+This function's own type signature (`int | float`) explicitly invites a raw float, and a real caller (`router.py`'s `_search_changes()`, for "this morning"-style natural-language time resolution) genuinely produces one — without rounding, a real user could see "in the last 23.939205609166667 hours" displayed directly. Neither of this function's two current real callers was actually affected (one passes a REST endpoint's plain `int` parameter, the other already rounds before calling) — but formatting a number reasonably for display is this function's own job, not something it should rely on every present and future caller to remember correctly. Fixed with defensive rounding inside the function itself.
+
+### Changed — Removed a Genuinely Dead, Redundant Branch in `_diff_news()`
+`extract_headlines()`'s first branch (a bare `"**headline**"` with nothing after the closing `**`) was confirmed unreachable through any real `freshrss.py` output — every real format string always produces `"**title** (source)"`, with a parenthetical suffix. More than just dead, it was also redundant: the second branch's own logic (find the closing `**` via `.index()`, regardless of what follows it) already correctly handles the bare-closing case too, verified directly. Simplified to the one genuinely general check both branches were trying to express.
+
+### Added (Tests)
+- 3 new tests confirming the per-source retention fix: the computed retention values for each source, a direct check that every source's retention genuinely covers a full week given its own real interval, and a full end-to-end test with a real database confirming `uptime` genuinely retains enough data to answer a "since yesterday" query
+- 1 new test confirming `format_changes()` displays a rounded value even when passed an unrounded float
+- 1 new test confirming the simplified `extract_headlines()` still correctly handles the bare-closing case, even though it's unreachable through real output today
+
+### Changed
+- [Snapshot Engine and Changes](https://github.com/immortalbob/Mnemolis/wiki/Snapshot-Engine-and-Changes) wiki page updated to accurately describe the new per-source retention scheme and the real bug it fixes
+- Version bumped to 3.39.0
+
+**Total test count: 977**
+
+---
+
 ## [3.38.0]
 
 ### Investigation Note

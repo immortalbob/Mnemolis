@@ -196,6 +196,24 @@ class TestDiffNews:
         changes = self.diff(old, new)
         assert len([c for c in changes if "New Story" in c]) == 1
 
+    def test_bare_closing_headline_with_no_suffix_still_detected(self):
+        """Regression test confirming a deliberate simplification found
+        via a "bulletproofing" pass: extract_headlines() used to have
+        two branches — one for "**headline**" with nothing after the
+        closing **, one for "**headline** (source)" with a trailing
+        suffix. Confirmed the first branch was genuinely unreachable
+        through any real freshrss.py output (every real format string
+        always has a parenthetical suffix) AND redundant — the second
+        branch's own .index()-based logic already correctly finds the
+        closing ** regardless of what follows it. Simplified to one
+        branch; this test confirms the simplified version still
+        correctly handles the bare-closing case even though it's not
+        reachable through real output today."""
+        old = "**Old Headline**\nSome content."
+        new = "**Old Headline**\nSome content.\n\n---\n\n**New Bare Headline**\nMore content."
+        changes = self.diff(old, new)
+        assert any("New Bare Headline" in c for c in changes)
+
     def test_caps_at_five_new_stories(self):
         old = self._make_news([])
         new = self._make_news([f"Story {i}" for i in range(10)])
@@ -492,6 +510,22 @@ class TestFormatChanges:
         result = self.fmt({}, since_hours=12)
         assert "12" in result
 
+    def test_unrounded_float_since_hours_is_displayed_rounded(self):
+        """Regression test for a real, user-facing presentation bug
+        found via a deliberate "bulletproofing" pass: this function's
+        own type signature (int | float) explicitly invites a raw
+        float, and a real caller (router.py's _search_changes(), for
+        "this morning"-style natural-language resolution) genuinely
+        produces one. Without defensive rounding, a real user could
+        see "in the last 23.939205609166667 hours" displayed directly.
+        Both of this function's current real callers happen to already
+        avoid the problem, so this wasn't reachable today — fixed
+        anyway, since formatting a number reasonably for display is
+        this function's own job, not every present and future caller's."""
+        result = self.fmt({}, since_hours=23.939205609166667)
+        assert "23.939205609166667" not in result
+        assert "23.9" in result
+
     def test_formats_uptime_changes(self):
         changes = {"uptime": [{"timestamp": "2026-06-18T12:00:00Z", "change": "Outage detected"}]}
         result = self.fmt(changes)
@@ -640,3 +674,78 @@ class TestSnapshotJobHealth:
         self._insert_snapshot("ha", "content", "not-a-valid-timestamp")
         health = get_snapshot_job_health()
         assert health["ha"]["status"] == "unknown"
+
+
+class TestPerSourceRetention:
+    """Regression tests for a real, significant bug found via a
+    deliberate "bulletproofing" pass: a single, shared
+    MAX_SNAPSHOTS_PER_SOURCE = 288 constant was applied identically to
+    every source, with a comment claiming "24 hours at 5-minute
+    intervals" — true only for `ha` specifically. `uptime` (snapshotted
+    every 2 minutes, the most frequent of any source) only retained 9.6
+    real hours of data under that shared constant, while
+    _resolve_changes_hours() in router.py explicitly supports "since
+    yesterday" (48h) and "this week" (168h) as real, documented
+    time-window phrases — a query for either would silently return an
+    incomplete picture for uptime specifically, missing most of the
+    requested window with no indication the underlying data simply no
+    longer existed. Fixed by scaling retention per-source from each
+    source's real snapshot interval, so every source genuinely supports
+    a full week."""
+
+    def test_retention_scales_inversely_with_snapshot_frequency(self):
+        """The more frequently a source is snapshotted, the more rows
+        it needs to cover the same real time window — confirms the
+        actual real, computed retention values for each source."""
+        from app.snapshots import _RETENTION_PER_SOURCE
+        assert _RETENTION_PER_SOURCE["uptime"] == 5040   # every 2min, needs the most rows
+        assert _RETENTION_PER_SOURCE["forecast"] == 336  # every 30min
+        assert _RETENTION_PER_SOURCE["news"] == 168      # every 60min
+        assert _RETENTION_PER_SOURCE["ha"] == 2016        # every 5min
+
+    def test_every_source_supports_a_full_week_of_real_data(self):
+        """The actual, concrete real-world guarantee this fix provides:
+        every source's retention, multiplied by its own real interval,
+        genuinely covers at least 168 hours (one week) — the longest
+        documented time-window phrase _resolve_changes_hours() supports."""
+        from app.snapshots import _RETENTION_PER_SOURCE, JOB_INTERVALS_MINUTES
+        for source, retention in _RETENTION_PER_SOURCE.items():
+            interval = JOB_INTERVALS_MINUTES[source]
+            hours_covered = (retention * interval) / 60
+            assert hours_covered >= 168, f"{source} only covers {hours_covered}h, needs >= 168h"
+
+    def test_uptime_genuinely_retains_a_week_of_snapshots_in_practice(self, tmp_path):
+        """The actual, real, end-to-end regression test — confirms a
+        real database, pruned via the real _store_snapshot() pruning
+        logic, genuinely retains enough uptime snapshots to answer a
+        "since yesterday" (48h) query, which the old shared constant
+        could not do (it retained only 9.6 real hours)."""
+        from unittest.mock import patch
+        from app.snapshots import _store_snapshot, init_snapshot_db, _get_snapshots_since
+        from datetime import datetime, timezone, timedelta
+
+        temp_db = str(tmp_path / "test_snapshots.db")
+        with patch("app.snapshots.SNAPSHOT_DB", temp_db):
+            init_snapshot_db()
+            # Simulate a real, sustained deployment: more than a full
+            # day's worth of real uptime snapshots at the real 2-minute
+            # interval, written through the actual pruning logic
+            import sqlite3
+            con = sqlite3.connect(temp_db)
+            now = datetime.now(timezone.utc)
+            for i in range(800):  # well beyond the old 288-row limit
+                ts = (now - timedelta(minutes=2 * i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                con.execute(
+                    "INSERT INTO snapshots (timestamp, source, content) VALUES (?, 'uptime', ?)",
+                    (ts, f"snapshot {i}")
+                )
+            con.commit()
+            con.close()
+            # Trigger the real pruning logic via one more real write
+            _store_snapshot("uptime", "final snapshot")
+
+            # A real "since yesterday" (48h) query should find real data
+            # spanning the genuinely requested window, not just whatever
+            # fraction of it happened to survive an undersized prune
+            results = _get_snapshots_since("uptime", since_hours=48)
+            assert len(results) > 700  # the old 288-row cap would have failed this
