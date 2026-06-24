@@ -4,6 +4,29 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.24.0]
+
+### Fixed — A Significant, Real Bug: the Pronoun "I" Mistaken for a Proper Noun
+A seventh complexity-investigation pass this release cycle, applied to `_decompose()` (D, 28) — the single highest score left in the codebase, and the function with the densest documented bug history in the entire project (the Proper-Noun-Pair Saga's four prior bugs). Given that history, this pass was deliberately thorough: every line was read fresh, with no assumptions carried over from memory, rather than scanning for an obvious extraction opportunity.
+
+The investigation found something more significant than a refactor — a genuine, common-phrasing bug in `_is_proper_noun_pair_at()`, the helper `_decompose()` relies on to avoid splitting bare proper-noun pairs like "Iran and Israel." **The pronoun "I" is always capitalized in English regardless of sentence position**, making it look exactly like a proper noun to the function's naive capitalization check. This meant a phrase like `"what's happening in Texas, plus I need help with my router"` was being incorrectly protected as a bare proper-noun pair (treating "Texas" + "I" as if they were a real pair like "Texas and Arizona"), causing the **entire query to not split at all** — even though "X, plus I need..." / "X, and I also..." is an extremely common, completely natural way to phrase a second, unrelated request, not a contrived edge case.
+
+Fixed by explicitly excluding the pronoun "I" from counting as the proper-noun half of a pair. No broader pronoun list was needed — no other common English pronoun (he/she/they/we) is unconditionally capitalized regardless of context the way "I" uniquely is, so no other word produces this exact false-positive shape.
+
+**A genuine, additional improvement surfaced while updating the existing regression test for this fix.** The original Proper-Noun-Pair Saga's own megaquery test (`test_proper_noun_pair_skip_does_not_discard_preceding_content`) asserted the query should decompose into exactly 3 parts — but that expected count had unknowingly baked in the limitation of this very bug: the numpy/GPIO clause in that test query was permanently merged into part 1 alongside "Iran and Israel," because the "plus I keep getting a weird numpy import error" text could never be recognized as its own separate intent while "Israel, plus I" kept getting misidentified as a protected pair. With the fix in place, this exact query now correctly produces 4 distinct parts — every original content-integrity assertion (Iran and Israel staying together, no real content lost) still holds true exactly as before; only the count was wrong, for a reason nobody had found yet when that test was originally written.
+
+### Added (Tests)
+- 2 new direct regression tests: confirming the pronoun "I" is no longer mistaken for a proper noun in this exact phrasing pattern, and confirming a genuine proper-noun pair ("Texas and Arizona") is still correctly protected after the fix — guarding against the fix being too broad as well as too narrow
+- Updated the existing megaquery regression test to assert the correct, improved 4-part split, with clear documentation of why the original expected count of 3 was itself a symptom of the bug this release fixes
+
+### Changed
+- `_is_proper_noun_pair_at`: C(12) → C(13) — a small, honest, accepted cost of the new check, the same tradeoff pattern as every correctness fix this release cycle
+- Version bumped to 3.24.0
+
+**Total test count: 924**
+
+---
+
 ## [3.23.0]
 
 ### Investigation Note
