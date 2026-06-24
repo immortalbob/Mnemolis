@@ -160,6 +160,36 @@ class TestSearchTermCleaning:
         assert "reverse" in result
         assert "proxy" in result
 
+    def test_single_character_programming_language_preserved(self):
+        """Regression test for a real, significant bug found via a
+        deliberate "bulletproofing" pass independently re-discovering
+        the exact same bug already found and fixed in scoring.py's
+        _keywords(): single alphanumeric characters ("c", "r" as
+        programming language names) were silently dropped by the
+        length filter alone. "what is r programming used for" reduced
+        to the literal Kiwix search query "programm," losing the one
+        word that actually distinguishes this from any other
+        programming language."""
+        result = self.clean("what is r programming used for")
+        assert "r" in result.split()
+
+    def test_single_character_c_preserved_with_other_words(self):
+        result = self.clean("tutorial for the c programming language")
+        assert "c" in result.split()
+
+    def test_bare_punctuation_still_excluded(self):
+        """Confirms the fix didn't reintroduce real noise — a bare
+        hyphen (surviving the apostrophe-stripping regex) must still
+        be excluded, the same way scoring.py's equivalent fix avoids
+        treating stray punctuation as a real search term."""
+        result = self.clean("topic - subtopic")
+        assert "-" not in result.split()
+
+
+    def test_c_programming_language_preserved(self):
+        result = self.clean("tutorial for the c programming language")
+        assert "c" in result.split()
+
     def test_falls_back_to_original_if_all_stop_words(self):
         # Query that is entirely stop words should return original
         result = self.clean("what is it")

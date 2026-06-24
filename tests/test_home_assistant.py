@@ -271,6 +271,22 @@ class TestMotionFormatting:
         result = _format_motion_event(entity)
         assert "3 days ago" in result
 
+    def test_format_motion_singular_minute(self):
+        """Regression test for a real, small grammar inconsistency found
+        via a deliberate "bulletproofing" pass: hours and days both
+        already correctly handled the singular/plural distinction
+        ("1 hour ago" vs "2 hours ago"), but this exact same pattern was
+        overlooked for minutes, producing "1 minutes ago" instead of
+        "1 minute ago"."""
+        from app.sources.home_assistant import _format_motion_event
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        one_minute_ago = (now - timedelta(minutes=1)).isoformat()
+        entity = {"entity_id": "event.front_yard_motion", "state": one_minute_ago, "attributes": {"friendly_name": "Front Yard"}}
+        result = _format_motion_event(entity)
+        assert "1 minute ago" in result
+        assert "1 minutes ago" not in result
+
 
 class TestAreaDetection:
     """Tests for _detect_area area/room name detection."""
@@ -312,6 +328,29 @@ class TestAreaDetection:
     def test_longest_match_wins(self):
         # "master bedroom" should match over "bedroom"
         assert self.detect("temperature in the master bedroom") == "master_bedroom"
+
+    def test_shed_does_not_match_inside_finished(self):
+        """Regression test for a real, significant bug found via a
+        deliberate "bulletproofing" pass: "shed" (a real area alias) is
+        a genuine substring of "finished," "crashed," "washed," and
+        other common past-tense verbs. "Is the download finished yet"
+        — a query with nothing to do with any area at all — incorrectly
+        resolved to area_id="shed" before this fix, purely from the
+        accidental substring. The existing longest-match-first checking
+        order only incidentally protected against this when a genuine,
+        longer area phrase ALSO happened to be present in the same
+        query — it did nothing when "shed" was the only thing that
+        happened to match at all."""
+        assert self.detect("is the download finished yet") is None
+
+    def test_shed_does_not_match_inside_washed(self):
+        assert self.detect("did you wash the dishes") is None
+
+    def test_genuine_shed_area_still_detected(self):
+        """Confirms the word-boundary fix didn't accidentally break the
+        real, intended "shed" match — only the false-positive substring
+        case should be excluded, not the genuine standalone word."""
+        assert self.detect("any motion in the shed") == "shed"
 
 
 class TestAreaSearch:
@@ -855,8 +894,142 @@ class TestBuildFilter:
         f = _build_filter("are the doors locked")
         assert "lock" in f["domains"]
 
+    def test_word_boundary_on_does_not_match_inside_front(self):
+        """Regression test for a real, severe bug found via a deliberate
+        "bulletproofing" pass: naive substring matching (no word-boundary
+        awareness) meant "on" (a real, bare dictionary key for "lights
+        on") matched as a substring of "front" — "is the front door
+        locked," about as natural a query as this entire source exists
+        to answer, got an incorrect state_filter="on" applied, and the
+        real, correctly-named, correctly-stated front door lock entity
+        was silently rejected by the filter. Confirmed end to end:
+        search("is the front door locked") against a real front door
+        lock entity returned "No matching entities found" before this
+        fix."""
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("is the front door locked")
+        assert f["state_filter"] is None
+
+    def test_word_boundary_rain_does_not_match_inside_training(self):
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("is anyone training right now")
+        assert "rain" not in f["entity_keywords"]
+
+    def test_word_boundary_on_does_not_match_inside_alone(self):
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("is everyone home alone")
+        assert f["state_filter"] is None
+
+    def test_genuine_lights_on_query_still_works(self):
+        """Confirms the word-boundary fix didn't accidentally break the
+        real, intended "on" match — only the false-positive substring
+        case should be excluded, not the genuine standalone word."""
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("are the lights on right now")
+        assert f["state_filter"] == "on"
+
+    def test_outdoor_still_correctly_excludes_door_keyword(self):
+        """Confirms the longest-match-first protection (already
+        existing, unrelated to the new word-boundary fix) still
+        correctly handles a genuine overlapping case — "outdoor"
+        winning over "door" when both would match the same letters."""
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("check the outdoor conditions")
+        assert "lock" not in f["domains"]
+
     def test_unmatched_query_falls_back_to_summary(self):
         from app.sources.home_assistant import _build_filter
         f = _build_filter("xyzzy nonsense query")
         # Falls back to summary which includes lights and sensors
         assert len(f["domains"]) > 0 or len(f["device_classes"]) > 0
+
+
+class TestBinarySensorMotionSupport:
+    """Regression tests for two real, related bugs found via a
+    deliberate "bulletproofing" pass: investigating why dedup logic
+    (motion_event_names) existed at all for binary_sensor motion
+    entities, when _QUERY_MAP's "motion"/"camera"/"activity" keywords
+    only ever listed "event" as a possible domain — meaning
+    binary_sensor motion entities (the more common convention used by
+    many real Zigbee2MQTT/Z-Wave/PIR integrations) were never actually
+    reachable through those keywords at all. The dedup logic only makes
+    sense if binary_sensor motion entities were always meant to be
+    reachable, confirmed by "security"/"security status" already
+    correctly including device_classes: ["motion"] elsewhere in the
+    same dict. Fixed by adding device_classes: ["motion"] to these
+    three entries too, and fixing the dedup check itself (which was
+    global rather than per-entity — suppressing EVERY binary_sensor
+    motion entity in the house if ANY motion sensor anywhere had
+    event-based data, even completely unrelated ones with no event
+    entity of their own)."""
+
+    def setup_method(self):
+        from app.config import settings
+        settings.ha_url = "http://homeassistant:8123"
+        settings.ha_token = "fake-token"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.ha_url = ""
+        settings.ha_token = ""
+
+    def _mock_states(self, entities):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = entities
+        return mock_resp
+
+    def test_binary_sensor_motion_with_no_event_counterpart_is_included(self):
+        """The actual real-world regression test: a motion sensor
+        reporting ONLY via binary_sensor (no event entity of its own)
+        must not be silently dropped just because a DIFFERENT, unrelated
+        sensor elsewhere in the house happens to have event-based data."""
+        from app.sources import home_assistant
+        states = [
+            _make_entity("event.front_door_motion", "2026-06-24T10:00:00Z"),
+            _make_entity("binary_sensor.front_door_motion", "on", device_class="motion"),
+            _make_entity("binary_sensor.backyard_motion", "on", device_class="motion"),
+        ]
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)):
+            result = home_assistant.search("any motion")
+        assert "backyard_motion" in result
+
+    def test_binary_sensor_motion_with_genuine_event_counterpart_is_suppressed(self):
+        """Confirms the fix is still genuinely per-entity, not simply
+        disabled — a binary_sensor that DOES have a real event
+        counterpart for the same physical sensor should still be
+        correctly suppressed, avoiding a duplicate entry for the same
+        real-world motion detection."""
+        from app.sources import home_assistant
+        states = [
+            _make_entity("event.front_door_motion", "2026-06-24T10:00:00Z"),
+            _make_entity("binary_sensor.front_door_motion", "on", device_class="motion"),
+        ]
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)):
+            result = home_assistant.search("any motion")
+        assert result.count("front_door") == 1
+
+    def test_binary_sensor_motion_labeled_motion_not_door_sensors(self):
+        """Regression test for a related labeling bug found while
+        verifying the fix above: binary_sensor entities were
+        unconditionally labeled "Door Sensors" regardless of their
+        actual device_class — a reasonable assumption when binary_sensor
+        entities were never reachable except via door-specific
+        keywords, but genuinely wrong now that binary_sensor motion
+        entities are correctly reachable too."""
+        from app.sources import home_assistant
+        states = [_make_entity("binary_sensor.backyard_motion", "on", device_class="motion")]
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)):
+            result = home_assistant.search("any motion")
+        assert "**Motion:**" in result
+        assert "Door Sensors" not in result
+
+    def test_door_binary_sensors_still_correctly_labeled(self):
+        """Confirms the labeling fix didn't break the genuine, intended
+        case — a real binary_sensor door entity should still be labeled
+        "Door Sensors," not "Motion."""
+        from app.sources import home_assistant
+        states = [_make_entity("binary_sensor.front_door_open", "off", device_class="door")]
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)):
+            result = home_assistant.search("are the doors locked")
+        assert "**Door Sensors:**" in result

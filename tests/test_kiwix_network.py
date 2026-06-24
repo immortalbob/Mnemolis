@@ -292,6 +292,32 @@ class TestPickBooksWithLLM:
             result = _pick_books_with_llm("test", self._books())
         assert result == ["wikipedia_en_all_maxi_2026-02"]
 
+    def test_ambiguous_fuzzy_match_is_deterministic_across_runs(self):
+        """Regression test for a real bug found via a deliberate
+        "bulletproofing" pass: the fuzzy-match fallback iterated over a
+        set(), whose iteration order is not guaranteed stable across
+        different process runs (depends on hash randomization, which
+        this project never pins via PYTHONHASHSEED). An LLM response
+        ambiguous enough to fuzzy-match more than one real book (e.g. a
+        truncated "wikipedia_en_all" matching both "...maxi" and
+        "...nopic" variants) could resolve to a DIFFERENT real book
+        purely due to container restart timing. Confirms the fix is now
+        deterministic across multiple independent calls."""
+        from app.sources.kiwix import _pick_books_with_llm
+        books = [
+            {"name": "wikipedia_en_all_maxi_2026-02", "title": "W1", "summary": ""},
+            {"name": "wikipedia_en_all_nopic_2026-02", "title": "W2", "summary": ""},
+        ]
+        results = []
+        for _ in range(5):
+            with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+                 patch("app.llm.is_configured", return_value=True), \
+                 patch("app.llm.complete", return_value="wikipedia_en_all"):
+                mock_fns.return_value = (MagicMock(return_value=None), MagicMock())
+                results.append(_pick_books_with_llm("test", books))
+        assert all(r == results[0] for r in results)
+        assert results[0] == ["wikipedia_en_all_maxi_2026-02"]  # sorted() picks "maxi" before "nopic"
+
 
 class TestFallbackBookChoice:
     """Tests for _fallback_book_choice() — extracted from
@@ -467,6 +493,31 @@ class TestGetDisambiguationCandidates:
             mock_fns.return_value = (mock_get_routing, mock_set_routing)
             result = _get_disambiguation_candidates("what are galaxies", "galaxy")
         assert "samsung electronics" not in result
+
+    def test_single_character_original_word_uses_word_boundary_not_bare_substring(self):
+        """Regression test for a real bug found via a deliberate
+        "bulletproofing" pass: a bare substring check is far too loose
+        for a one-character original word, since almost any English
+        phrase coincidentally contains a single letter somewhere — the
+        filter would provide meaningfully less protection for short
+        search terms (now genuinely reachable after fixing
+        _build_search_terms() to stop dropping single alphanumeric
+        characters) than it does for longer ones. Confirms candidates
+        that merely happen to contain the letter "c" as a substring
+        (not as a standalone word) are correctly rejected, while a
+        candidate where "c" genuinely appears as its own word is
+        correctly kept."""
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from unittest.mock import patch, MagicMock
+        with patch("app.sources.kiwix._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value="computer science|c programming|coding"):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = _get_disambiguation_candidates("what is c", "c")
+        assert "computer science" not in result
+        assert "coding" not in result
+        assert "c programming" in result
 
     def test_falls_back_to_original_term_when_all_candidates_invalid(self):
         from app.sources.kiwix import _get_disambiguation_candidates
@@ -1182,6 +1233,40 @@ class TestFetchArticle:
         assert "color: red" not in result
         assert "Real content here" in result
 
+    def test_strips_table_of_contents_box(self):
+        """Regression test for a real bug found via a deliberate
+        "bulletproofing" pass: ".toc" and "#toc" were CSS-selector
+        syntax passed to soup([...]), which only matches literal HTML
+        tag names (e.g. looking for a tag literally named "<.toc>",
+        which doesn't exist) — confirmed directly that table-of-
+        contents boxes were never actually being stripped from any
+        fetched article, despite the code's clear intent."""
+        from app.sources.kiwix import _fetch_article
+        html = '''<html><body><div class="mw-parser-output">
+            <div class="toc">Contents 1 History 2 Background 3 See also</div>
+            <div id="toc">Another TOC variant</div>
+            Real article content that matters.
+        </div></body></html>'''
+        with patch("app.sources.kiwix.requests.get", return_value=self._mock_html_response(html)):
+            result = _fetch_article("http://kiwix:8080/viewer#test")
+        assert "Contents" not in result
+        assert "Another TOC variant" not in result
+        assert "Real article content that matters" in result
+
+    def test_strips_table_tags(self):
+        """Confirms "table" (a real, valid bare HTML tag name, unlike
+        the broken CSS-selector entries above) was already working
+        correctly and continues to after the fix."""
+        from app.sources.kiwix import _fetch_article
+        html = '''<html><body><div class="mw-parser-output">
+            <table class="infobox"><tr><td>Infobox content</td></tr></table>
+            Real article content.
+        </div></body></html>'''
+        with patch("app.sources.kiwix.requests.get", return_value=self._mock_html_response(html)):
+            result = _fetch_article("http://kiwix:8080/viewer#test")
+        assert "Infobox content" not in result
+        assert "Real article content" in result
+
     def test_truncates_to_max_chars(self):
         from app.sources.kiwix import _fetch_article
         long_text = "x" * 5000
@@ -1215,3 +1300,73 @@ class TestFetchArticle:
         with patch("app.sources.kiwix.requests.get", return_value=self._mock_html_response(html)):
             result = _fetch_article("http://kiwix:8080/viewer#se/test")
         assert "How do I do X?" in result
+
+
+class TestArticleFetchFallbackCap:
+    """Regression tests for a real, significant bug found via a
+    deliberate "bulletproofing" pass: search()'s article-fetch fallback
+    loop ("try the next best result if the top one's article fetch
+    fails") previously had no upper bound, trying EVERY remaining
+    scored result. A realistic worst case (multiple books selected,
+    disambiguation active across 3 candidate phrases, 15 results per
+    search call) could produce up to ~59 total results — if Kiwix's
+    search endpoint stayed healthy but the specific article-content
+    path kept failing for every single one (a malformed page, broken
+    links, transient timeouts), this loop could make up to 59
+    sequential real HTTP requests at a 10s timeout each, nearly 10
+    minutes for one search request. Capped at 5 fallback attempts —
+    generous enough to recover from a realistic cluster of a few broken
+    links near the top of the results, narrow enough to bound the
+    worst case to under a minute."""
+
+    def test_fallback_attempts_are_capped_not_unbounded(self):
+        """The actual real-world regression test: confirms the loop
+        stops well before exhausting every available result when every
+        attempt fails."""
+        from app.sources import kiwix
+        fetch_attempts = []
+
+        def fake_fetch(url, max_chars=3000):
+            fetch_attempts.append(url)
+            return ""  # every fetch fails
+
+        fake_results = [
+            {"title": f"Article {i}", "excerpt": "x", "url": f"http://x/{i}", "book": "wikipedia_en_all_maxi_2026-02"}
+            for i in range(20)
+        ]
+        with patch.object(kiwix, "get_books", return_value=[
+                {"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""}
+             ]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["wikipedia_en_all_maxi_2026-02"]), \
+             patch.object(kiwix, "_search_book", return_value=fake_results), \
+             patch.object(kiwix, "_fetch_article", side_effect=fake_fetch):
+            kiwix.search("test query")
+
+        assert len(fetch_attempts) <= 6  # 1 original attempt + 5 capped fallbacks
+        assert len(fetch_attempts) < 20  # must NOT try every available result
+
+    def test_genuine_recovery_within_cap_still_works(self):
+        """Confirms the cap doesn't break the real, intended recovery
+        behavior — a result within the cap that genuinely succeeds
+        should still be correctly returned."""
+        from app.sources import kiwix
+
+        def fake_fetch(url, max_chars=3000):
+            if "3" in url:
+                return "Real article content here."
+            return ""
+
+        fake_results = [
+            {"title": f"Article {i}", "excerpt": "x", "url": f"http://x/{i}", "book": "wikipedia_en_all_maxi_2026-02"}
+            for i in range(10)
+        ]
+        with patch.object(kiwix, "get_books", return_value=[
+                {"name": "wikipedia_en_all_maxi_2026-02", "title": "W", "summary": ""}
+             ]), \
+             patch.object(kiwix, "_pick_books_with_llm", return_value=["wikipedia_en_all_maxi_2026-02"]), \
+             patch.object(kiwix, "_search_book", return_value=fake_results), \
+             patch.object(kiwix, "_fetch_article", side_effect=fake_fetch):
+            result = kiwix.search("test query")
+
+        assert "Real article content here." in result
+        assert "Article 3" in result

@@ -4,6 +4,87 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.43.1]
+
+### Fixed — Unbounded Article-Fetch Fallback Loop
+Found in the same `kiwix.py` pass as 3.43.0's fixes, applied afterward: `search()`'s article-fetch fallback loop ("try the next best result if the top one's article fetch fails") had no upper bound, trying every remaining scored result. A realistic worst case (multiple books selected, disambiguation active across 3 candidate phrases, 15 results per search call) could produce up to ~59 total results — if Kiwix's search endpoint stayed healthy but the specific article-content path kept failing for every single one (a malformed page, broken links, transient timeouts), this loop could make up to 59 sequential real HTTP requests at a 10s timeout each, nearly 10 minutes for one search request. Capped at 5 fallback attempts — generous enough to recover from a realistic cluster of a few broken links near the top of the results, narrow enough to bound the worst case to under a minute. Verified both that the cap genuinely stops well short of trying every result when every attempt fails, and that genuine recovery within the cap still works correctly.
+
+### Added (Tests)
+- 2 new tests: confirming the fallback loop is genuinely capped rather than unbounded, and confirming a result within the cap that genuinely succeeds is still correctly returned
+
+### Changed
+- Version bumped to 3.43.1
+
+**Total test count: 1009**
+
+---
+
+## [3.43.0]
+
+### Investigation Note
+A full, deliberate top-to-bottom re-read of `app/sources/kiwix.py`, the largest and most central source file. Most of the file held up cleanly — pagination boundary logic, the multi-book fusion string formatting, and `_is_definitional_query()`'s "explain"/"describe" substring matches inside "unexplainable"/"described" were all checked carefully and confirmed genuinely correct or harmless, distinct from the real word-boundary bugs found in `home_assistant.py` earlier this release. Five real, distinct bugs were found and fixed.
+
+### Fixed — Non-Deterministic Book Selection Across Restarts
+`_pick_books_with_llm()`'s fuzzy-match fallback iterated over a `set()` when an LLM response was ambiguous enough to match more than one real book (e.g. a truncated "wikipedia_en_all" matching both "...maxi" and "...nopic" variants). Python's set iteration order isn't guaranteed stable across process runs (this project never pins `PYTHONHASHSEED`), meaning the exact same query could resolve to a *different* real book purely due to container restart timing. Fixed with `sorted()`, confirmed deterministic across 5 independent calls.
+
+### Fixed — Table-of-Contents Boxes Were Never Actually Stripped From Any Article
+`_fetch_article()` passed `.toc`/`#toc` (CSS-selector syntax) to `soup([...])`, which only matches literal HTML tag names — confirmed directly that TOC clutter survived in every fetched article since this code was written, despite the clear intent already documented in the surrounding code. Fixed with `soup.select(".toc, #toc")` for the CSS-selector entries, keeping `soup([...])` for the genuine bare tag names ("script", "table", etc., which were already working correctly).
+
+### Fixed — Single-Character Search Terms Silently Dropped, Independently Re-Discovering Tonight's Earlier `scoring.py` Bug
+`_build_search_terms()` had the identical bug already found and fixed in `scoring.py`'s `_keywords()` this same release cycle: "what is r programming used for" reduced to the literal Kiwix search query `"programm,"` losing the one word that actually distinguishes the query from any other programming language. Fixed with the same `isalnum()` approach already proven there.
+
+### Fixed — A Related Sanity-Filter Weakness, Found While Verifying the Fix Above
+Once single-character search terms became genuinely reachable, `_get_disambiguation_candidates()`'s sanity filter (checking whether a candidate "contains the original word") became nearly meaningless for one-letter terms — almost any English phrase coincidentally contains a single letter as a bare substring. Fixed with the same word-boundary regex discipline already applied to `home_assistant.py` earlier this release, making the check genuinely meaningful regardless of how short the original word is.
+
+### Added (Tests)
+- 1 new test confirming deterministic book selection across multiple independent calls
+- 2 new tests in the existing (previously unrelated, accidentally near-duplicated during this pass — caught and merged correctly) `TestFetchArticle` class: the TOC-stripping regression and confirmation that genuine `<table>` stripping still works
+- 3 new tests for `_build_search_terms()`: the single-character fix, confirmation bare punctuation noise is still excluded, and the original "c programming language" case
+- 1 new test confirming the disambiguation sanity filter correctly uses word-boundary matching for single-character original words
+
+### Changed
+- Version bumped to 3.43.0
+
+**Total test count: 1006**
+
+---
+
+## [3.42.0]
+
+### Fixed — A Severe, Real Bug: "Is the Front Door Locked" Was Completely Broken
+A full, deliberate top-to-bottom re-read of `app/sources/home_assistant.py`, hunting for the same kind of small-helper bug already found in `router.py`/`fusion.py`. `_build_filter()`'s keyword matching used naive substring search with zero word-boundary awareness — `"on"` (a real, bare dictionary key for "lights on") matched as a substring of **"front"**. Confirmed end to end: asking *"is the front door locked"* — about as natural and common a question as this entire source exists to answer — incorrectly applied `state_filter="on"`, and since a lock's real state is `"locked"`/`"unlocked"`, never `"on"`, the actual, correctly-named, correctly-stated front door lock entity was silently rejected by the filter. The real, full response was **"No matching entities found in Home Assistant for that query"** for an entity that genuinely existed with current, correct data.
+
+A systematic check (the same discipline already applied to `router.py`'s `INTENT_MAP`) found this risk was severe and widespread, not a one-off: `"rain"` matched inside `"training"`, `"on"` also matched inside `"alone"`/`"long"`/`"among"`, and several other short keys carried the same risk. Fixed by replacing bare substring search with proper `\b` word-boundary regex matching throughout `_build_filter()`, verified against every real collision found plus every genuine intended match (multi-word phrases like `"lights on"` still work correctly).
+
+### Fixed — The Identical Bug in `_detect_area()`
+The exact same root cause, found via the same systematic check applied to `_AREA_ALIASES`: `"shed"` (a real area alias) is a genuine substring of `"finished,"` `"crashed,"` `"washed,"` and other common past-tense verbs. *"Is the download finished yet"* — a query with nothing to do with any area — incorrectly resolved to `area_id="shed"` before this fix. The existing longest-match-first checking order only incidentally protected against this when a genuine, longer area phrase also happened to be present in the same query (which masked the bug in an earlier, less careful test) — it did nothing when "shed" was the only thing that happened to match at all. Fixed with the same `\b` word-boundary approach.
+
+### Fixed — Binary-Sensor Motion Entities Were Never Actually Reachable, Despite Real Dedup Logic Existing for Them
+Investigated why `motion_event_names` dedup logic existed for `binary_sensor` motion entities at all, given `_QUERY_MAP`'s `"motion"`/`"camera"`/`"activity"` keywords only ever listed `"event"` as a possible domain — meaning the more common `binary_sensor` + `device_class: motion` convention (used by many real Zigbee2MQTT/Z-Wave/PIR integrations) was never actually reachable through those keywords at all. The dedup logic only makes sense if `binary_sensor` motion entities were always meant to be reachable, confirmed directly: `"security"`/`"security status"` already correctly included `device_classes: ["motion"]` elsewhere in the same dict, just never applied consistently to these three entries. Fixed by adding `device_classes: ["motion"]` to all three.
+
+**A second, related bug surfaced while fixing the first:** the dedup check itself was global, not per-entity — suppressing *every* `binary_sensor` motion entity in the house if *any* motion sensor anywhere had event-based data, even completely unrelated sensors with no event entity of their own. Confirmed directly: a home with one motion sensor reporting via both an event entity and a binary_sensor (the genuine dedup case) and a second, unrelated motion sensor reporting only via binary_sensor would silently drop the second sensor entirely from an "any motion" query. Fixed to check whether *this specific* physical sensor has a genuine event counterpart, not just whether the set is non-empty at all.
+
+**A third, smaller bug surfaced while verifying the second fix:** `binary_sensor` entities were unconditionally labeled "Door Sensors" regardless of their actual `device_class` — a reasonable assumption when `binary_sensor` entities were never reachable except via door-specific keywords, but genuinely wrong now that `binary_sensor` motion entities are correctly reachable. Fixed to label motion-class binary_sensors "Motion," not "Door Sensors."
+
+### Fixed — A Small Grammar Inconsistency
+`_format_motion_event()` already correctly handled the singular/plural distinction for hours and days ("1 hour ago" vs "2 hours ago"), but minutes was overlooked, producing "1 minutes ago." Fixed to match the established pattern.
+
+### Investigation Note
+`INTENT_MAP`-style keyword collisions in this file's own `_QUERY_MAP` (e.g. `"security"` being a substring of `"security status"`) were checked and confirmed to be correctly handled by the existing longest-match-first protection — distinct from the word-boundary bugs above, which involved a short key colliding with an unrelated word elsewhere in the query, not with a longer key sharing the same characters.
+
+### Added (Tests)
+- 5 new tests for the `_build_filter()` word-boundary fix: the original "front door" bug case, "training"/"rain," "alone"/"on," confirmation that genuine "lights on" still works, and confirmation the existing "outdoor"/"door" longest-match protection still works
+- 3 new tests for the `_detect_area()` word-boundary fix: the "finished"/"shed" bug case, "washed"/"shed," and confirmation genuine "shed" area detection still works
+- 4 new tests for the binary-sensor motion fixes: a sensor with no event counterpart is now included, a sensor with a genuine event counterpart is still correctly suppressed, motion entities get the correct "Motion" label, and door entities still get the correct "Door Sensors" label
+- 1 new test for the singular-minute grammar fix
+
+### Changed
+- Version bumped to 3.42.0
+
+**Total test count: 999**
+
+---
+
 ## [3.41.0]
 
 ### Investigation Note

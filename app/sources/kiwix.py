@@ -185,7 +185,23 @@ def _pick_books_with_llm(query: str, books: list[dict], max_books: int | None = 
         if candidate in book_names:
             chosen.append(candidate)
         else:
-            for name in book_names:
+            # Found via a deliberate "bulletproofing" pass: book_names
+            # is a set, and Python's set iteration order is not
+            # guaranteed to be stable across different process runs
+            # (depends on hash randomization, which this project never
+            # pins via PYTHONHASHSEED). When an LLM's response is
+            # ambiguous enough to fuzzy-match more than one real book
+            # (e.g. a truncated "wikipedia_en_all" matching both
+            # "wikipedia_en_all_maxi" and "wikipedia_en_all_nopic"),
+            # the SAME query could resolve to a DIFFERENT real book
+            # purely due to container restart timing — a real,
+            # reproducibility-breaking gap, even though the practical
+            # harm is mild (both candidates are genuinely
+            # Wikipedia-related, not a wrong-topic book). Sorting
+            # before iterating makes the choice deterministic and
+            # reproducible across restarts, even for a genuinely
+            # ambiguous candidate.
+            for name in sorted(book_names):
                 if candidate in name or name in candidate:
                     if name not in chosen:
                         chosen.append(name)
@@ -250,7 +266,19 @@ def _fetch_article(url: str, max_chars: int = 3000) -> str:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, "html.parser")
-        for tag in soup(["script", "style", "nav", "header", "footer", "table", ".toc", "#toc"]):
+        # Found via a deliberate "bulletproofing" pass: ".toc" and
+        # "#toc" were CSS-selector syntax passed to soup([...]), which
+        # only matches literal HTML tag names (e.g. looking for a tag
+        # literally named "<.toc>", which doesn't exist) — confirmed
+        # directly that table-of-contents boxes were never actually
+        # being stripped from any fetched article, despite the code's
+        # clear intent. "table" in the same original list is a real,
+        # valid bare tag name and was already working correctly;
+        # only the two CSS-selector-style entries needed soup.select()
+        # instead.
+        for tag in soup(["script", "style", "nav", "header", "footer", "table"]):
+            tag.decompose()
+        for tag in soup.select(".toc, #toc"):
             tag.decompose()
         content = (
             soup.find("div", class_="mw-parser-output")
@@ -507,12 +535,25 @@ def _get_disambiguation_candidates(query: str, search_terms: str) -> list[str]:
 
     # Sanity filter — drop any candidate that's empty, too long, or doesn't
     # contain the original word at all
+    #
+    # Found while verifying this filter's behavior for single-character
+    # search terms (e.g. "c," now genuinely reachable through
+    # _should_disambiguate after fixing _build_search_terms() to stop
+    # dropping single alphanumeric characters): a bare substring check
+    # is far too loose for a one-character original word, since almost
+    # any English phrase coincidentally contains the letter "c"
+    # somewhere — the filter would provide meaningfully less protection
+    # for short search terms than it does for longer ones. Word-boundary
+    # matching (the same discipline already applied to
+    # home_assistant.py's keyword matching) makes the check genuinely
+    # meaningful regardless of how short the original word is.
     original_word = search_terms.lower()
+    original_pattern = r"\b" + re.escape(original_word) + r"\b"
     valid_candidates = []
     for c in candidates:
         if not c or len(c.split()) > 3:
             continue
-        if original_word not in c.lower():
+        if not re.search(original_pattern, c.lower()):
             continue
         valid_candidates.append(c)
 
@@ -593,6 +634,17 @@ def _build_search_terms(query: str) -> str:
     polluting the actual query enough that Kiwix matched scattered noise
     ("Howard Wolowitz") far more readily than the real topic word
     ("bitcoin") could compete against.
+
+    Single alphanumeric characters ("c", "r") are kept rather than
+    filtered by length alone — found via a deliberate "bulletproofing"
+    pass independently re-discovering the exact same bug already found
+    and fixed in scoring.py's _keywords(): "what is r programming used
+    for" reduced to the literal Kiwix search query "programm," losing
+    the one word that actually distinguishes this from any other
+    programming language. Bare punctuation residue (e.g. a stray "-"
+    surviving the apostrophe-stripping regex above) is still excluded
+    via the isalnum() check, the same way scoring.py's fix avoids
+    reintroducing that noise.
     """
     query = _strip_discourse_framing(query)
     normalized_words = [
@@ -600,7 +652,7 @@ def _build_search_terms(query: str) -> str:
     ]
     return " ".join(
         _stem(w) for w in normalized_words
-        if w not in _STOP_WORDS and len(w) > 1
+        if w not in _STOP_WORDS and (len(w) > 1 or (len(w) == 1 and w.isalnum()))
     ) or query
 
 
@@ -729,8 +781,19 @@ def search(query: str) -> str:
 
     article_text = _fetch_article(top["url"])
     if not article_text:
-        # Try next best result
-        for candidate in scored[1:]:
+        # Found via a deliberate "bulletproofing" pass: this loop
+        # previously tried EVERY remaining scored result with no upper
+        # bound — a realistic worst case (multiple books, disambiguation
+        # active, up to ~59 total results) could mean up to 59
+        # sequential article-fetch attempts at a real 10s timeout each,
+        # nearly 10 minutes for one search request, if Kiwix's search
+        # endpoint stayed healthy but the specific article-content path
+        # kept failing (a malformed page, a broken link, a transient
+        # timeout). Capped at 5 — generous enough to recover from a
+        # realistic cluster of a few broken links near the top of the
+        # results without trying every one, narrow enough to bound the
+        # worst case to under a minute.
+        for candidate in scored[1:6]:
             article_text = _fetch_article(candidate["url"])
             if article_text:
                 top = candidate

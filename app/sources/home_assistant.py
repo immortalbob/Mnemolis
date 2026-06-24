@@ -11,6 +11,7 @@ Useful for:
 - Power consumption ("how much power are the lights using")
 """
 import logging
+import re
 import requests
 from datetime import datetime, timezone
 from app.config import settings
@@ -54,9 +55,22 @@ _QUERY_MAP: dict[str, dict] = {
     "security status": {"domains": ["lock"], "device_classes": ["door", "motion", "occupancy"], "include_motion": True},
     "security": {"domains": ["lock"], "device_classes": ["door", "motion", "occupancy"]},
     # Motion
-    "motion": {"domains": ["event"], "event_keywords": ["motion"]},
-    "camera": {"domains": ["event"], "event_keywords": ["motion"]},
-    "activity": {"domains": ["event"], "event_keywords": ["motion"]},
+    # Motion — both "event" domain (newer HA motion integrations that
+    # report discrete motion EVENTS, e.g. "motion detected at 3:42pm")
+    # AND "binary_sensor" with device_class "motion" (the more common,
+    # older-style "is motion currently active" convention used by many
+    # real Zigbee2MQTT/Z-Wave/PIR integrations) are genuine, first-class
+    # matches. Found via a deliberate "bulletproofing" pass investigating
+    # why dedup logic existed for binary_sensor motion entities at all
+    # (see motion_event_names in search()) when this dict only ever
+    # listed "event" as a possible domain — that dedup logic only makes
+    # sense if binary_sensor motion entities were ALWAYS meant to be
+    # reachable, confirmed by "security"/"security status" already
+    # correctly including device_classes: ["motion"] elsewhere in this
+    # same dict, just never applied consistently to these three entries.
+    "motion": {"domains": ["event"], "device_classes": ["motion"], "event_keywords": ["motion"]},
+    "camera": {"domains": ["event"], "device_classes": ["motion"], "event_keywords": ["motion"]},
+    "activity": {"domains": ["event"], "device_classes": ["motion"], "event_keywords": ["motion"]},
     # Battery
     "battery": {"device_classes": ["battery"]},
     "charging": {"device_classes": ["battery"]},
@@ -174,9 +188,20 @@ _AREA_ALIASES = {
 def _detect_area(query: str) -> str | None:
     """Return area_id if a room/area name is detected in the query, else None."""
     query_lower = query.lower()
-    # Check aliases first (longest match wins)
+    # Found via the same systematic word-boundary check that found a
+    # real bug in _QUERY_MAP: "shed" (a real area alias) matched as a
+    # bare substring inside "finished," "crashed," "washed," and other
+    # common past-tense verbs — "is the download finished yet" (a query
+    # with nothing to do with any area at all) incorrectly resolved to
+    # area_id="shed", purely from the accidental substring. The
+    # longest-match-first checking order only incidentally protects
+    # against this when a genuine, longer area phrase ALSO happens to
+    # be present in the same query (which masked the bug in an earlier,
+    # less careful test) — it does nothing when "shed" is the only
+    # thing that happens to match at all. Fixed with the same \b
+    # word-boundary regex approach already applied to _build_filter().
     for phrase in sorted(_AREA_ALIASES.keys(), key=len, reverse=True):
-        if phrase in query_lower:
+        if re.search(r"\b" + re.escape(phrase) + r"\b", query_lower):
             return _AREA_ALIASES[phrase]
     return None
 
@@ -256,7 +281,14 @@ def _format_motion_event(entity: dict) -> str:
         if minutes < 1:
             age = "just now"
         elif minutes < 60:
-            age = f"{minutes} minutes ago"
+            # Found via a deliberate "bulletproofing" pass: hours and
+            # days both already correctly handle the singular/plural
+            # distinction ("1 hour ago" vs "2 hours ago"), but this
+            # exact same pattern was overlooked for minutes, producing
+            # "1 minutes ago" — a small, real, cosmetic grammar
+            # inconsistency now fixed to match its own established
+            # pattern.
+            age = f"{minutes} minute{'s' if minutes != 1 else ''} ago"
         elif minutes < 1440:
             hours = minutes // 60
             age = f"{hours} hour{'s' if hours != 1 else ''} ago"
@@ -295,9 +327,38 @@ def _build_filter(query: str) -> dict:
     consumed_positions: set[int] = set()
 
     for keyword in sorted(_QUERY_MAP.keys(), key=len, reverse=True):
-        pos = query_lower.find(keyword)
-        if pos == -1:
+        # Found via a deliberate "bulletproofing" pass, specifically
+        # checking _QUERY_MAP for the same kind of keyword-collision
+        # risk already checked systematically in router.py's
+        # INTENT_MAP: naive substring matching (query_lower.find) has
+        # no word-boundary awareness at all. "on" (a real, bare
+        # dictionary key for "lights on") matched as a substring of
+        # "front" — meaning "is the front door locked," about as
+        # natural a query as this entire source exists to answer, got
+        # an incorrect state_filter="on" applied, and the actual front
+        # door lock entity (whose real state is "locked"/"unlocked",
+        # never "on") was silently rejected by the filter. Confirmed
+        # end to end: search("is the front door locked") against a
+        # real, correctly-named, correctly-stated front door lock
+        # entity returned "No matching entities found in Home
+        # Assistant for that query." The existing longest-match-first
+        # / consumed_positions logic only protects against a SHORTER
+        # key matching the SAME character range a LONGER key already
+        # claimed (e.g. "door" correctly losing to "outdoor" when both
+        # would match the same letters) — it does nothing for a short
+        # key matching INSIDE an entirely different, unrelated word
+        # elsewhere in the query. Fixed with proper \b word-boundary
+        # regex matching instead of bare substring search — verified
+        # against "front"/"on", "training"/"rain", "alone"/"on", and
+        # every genuine multi-word phrase key, confirming both the bug
+        # cases are now correctly rejected and every real, intended
+        # match (including multi-word phrases like "lights on") still
+        # works correctly.
+        pattern = r"\b" + re.escape(keyword) + r"\b"
+        m = re.search(pattern, query_lower)
+        if not m:
             continue
+        pos = m.start()
         # Skip if this keyword position is already covered by a longer match
         positions = set(range(pos, pos + len(keyword)))
         if positions & consumed_positions:
@@ -480,18 +541,43 @@ def search(query: str) -> str:
         domain = entity["entity_id"].split(".")[0]
         dc = entity.get("attributes", {}).get("device_class", "")
 
-        # Skip motion binary_sensors if we have event-based motion data
-        if domain == "binary_sensor" and dc == "motion" and motion_event_names:
-            continue
+        # Skip a binary_sensor motion entity ONLY if THIS SPECIFIC
+        # physical sensor genuinely has its own matching event entity
+        # — found via a deliberate "bulletproofing" pass: the original
+        # check (`if domain == "binary_sensor" and dc == "motion" and
+        # motion_event_names:`) only tested whether the set was
+        # non-empty AT ALL, not whether THIS entity specifically had a
+        # real counterpart in it. Confirmed via a direct, constructed
+        # test: a home with one motion sensor reporting via an event
+        # entity (e.g. "front_door") and a second, completely
+        # unrelated motion sensor reporting only via binary_sensor
+        # (e.g. "backyard," no event entity of its own) would silently
+        # drop the backyard sensor entirely from a "any motion" query
+        # — not because it was genuinely deduplicated against anything
+        # real, but purely because SOME OTHER sensor in the house
+        # happened to have event-based data.
+        if domain == "binary_sensor" and dc == "motion":
+            this_entity_name = entity["entity_id"].replace("binary_sensor.", "").replace("_motion", "")
+            if this_entity_name in motion_event_names:
+                continue
 
-        label = {
-            "light": "Lights",
-            "lock": "Locks",
-            "binary_sensor": "Door Sensors",
-            "sensor": "Sensors",
-            "event": "Motion",
-            "switch": "Switches",
-        }.get(domain, domain.replace("_", " ").title())
+        # Found while verifying the binary_sensor-motion fix above:
+        # "Door Sensors" was a reasonable hardcoded label when
+        # binary_sensor entities were only ever reachable via
+        # door-specific keywords, but is genuinely wrong now that
+        # binary_sensor MOTION entities are correctly reachable too —
+        # a backyard motion sensor shouldn't be labeled "Door Sensors."
+        if domain == "binary_sensor" and dc == "motion":
+            label = "Motion"
+        else:
+            label = {
+                "light": "Lights",
+                "lock": "Locks",
+                "binary_sensor": "Door Sensors",
+                "sensor": "Sensors",
+                "event": "Motion",
+                "switch": "Switches",
+            }.get(domain, domain.replace("_", " ").title())
 
         if label not in groups:
             groups[label] = []
