@@ -4,6 +4,28 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.32.0]
+
+### Investigation Note
+A nineteenth complexity-investigation pass this release cycle, applied to `_resolve_changes_hours()` (C, 17) — the highest-scoring genuinely untouched function left anywhere in the codebase, and the natural-language time-phrase resolver behind the `changes` source. Two competing fix options were assessed precisely before choosing between them, rather than picking by instinct.
+
+### Fixed — A Real, Reachable False Positive in Explicit-Hour-Count Parsing
+The original regex (`r"(\d+)\s*hour"`) matched any number adjacent to the word "hour," regardless of context. Confirmed reachable and significant: this source's keyword routing (`_keyword_detect()`) is a substring match, not an exact-phrase requirement, so a compound query like `"any updates on my 3 hour delay flight, also what changed today"` correctly routes to the `changes` source (via the `"what changed"` trigger) — but then incorrectly resolves to a 3-hour window from the completely unrelated `"3 hour delay"` phrase, silently ignoring the user's actual, more relevant `"today"` signal and searching a window 8x narrower than intended.
+
+Two fix options were assessed before choosing: reordering the checks (letting "today" win first when both are present) versus requiring an actual window phrase before the number. Reordering was tested and found to only fix the *compound* case — a query with the stray number and *no other* time phrase at all (e.g. `"3 hour delay flight tracker, what changed"`) would still incorrectly match, since the hour-count check would still eventually run with nothing else to win first. Requiring a genuine window phrase (`last`/`past`/`in`) closes both the compound and the basic case, verified against 5 real test scenarios including a second, independently-found false positive (`"24 hour clock display"`, a product feature description, not a time-window request) before being applied.
+
+### Added (Tests)
+- 3 new tests: the original compound false-positive case, the second "24 hour clock display" false positive, and confirmation that "in the past N hours" (not just "last") still resolves correctly
+- Fixed a real `SyntaxWarning` (invalid escape sequence) introduced into one of the new test docstrings while writing it, caught and corrected before this release rather than shipped
+
+### Changed
+- `_resolve_changes_hours`: complexity unchanged at C(17) — the regex became more precise, not more branched
+- Version bumped to 3.32.0
+
+**Total test count: 953**
+
+---
+
 ## [3.31.1]
 
 ### Fixed — An Asymmetric Gap in the Pronoun "I" Proper-Noun-Pair Fix

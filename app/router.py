@@ -87,10 +87,30 @@ def _resolve_changes_hours(query: str) -> float:
     """
     q = query.lower()
 
-    # Explicit hour count — "in the last 3 hours"
+    # Explicit hour count — "in the last 3 hours", "in the past 2 hours"
+    #
+    # Found via a deliberate complexity-investigation pass: the original
+    # regex (r"(\d+)\s*hour") matched ANY number adjacent to the word
+    # "hour", regardless of context — a real, reachable compound query
+    # like "any updates on my 3 hour delay flight, also what changed
+    # today" would incorrectly resolve to a 3-hour window from the
+    # unrelated "3 hour delay" phrase, silently ignoring the user's
+    # actual, more relevant "today" signal and searching a window 8x
+    # narrower than intended. Confirmed reachable: this source's
+    # keyword routing is a substring match, not an exact-phrase
+    # requirement, so any query containing a recognized "changes"
+    # trigger anywhere (e.g. "what changed") routes here regardless of
+    # what else the query mentions. Fixed by requiring an actual window
+    # phrase (last/past/in) immediately before the number, rather than
+    # treating any nearby number as a time-window request — verified
+    # this doesn't reject genuine window phrasings ("in the last 3
+    # hours", "in the past 2 hours", "in the last 5 hours or so") while
+    # correctly rejecting both the original false-positive case and a
+    # second one found during the same investigation ("24 hour clock
+    # display").
     if "hour" in q:
         import re
-        m = re.search(r"(\d+)\s*hour", q)
+        m = re.search(r"(?:last|past|in the last|in the past|within the last)\s*(\d+)\s*hour", q)
         if m:
             return float(m.group(1))
 

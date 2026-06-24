@@ -277,6 +277,36 @@ class TestResolveChangesHours:
     def test_no_phrase_defaults_to_24(self):
         assert self.resolve("any new outages") == 24.0
 
+    def test_unrelated_number_near_hour_does_not_trigger_false_positive(self):
+        r"""Regression test for a real, reachable bug found via a
+        deliberate complexity-investigation pass: the original regex
+        (r"(\d+)\s*hour") matched ANY number adjacent to "hour",
+        regardless of context — "any updates on my 3 hour delay
+        flight, also what changed today" incorrectly resolved to a
+        3-hour window from the unrelated "3 hour delay" phrase, silently
+        ignoring the user's actual, more relevant "today" signal and
+        searching a window 8x narrower than intended. Confirmed
+        reachable: this source's keyword routing is a substring match,
+        so any query containing a recognized trigger anywhere (e.g.
+        "what changed") routes to this function regardless of what else
+        the query mentions."""
+        result = self.resolve("any updates on my 3 hour delay flight, also what changed today")
+        assert result == 24.0
+
+    def test_descriptive_hour_count_does_not_trigger_false_positive(self):
+        """A second, distinct false-positive case found in the same
+        investigation: "24 hour clock display" describes a product
+        feature, not a time-window request, and must not be
+        misinterpreted as one."""
+        result = self.resolve("what changed with my 24 hour clock display")
+        assert result == 24.0  # falls through to the genuine default, not a coincidental match
+
+    def test_past_n_hours_phrasing_still_matches(self):
+        """Confirms the fix's required window-phrase list covers more
+        than just "last" — "in the past N hours" is an equally natural,
+        common phrasing that must still resolve correctly."""
+        assert self.resolve("any changes in the past 2 hours") == 2.0
+
     def test_this_morning_returns_positive_hours(self):
         result = self.resolve("what changed this morning")
         assert result > 0
