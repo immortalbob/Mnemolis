@@ -80,6 +80,42 @@ class TestKeywords:
         singular = _keywords("battery")
         assert plural == singular
 
+    def test_single_alphanumeric_character_is_kept(self):
+        """Regression test for a real, significant scoring failure
+        found via a deliberate "bulletproofing" pass: the original
+        filter (len(w) > 1) dropped every single-character token,
+        including genuinely meaningful ones — "c" (the programming
+        language), "r" (the statistics language). Confirmed directly
+        with score_text_result(): a result titled "C Programming
+        Language Tutorial for Beginners" scored LOWER than an unrelated
+        "JavaScript Programming Language Tutorial" result for a query
+        about C, since "c" — the one word that would have actually
+        distinguished them — was silently dropped from both sides."""
+        from app.scoring import _keywords
+        result = _keywords("tutorial for the c programming language")
+        assert "c" in result
+
+    def test_bare_punctuation_is_still_excluded(self):
+        """Confirms the fix didn't reintroduce real noise — a bare
+        hyphen (common in real text like "C++ vs C# - which is
+        better") must NOT become a scored "keyword" just because
+        single alphanumeric characters are now kept. The hyphen isn't
+        in the stripped character set, so it survives .strip()
+        untouched and must be excluded by the isalnum() check
+        specifically, not just by length."""
+        from app.scoring import _keywords
+        result = _keywords("topic - subtopic")
+        assert "-" not in result
+
+    def test_multi_character_tokens_with_symbols_still_work(self):
+        """Confirms "c++" and "c#" (multi-character before and after
+        stripping, never hitting the single-character branch at all)
+        are still correctly preserved as distinct keywords."""
+        from app.scoring import _keywords
+        result = _keywords("c++ vs c# comparison")
+        assert "c++" in result
+        assert "c#" in result
+
 
 class TestIsGenericResult:
     """Tests for _is_generic_result() homepage/about-page detection."""
@@ -107,6 +143,33 @@ class TestIsGenericResult:
     def test_detects_bare_domain_with_short_content(self):
         from app.scoring import _is_generic_result
         assert _is_generic_result("Acme Corp", "Buy stuff here", "http://acme.com/") is True
+
+    def test_detects_bare_domain_with_tracking_query_string(self):
+        """Regression test for a real, reachable bug found via a
+        deliberate "bulletproofing" pass: a genuine bare-domain-root
+        URL with a tracking parameter attached (e.g.
+        "?utm_source=twitter" — a real, common pattern, not contrived)
+        was incorrectly treated as "has a real path," skipping the
+        generic-result penalty it should have received, since query
+        strings were never stripped before the path check ran."""
+        from app.scoring import _is_generic_result
+        assert _is_generic_result(
+            "Example Tracking Site", "Short snippet text here.",
+            "https://example.com/?utm_source=twitter"
+        ) is True
+
+    def test_real_article_with_tracking_query_string_not_flagged(self):
+        """Confirms the fix didn't over-correct — a genuine article
+        path WITH tracking parameters attached must still correctly
+        register as having a real path, not be incorrectly flagged as
+        a bare-root homepage just because a query string is present."""
+        from app.scoring import _is_generic_result
+        result = _is_generic_result(
+            "A Real Article Title",
+            "This is a genuinely long, substantive article body with real content about a real topic worth reading in full.",
+            "https://example.com/real-article-title?utm_source=twitter"
+        )
+        assert result is False
 
     def test_does_not_flag_real_article(self):
         from app.scoring import _is_generic_result

@@ -4,6 +4,30 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.38.0]
+
+### Investigation Note
+Continuing the bulletproofing pass into `app/scoring.py` and `app/query_expansion.py`. `query_expansion.py` held up completely clean — genuinely worth noting why: its failure paths all return early, before the single `set_routing()` cache-write at the end ever executes, naturally avoiding the same failure-caching bug found and fixed three times elsewhere this cycle (`_llm_pick_fusion_sources`, `_llm_detect`, `_get_disambiguation_candidates`), all of which called their cache-write unconditionally across every branch instead. Early-return-before-write is a genuinely safer shape for this exact class of bug. `mcp_server.py` was also re-read in full and confirmed clean — including verifying that returning a descriptive error string rather than raising `ToolError` is a deliberate, consistent choice matching every source file's own established "return a string explaining failure" contract, not a deviation from MCP best practice.
+
+### Fixed — A Real, Significant Scoring Failure: Single-Character Keywords Were Silently Dropped
+`_keywords()`'s filter (`len(w) > 1`) dropped every single-character token, including genuinely meaningful ones — "c" (the programming language), "r" (the statistics language). Confirmed this was a real, significant scoring failure, not a theoretical gap: for the query "tutorial for the c programming language," a result titled "C Programming Language Tutorial for Beginners" scored **lower** than an unrelated "JavaScript Programming Language Tutorial" result, since "c" — the one word that would have actually distinguished them — was silently dropped from both sides, leaving only the generic shared words to decide the ranking.
+
+Two fix options were assessed directly before choosing: lowering the filter to `len(w) > 0` (simplest) versus keeping single characters only when genuinely alphanumeric. Tested both against a real noise case — a bare hyphen (common in real text like "C++ vs C# - which is better") — and confirmed `len(w) > 0` would let it through as a scored "keyword" (the hyphen isn't in the stripped character set, so it survives `.strip()` untouched), reintroducing real noise. The `isalnum()` check correctly excludes that case while still preserving "c", "c#", and "c++".
+
+### Fixed — A Real, Reachable Bug: Tracking Query Strings Defeated the Bare-Domain-Root Check
+`_is_generic_result()`'s URL-path check never stripped query strings or fragments before checking for a real path — a genuine bare-domain-root URL with a tracking parameter attached (`https://example.com/?utm_source=twitter` — a real, common pattern) was incorrectly treated as "has a real path," skipping the generic-result penalty it should have received. Fixed by stripping the query string and fragment first, mirroring `normalize_url()`'s own approach — verified a genuine article path *with* tracking parameters attached still correctly registers as having a real path either way.
+
+### Added (Tests)
+- 3 new tests for `_keywords()`: single alphanumeric characters are kept, bare punctuation is still correctly excluded, and multi-character tokens with symbols (`c++`, `c#`) still work
+- 2 new tests for `_is_generic_result()`: a bare domain with a tracking query string is now correctly flagged as generic, and a real article with tracking parameters is correctly NOT flagged
+
+### Changed
+- Version bumped to 3.38.0
+
+**Total test count: 972**
+
+---
+
 ## [3.37.0]
 
 ### Investigation Note — Completing the `app/main.py` Bulletproofing Pass

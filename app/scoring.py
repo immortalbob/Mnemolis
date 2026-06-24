@@ -57,9 +57,41 @@ def normalize_url(url: str) -> str:
 
 
 def _keywords(text: str) -> set[str]:
-    """Extract stemmed, stop-word-filtered keywords from text."""
+    """Extract stemmed, stop-word-filtered keywords from text.
+
+    Found via a deliberate "bulletproofing" pass: the original filter
+    (len(w) > 1) dropped every single-character token, including
+    genuinely meaningful ones — "c" (the programming language), "r"
+    (the statistics language). Confirmed this was a real, significant
+    scoring failure, not just a theoretical gap: for the query
+    "tutorial for the c programming language," a result titled "C
+    Programming Language Tutorial for Beginners" scored LOWER than an
+    unrelated "JavaScript Programming Language Tutorial" result, since
+    "c" — the one word that would have actually distinguished them —
+    was silently dropped by both sides, leaving only the generic shared
+    words ("programming," "tutorial," "language") to decide the score.
+
+    Fixed by keeping single characters specifically when they're
+    alphanumeric, rather than broadly lowering the length threshold to
+    0 — verified the broader change would have reintroduced real noise:
+    a bare "-" (common in real text like "C++ vs C# - which is better")
+    survives `.strip()` untouched (the hyphen isn't in the stripped
+    character set) and would become a scored "keyword" under a blanket
+    len(w) > 0 filter, awarding meaningless points for two results that
+    happen to share a stray hyphen. The isalnum() check excludes that
+    case while still correctly preserving "c", "c#", and "c++" (the
+    latter two never hit the single-character branch at all, since
+    they're multi-character before and after stripping).
+    """
     words = text.lower().split()
-    return {_stem(w.strip(".,!?;:\"'()[]{}")) for w in words if w not in _STOP_WORDS and len(w) > 1}
+    keywords = set()
+    for w in words:
+        if w in _STOP_WORDS:
+            continue
+        stripped = w.strip(".,!?;:\"'()[]{}")
+        if len(stripped) > 1 or (len(stripped) == 1 and stripped.isalnum()):
+            keywords.add(_stem(stripped))
+    return keywords
 
 
 def _is_generic_result(title: str, content: str, url: str = "") -> bool:
@@ -82,7 +114,18 @@ def _is_generic_result(title: str, content: str, url: str = "") -> bool:
     # URL is a bare domain root (no path beyond a trailing slash) AND
     # the content is suspiciously short — likely a landing page, not an article
     if url:
-        path_part = url.split("://", 1)[-1].split("/", 1)
+        # Found via a deliberate "bulletproofing" pass: query strings
+        # and fragments were never stripped before this path check, so
+        # a genuine bare-root URL with a tracking parameter attached
+        # (e.g. "https://example.com/?utm_source=twitter" — a real,
+        # common pattern, not contrived) was incorrectly treated as
+        # "has a real path," skipping the generic-result penalty it
+        # should have received. Stripped first, mirroring
+        # normalize_url()'s own approach, before checking for a path —
+        # verified a genuine article path WITH tracking parameters
+        # still correctly registers as having a real path either way.
+        no_query = url.split("?", 1)[0].split("#", 1)[0]
+        path_part = no_query.split("://", 1)[-1].split("/", 1)
         has_path = len(path_part) > 1 and path_part[1].strip("/") != ""
         if not has_path and len(content_lower) < 40:
             return True
