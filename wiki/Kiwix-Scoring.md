@@ -25,6 +25,8 @@ A raw per-word excerpt match count would systematically favor longer excerpts �
 
 `_stem()` is a lightweight, rule-based stemmer (strip trailing "s," "es," "ies" with length guards to avoid mangling short words) — not a full linguistic stemming library, since the actual goal is narrow: catch the specific plural/suffix mismatches that would otherwise cost a correct article real points for no good reason. `"what are galaxies"` needs to score well against a title of `"Galaxy"`; without stemming, the singular/plural mismatch would silently cost both the +15 stemmed-match bonus and the +5 per-word title hit, even though the search obviously found the right thing.
 
+A small, explicit exception list (`this`, `less`, `across`, `always`, `towards`) keeps a handful of common, non-plural English words that happen to end in "s" from being incorrectly suffix-stripped — found via a deliberate, precise re-read of the function, with the real-world scoring impact confirmed genuinely minimal before fixing (this function always compares two complete strings against each other, never an isolated stop word for its own sake), but worth closing as a known inaccuracy rather than leaving it.
+
 ## How this feeds into the rest of Kiwix's behavior
 
 - [Kiwix Disambiguation](Kiwix-Disambiguation) pools results from multiple candidate search terms and lets this exact scoring function pick the real winner across all of them — disambiguation only generates candidates, it never decides between them directly
