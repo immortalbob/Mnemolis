@@ -310,6 +310,51 @@ class TestAnomalyDetection:
             reason = _check_latency_outlier("multi_intent_chain", 210)
             assert reason is None
 
+    def test_check_latency_outlier_respects_configured_min_samples(self, tmp_path):
+        """Lowering ADVERSARIAL_TEST_LATENCY_OUTLIER_MIN_SAMPLES must let
+        the check engage with fewer real samples than the default 10 —
+        proves this is a real setting, not a renamed constant."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.adversarial_testing.settings.adversarial_test_latency_outlier_min_samples", 3):
+            init_adversarial_db()
+            import json
+            for i in range(5):
+                fp = json.dumps([f"sample-{i}"])
+                _record_result(fp, "multi_intent_chain", f"query {i}", "kiwix", 200, None)
+            # Only 5 samples — would be silently skipped under the default
+            # floor of 10, but the lowered setting should let it engage.
+            reason = _check_latency_outlier("multi_intent_chain", 50000)
+            assert reason is not None
+
+    def test_check_latency_outlier_respects_configured_multiplier(self, tmp_path):
+        """A tighter multiplier must flag latency the default 1.5x
+        wouldn't have caught."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.adversarial_testing.settings.adversarial_test_latency_outlier_multiplier", 1.05), \
+             patch("app.adversarial_testing.settings.adversarial_test_latency_outlier_floor_ms", 0):
+            init_adversarial_db()
+            import json
+            for i in range(20):
+                fp = json.dumps([f"sample-{i}"])
+                _record_result(fp, "multi_intent_chain", f"query {i}", "kiwix", 200, None)
+            # 220ms is only 1.1x the 200ms p95 — would pass under the
+            # default 1.5x multiplier, but should fail under 1.05x.
+            reason = _check_latency_outlier("multi_intent_chain", 220)
+            assert reason is not None
+
+    def test_check_part_count_mismatch_respects_configured_tolerance(self):
+        """A tighter tolerance must flag a 1-header-off mismatch the
+        default tolerance of 2 wouldn't have caught."""
+        result = "[KIWIX — A] x\n[WEB — B] y"  # 2 headers for 3 intents — diff of 1
+        with patch("app.adversarial_testing.settings.adversarial_test_part_count_mismatch_tolerance", 1):
+            reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news"], result)
+            assert reason is not None
+        # Same inputs, default tolerance of 2 — should NOT flag a diff of only 1.
+        reason_default = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news"], result)
+        assert reason_default is None
+
 
 class TestFullCycle:
     """End-to-end tests of the scheduled job body against a stubbed
@@ -368,9 +413,55 @@ class TestFullCycle:
             # The sentinel cache file must be byte-for-byte untouched.
             assert sentinel_cache.read_text() == '{"sentinel": true}'
 
+    def test_cycle_is_a_safe_noop_when_disabled(self, tmp_path):
+        """run_adversarial_test_cycle() must check ADVERSARIAL_TEST_ENABLED
+        itself — defense in depth, so a direct call (e.g. via
+        POST /adversarial/trigger) can never run real queries against the
+        LLM/SearXNG/Kiwix backends while the feature is supposed to be off,
+        even if scheduler registration was somehow bypassed."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        route_called = {"n": 0}
+
+        def tracking_route(query, source="auto", fusion_sources=None):
+            route_called["n"] += 1
+            return ("[KIWIX — X] content", "kiwix")
+
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.adversarial_testing.settings.adversarial_test_enabled", False), \
+             patch("app.router.route_with_source", side_effect=tracking_route):
+            result = run_adversarial_test_cycle()
+            assert result["status"] == "disabled"
+            assert result["queries_run"] == 0
+            assert route_called["n"] == 0  # never touched the real pipeline at all
+
+    def test_cycle_returns_real_summary_when_enabled(self, tmp_path):
+        """The return value POST /adversarial/trigger relies on — must
+        report what actually happened on that specific call, not a bare
+        success with no way to confirm results."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.adversarial_testing.settings.adversarial_test_enabled", True), \
+             patch("app.adversarial_testing.settings.adversarial_test_batch_size", 4), \
+             patch("app.router.route_with_source", return_value=("No results found.", "web")):
+            init_adversarial_db()
+            result = run_adversarial_test_cycle()
+            assert result["status"] == "ran"
+            assert result["queries_run"] == 4
+            assert result["flagged"] == 4  # every one matches unexpected_empty
+
 
 class TestHealthSummaryAndFlaggedEndpointData:
     """Tests for the /health and /adversarial/flagged data functions."""
+
+    def test_summary_reports_disabled_without_touching_db(self, tmp_path):
+        """A disabled feature should report its own state directly,
+        never silently falling through to never_ran/stale based on
+        whatever the DB happens to contain."""
+        temp_db = str(tmp_path / "nonexistent" / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.adversarial_testing.settings.adversarial_test_enabled", False):
+            summary = get_adversarial_test_summary()
+            assert summary == {"status": "disabled"}
 
     def test_summary_never_ran_state(self, tmp_path):
         temp_db = str(tmp_path / "test_adversarial.db")
@@ -414,3 +505,126 @@ class TestHealthSummaryAndFlaggedEndpointData:
                 _record_result(json.dumps([f"item-{i}"]), "no_intent_fallthrough", f"q{i}", "kiwix", 100, f"crash: boom {i}")
             flagged = get_flagged_combinations(limit=3)
             assert len(flagged) == 3
+
+
+class TestEndpointsViaTestClient:
+    """End-to-end tests through the real FastAPI app — confirms the
+    enable switch actually changes real HTTP-level behavior, not just
+    the underlying functions in isolation. Each test boots its own
+    short-lived TestClient (rather than sharing test_main.py's
+    module-scoped fixture) since the enabled/disabled state must be
+    patched before the lifespan context manager runs, which a shared
+    fixture spanning multiple tests can't do per-test.
+    """
+
+    def test_trigger_endpoint_runs_a_real_cycle(self, tmp_path):
+        from fastapi.testclient import TestClient
+        import app.main as main
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", True), \
+             patch("app.main.settings.adversarial_test_batch_size", 3), \
+             patch("app.router.route_with_source", return_value=("[KIWIX — X] content", "kiwix")):
+            with TestClient(main.app) as client:
+                response = client.post("/adversarial/trigger")
+                assert response.status_code == 200
+                body = response.json()
+                assert body["status"] == "ran"
+                assert body["queries_run"] == 3
+
+    def test_trigger_endpoint_reports_disabled_without_running(self, tmp_path):
+        from fastapi.testclient import TestClient
+        import app.main as main
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        route_called = {"n": 0}
+
+        def tracking_route(query, source="auto", fusion_sources=None):
+            route_called["n"] += 1
+            return ("[KIWIX — X] content", "kiwix")
+
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", False), \
+             patch("app.router.route_with_source", side_effect=tracking_route):
+            with TestClient(main.app) as client:
+                response = client.post("/adversarial/trigger")
+                assert response.status_code == 200
+                assert response.json()["status"] == "disabled"
+                assert route_called["n"] == 0
+
+    def test_flagged_endpoint_reports_disabled_state(self, tmp_path):
+        from fastapi.testclient import TestClient
+        import app.main as main
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", False):
+            with TestClient(main.app) as client:
+                response = client.get("/adversarial/flagged")
+                assert response.status_code == 200
+                assert response.json() == {"status": "disabled", "count": 0, "flagged": []}
+
+    def test_health_reports_disabled_adversarial_testing(self, tmp_path):
+        from fastapi.testclient import TestClient
+        import app.main as main
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", False):
+            with TestClient(main.app) as client:
+                response = client.get("/health")
+                assert response.status_code == 200
+                assert response.json()["adversarial_testing"] == {"status": "disabled"}
+
+    def test_scheduler_does_not_register_job_when_disabled(self, tmp_path):
+        """The real lifespan startup must skip scheduler.add_job() for
+        adversarial_testing entirely when disabled — not just skip
+        running it once registered. Inspects the actual live
+        apscheduler instance's registered job IDs to confirm directly,
+        rather than just trusting the app booted without an error."""
+        from fastapi.testclient import TestClient
+        import app.main as main
+        import apscheduler.schedulers.background
+
+        captured_schedulers = []
+        original_init = apscheduler.schedulers.background.BackgroundScheduler.__init__
+
+        def capturing_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            captured_schedulers.append(self)
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", False), \
+             patch.object(apscheduler.schedulers.background.BackgroundScheduler, "__init__", capturing_init):
+            with TestClient(main.app):
+                assert len(captured_schedulers) == 1
+                job_ids = {job.id for job in captured_schedulers[0].get_jobs()}
+                assert "adversarial_testing" not in job_ids
+                # The other four real snapshot jobs must still be
+                # present and unaffected by this flag.
+                assert {"snapshot_uptime", "snapshot_forecast", "snapshot_news", "snapshot_ha"}.issubset(job_ids)
+
+    def test_scheduler_registers_job_when_enabled(self, tmp_path):
+        """The inverse confirmation — enabled (the default) must
+        actually register the job, not just default to skipping it."""
+        from fastapi.testclient import TestClient
+        import app.main as main
+        import apscheduler.schedulers.background
+
+        captured_schedulers = []
+        original_init = apscheduler.schedulers.background.BackgroundScheduler.__init__
+
+        def capturing_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            captured_schedulers.append(self)
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", True), \
+             patch.object(apscheduler.schedulers.background.BackgroundScheduler, "__init__", capturing_init):
+            with TestClient(main.app):
+                assert len(captured_schedulers) == 1
+                job_ids = {job.id for job in captured_schedulers[0].get_jobs()}
+                assert "adversarial_testing" in job_ids

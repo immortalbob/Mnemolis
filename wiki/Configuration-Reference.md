@@ -97,8 +97,13 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `ADVERSARIAL_TEST_INTERVAL_MINUTES` | `60` | How often the [adversarial self-testing](Adversarial-Self-Testing) scheduler tick fires |
+| `ADVERSARIAL_TEST_ENABLED` | `true` | Master on/off switch for [adversarial self-testing](Adversarial-Self-Testing). `false` skips DB init, never registers the scheduler job, and makes `POST /adversarial/trigger` a safe no-op |
+| `ADVERSARIAL_TEST_INTERVAL_MINUTES` | `60` | How often the scheduler tick fires |
 | `ADVERSARIAL_TEST_BATCH_SIZE` | `8` | Queries generated per tick — cheap to raise, since generation is pure combinatorics with no LLM calls in the hot path |
+| `ADVERSARIAL_TEST_LATENCY_OUTLIER_MULTIPLIER` | `1.5` | How many multiples of a recipe's own historical p95 latency counts as a real outlier |
+| `ADVERSARIAL_TEST_LATENCY_OUTLIER_FLOOR_MS` | `1000` | A floor below which latency is never flagged regardless of the multiplier |
+| `ADVERSARIAL_TEST_LATENCY_OUTLIER_MIN_SAMPLES` | `10` | How many historical samples a recipe needs before the latency-outlier check engages at all |
+| `ADVERSARIAL_TEST_PART_COUNT_MISMATCH_TOLERANCE` | `2` | How far a `multi_intent_chain` query's intended-intent count and its result's header count can diverge before it's flagged |
 
 ## Security
 

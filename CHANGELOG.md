@@ -4,6 +4,26 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.46.1]
+
+### Added — Adversarial Self-Testing: Real On/Off Switch and Tunable Thresholds
+The first real run against MiniDock's actual Kiwix/SearXNG/Ollama stack came back clean (8/8, zero flags) — see the wiki page for what it generated. Follow-up based on direct feedback: every threshold that was previously a hardcoded constant in `adversarial_testing.py` is now a real setting, plus a genuine master enable/disable switch.
+
+- **`ADVERSARIAL_TEST_ENABLED`** (default `true`) — checked at both scheduler-registration time in `main.py`'s lifespan AND inside `run_adversarial_test_cycle()` itself (defense in depth), so a direct call — including the new `POST /adversarial/trigger` — can never accidentally run real queries against the LLM/SearXNG/Kiwix backends while the feature is supposed to be off. `/health`'s `adversarial_testing` field reports `{"status": "disabled"}` directly when off, rather than eventually reading as `"stale"` — a deliberate off-switch shouldn't look like a job that silently stopped running.
+- **`ADVERSARIAL_TEST_LATENCY_OUTLIER_MULTIPLIER`** (default `1.5`), **`ADVERSARIAL_TEST_LATENCY_OUTLIER_FLOOR_MS`** (default `1000`), **`ADVERSARIAL_TEST_LATENCY_OUTLIER_MIN_SAMPLES`** (default `10`) — previously hardcoded; the real first run showed legitimate cache-driven variance (276ms vs. 2028ms on the same recipe) that different hardware will see differently
+- **`ADVERSARIAL_TEST_PART_COUNT_MISMATCH_TOLERANCE`** (default `2`) — previously hardcoded
+
+### Added — `POST /adversarial/trigger`
+Manually run one cycle immediately rather than waiting for the next scheduled tick — mirrors `/snapshots/trigger`'s exact pattern, and removes the need for the `docker compose exec ... python3 -c "..."` workaround used to force the very first verification run. Returns a real summary (`queries_run`, `flagged`) rather than a bare 200.
+
+### Changed
+- Version bumped to 3.46.1
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) and [Configuration Reference](https://github.com/immortalbob/Mnemolis/wiki/Configuration-Reference) updated with all five new settings, the new endpoint, and the real first-run data from MiniDock
+
+**Total test count: 1061**
+
+---
+
 ## [3.46.0]
 
 ### Added — Adversarial Self-Testing

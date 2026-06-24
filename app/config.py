@@ -219,6 +219,14 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------
     # Adversarial self-testing — background combinatorial query generation
     # -------------------------------------------------------------------
+    # Master on/off switch. Disabling skips DB init, never registers the
+    # scheduler job, and POST /adversarial/trigger returns a clear
+    # "disabled" response instead of silently running anyway — a real
+    # opt-out for anyone who'd rather not have any extra background
+    # traffic hitting their LLM/SearXNG/Kiwix backends, not a setting
+    # that only half-works.
+    adversarial_test_enabled: bool = True
+
     # How often the adversarial test scheduler tick runs. 60 minutes is
     # frequent enough to accumulate real coverage over days/weeks while
     # never meaningfully competing with real traffic for resources. Don't
@@ -230,8 +238,47 @@ class Settings(BaseSettings):
     # How many queries to generate per scheduler tick. A small batch costs
     # nothing extra (no LLM calls in the hot path — generation is pure
     # combinatorics) and produces more real coverage per tick than
-    # generating one query at a time.
+    # generating one query at a time. Raise this on more powerful
+    # hardware (e.g. The Beast) for faster coverage accumulation; lower
+    # it on weaker hardware (e.g. MiniDock's N100) if a tick visibly
+    # competes with real query latency.
     adversarial_test_batch_size: int = 8
+
+    # How many multiples of a recipe's own historical p95 latency counts
+    # as a real outlier, not just normal variance — same role as
+    # SNAPSHOT_STALE_GRACE_MULTIPLIER, but for the latency-outlier check
+    # rather than job staleness. Real, observed variance within a single
+    # recipe (two conditional_with_remainder queries differing 2028ms vs.
+    # 276ms on identical hardware, almost certainly a cache hit/miss
+    # difference) means this needs real headroom by default rather than
+    # a tight multiplier that flags normal cache behavior as an anomaly.
+    adversarial_test_latency_outlier_multiplier: float = 1.5
+
+    # A floor below which latency is never flagged as an outlier
+    # regardless of the multiplier — protects against flagging
+    # genuinely fast, cache-hit-driven queries (276ms in real testing)
+    # just because they happen to be 1.5x some even-faster historical
+    # sample. Different hardware has very different "fast" baselines,
+    # so this is exposed rather than fixed.
+    adversarial_test_latency_outlier_floor_ms: int = 1000
+
+    # How many historical latency samples a recipe needs before the
+    # latency-outlier check engages at all — below this, "is this slow"
+    # genuinely isn't yet decidable, so the check stays silent rather
+    # than guessing off too little data. Lower this for faster feedback
+    # on a high-traffic deployment; raise it if early flags before
+    # enough real history exists feel premature.
+    adversarial_test_latency_outlier_min_samples: int = 10
+
+    # How far a multi_intent_chain query's intended-intent count and its
+    # result's actual [SOURCE — LABEL] header count can diverge before
+    # it's flagged as a real part-count mismatch rather than ordinary
+    # fusion/fallback variance (e.g. a clean single-source answer
+    # legitimately needs no header at all). Lower this for stricter
+    # decomposition-accuracy alerting; raise it if normal fusion/fallback
+    # behavior on your own deployment trips this more than genuinely
+    # warranted.
+    adversarial_test_part_count_mismatch_tolerance: int = 2
 
 
 settings = Settings()

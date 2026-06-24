@@ -222,7 +222,8 @@ async def lifespan(app: FastAPI):
         await loop.run_in_executor(None, load_routing_cache)
         await loop.run_in_executor(None, _init_log_db)
         await loop.run_in_executor(None, init_snapshot_db)
-        await loop.run_in_executor(None, init_adversarial_db)
+        if settings.adversarial_test_enabled:
+            await loop.run_in_executor(None, init_adversarial_db)
 
         # Start snapshot scheduler
         scheduler = BackgroundScheduler()
@@ -230,11 +231,14 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(snapshot_forecast, "interval", minutes=30, id="snapshot_forecast")
         scheduler.add_job(snapshot_news, "interval", minutes=60, id="snapshot_news")
         scheduler.add_job(snapshot_ha, "interval", minutes=5, id="snapshot_ha")
-        scheduler.add_job(
-            run_adversarial_test_cycle, "interval",
-            minutes=settings.adversarial_test_interval_minutes,
-            id="adversarial_testing",
-        )
+        if settings.adversarial_test_enabled:
+            scheduler.add_job(
+                run_adversarial_test_cycle, "interval",
+                minutes=settings.adversarial_test_interval_minutes,
+                id="adversarial_testing",
+            )
+        else:
+            _LOGGER.info("Adversarial testing is disabled (ADVERSARIAL_TEST_ENABLED=false); scheduler job not registered")
         scheduler.start()
         _LOGGER.info("Snapshot scheduler started")
 
@@ -253,7 +257,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.46.0",
+    version="3.46.1",
     lifespan=lifespan,
 )
 
@@ -725,6 +729,24 @@ def trigger_snapshots():
     return {"status": "ok", "snapshots_triggered": ["uptime", "forecast", "news", "ha"]}
 
 
+@app.post("/adversarial/trigger")
+def trigger_adversarial_test():
+    """
+    Manually trigger one adversarial self-testing cycle immediately,
+    rather than waiting for the next scheduled tick — mirrors
+    /snapshots/trigger's exact pattern for the same reason: a person
+    actively watching this feature shouldn't need to wait up to
+    ADVERSARIAL_TEST_INTERVAL_MINUTES (default 60) just to see it run.
+
+    Returns {"status": "disabled", ...} without running anything if
+    ADVERSARIAL_TEST_ENABLED is false — run_adversarial_test_cycle()
+    checks this itself too (defense in depth), but surfacing it here
+    directly means a person manually triggering this gets an honest,
+    immediate answer instead of a misleadingly generic success response.
+    """
+    return run_adversarial_test_cycle()
+
+
 @app.get("/adversarial/flagged")
 def adversarial_flagged(limit: int = 50):
     """
@@ -745,6 +767,8 @@ def adversarial_flagged(limit: int = 50):
     app/adversarial_testing.py's module docstring for why that distinction
     is the single hardest requirement on this whole feature.
     """
+    if not settings.adversarial_test_enabled:
+        return {"status": "disabled", "count": 0, "flagged": []}
     flagged = get_flagged_combinations(limit=limit)
     return {
         "count": len(flagged),

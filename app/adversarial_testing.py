@@ -408,7 +408,8 @@ def _check_multi_intent_part_count(recipe_name: str, ingredients: list, result: 
     # A single-source result legitimately has zero headers (no attribution
     # needed when nothing was merged) — only flag a REAL discrepancy once
     # more than one source was actually expected to appear.
-    if n_intended >= 2 and n_headers > 0 and abs(n_headers - n_intended) >= 2:
+    tolerance = settings.adversarial_test_part_count_mismatch_tolerance
+    if n_intended >= 2 and n_headers > 0 and abs(n_headers - n_intended) >= tolerance:
         return f"part_count_mismatch: intended {n_intended} intents, found {n_headers} headers"
     return None
 
@@ -472,14 +473,17 @@ def _check_latency_outlier(recipe_name: str, latency_ms: int) -> str | None:
         return None
 
     samples = [r[0] for r in rows if r[0] is not None]
-    if len(samples) < 10:
+    min_samples = settings.adversarial_test_latency_outlier_min_samples
+    if len(samples) < min_samples:
         # Not enough history yet to call anything an outlier — this is a
         # genuine "not yet decidable" state, not a clean pass.
         return None
     samples_sorted = sorted(samples)
     p95_index = max(0, int(len(samples_sorted) * 0.95) - 1)
     p95 = samples_sorted[p95_index]
-    if latency_ms > p95 * 1.5 and latency_ms > 1000:
+    multiplier = settings.adversarial_test_latency_outlier_multiplier
+    floor_ms = settings.adversarial_test_latency_outlier_floor_ms
+    if latency_ms > p95 * multiplier and latency_ms > floor_ms:
         return f"latency_outlier: {latency_ms}ms vs recipe p95 of {p95}ms"
     return None
 
@@ -571,15 +575,30 @@ def _record_result(
         _LOGGER.warning("Could not record adversarial test result: %s", e)
 
 
-def run_adversarial_test_cycle():
+def run_adversarial_test_cycle() -> dict:
     """The scheduled job body. Generates a small batch of queries, routes
     each through the real route_with_source() pipeline exactly the way a
     real user query would, checks for structural anomalies, and persists
     results. Never touches cache.json, routing_cache.json, query_log.db,
     or any real user-facing state — writes only to adversarial_testing.db.
+
+    Returns a small summary dict so POST /adversarial/trigger has
+    something real to report back, rather than a bare 200 with no way
+    to confirm what actually happened on that specific call.
+
+    Checks ADVERSARIAL_TEST_ENABLED itself, not just at scheduler
+    registration time in main.py's lifespan — defense in depth, so a
+    direct call (e.g. POST /adversarial/trigger, or a future caller)
+    can never accidentally run real queries against the LLM/SearXNG/
+    Kiwix backends while the feature is supposed to be off.
     """
+    if not settings.adversarial_test_enabled:
+        _LOGGER.info("Adversarial testing is disabled (ADVERSARIAL_TEST_ENABLED=false); skipping cycle")
+        return {"status": "disabled", "queries_run": 0, "flagged": 0}
+
     rng = random.Random()
     batch_size = settings.adversarial_test_batch_size
+    flagged_count = 0
 
     for _ in range(batch_size):
         try:
@@ -605,6 +624,7 @@ def run_adversarial_test_cycle():
             _record_result(fingerprint_json, recipe_name, query, source_used, latency_ms, flagged_reason)
 
             if flagged_reason:
+                flagged_count += 1
                 _LOGGER.warning(
                     "Adversarial test flagged: recipe=%s query=%r reason=%s",
                     recipe_name, query[:100], flagged_reason
@@ -616,11 +636,23 @@ def run_adversarial_test_cycle():
             # try/except convention.
             _LOGGER.warning("Adversarial test cycle iteration failed: %s", e)
 
+    return {"status": "ran", "queries_run": batch_size, "flagged": flagged_count}
+
 
 def get_adversarial_test_summary() -> dict:
     """Summary for /health. Mirrors get_snapshot_job_health()'s naming
     convention and overall shape — status, last_run, and counts that make
-    growth and review backlog visible without digging through logs."""
+    growth and review backlog visible without digging through logs.
+
+    Reports "disabled" up front when ADVERSARIAL_TEST_ENABLED is false,
+    rather than letting an intentionally-turned-off feature eventually
+    read as "stale" — a deliberate off-switch shouldn't look like a
+    silent failure the way a job that stopped running unexpectedly
+    should.
+    """
+    if not settings.adversarial_test_enabled:
+        return {"status": "disabled"}
+
     try:
         con = _connect(ADVERSARIAL_DB)
         total_row = con.execute("SELECT COUNT(*) FROM adversarial_combinations").fetchone()
