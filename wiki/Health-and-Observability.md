@@ -13,6 +13,7 @@ Three real gaps got found and closed during a deliberate operational-maturity re
   "routing_cache_entries": 340,
   "routing_cache_max_size": 1000,
   "snapshot_jobs": { "...": "see below" },
+  "adversarial_testing": { "...": "see below" },
   "sources": { "...": "see below" }
 }
 ```
@@ -22,6 +23,8 @@ Three real gaps got found and closed during a deliberate operational-maturity re
 **`cache_entries` / `cache_max_size` / `routing_cache_entries` / `routing_cache_max_size`** — see [Caching](Caching) for what these caches actually do. The pairing of current count against configured max exists specifically so growth toward either bound is visible at a glance, without needing to dig through logs or read code to even know a bound exists.
 
 **`snapshot_jobs`** — see below.
+
+**`adversarial_testing`** — same `ok` / `stale` / `never_ran` shape as `snapshot_jobs`, plus `total_combinations_tried` and `flagged_for_review` counts. See [Adversarial Self-Testing](Adversarial-Self-Testing) for the full feature; flagged combinations themselves are reviewed via `GET /adversarial/flagged`, not through `/health` directly.
 
 ## Background job health
 

@@ -93,6 +93,13 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 | `BATTERY_LOW_THRESHOLD_PCT` | `20.0` | Battery level below which a [snapshot diff](Snapshot-Engine-and-Changes) reports "low" |
 | `SNAPSHOT_STALE_GRACE_MULTIPLIER` | `3` | How many multiples of a job's own expected interval can pass before [`/health`](Health-and-Observability#background-job-health) flags it as "stale" rather than "ok" — lower for tighter alerting on flakier hardware, raise if normal scheduler jitter on your own hardware is wider than the default assumes |
 
+## Adversarial self-testing
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `ADVERSARIAL_TEST_INTERVAL_MINUTES` | `60` | How often the [adversarial self-testing](Adversarial-Self-Testing) scheduler tick fires |
+| `ADVERSARIAL_TEST_BATCH_SIZE` | `8` | Queries generated per tick — cheap to raise, since generation is pure combinatorics with no LLM calls in the hot path |
+
 ## Security
 
 | Variable | Default | Notes |

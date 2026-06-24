@@ -20,6 +20,7 @@ Three real gaps, found through deliberate review rather than reported failures, 
 - ✅ Fallback visibility in `/logs/stats`
 - ✅ Routing cache size bounding + visibility in `/health`
 - ✅ Background snapshot job health
+- ✅ Adversarial self-testing — see [Adversarial Self-Testing](Adversarial-Self-Testing)
 
 Full mechanism detail for the operational maturity work lives in [Health & Observability](Health-and-Observability) and [Caching](Caching).
 
@@ -55,8 +56,6 @@ These are real, understood boundaries — not bugs waiting for a fix, but delibe
 These two are deliberately framed differently from everything else on this page. They're permitted to fail; "found nothing interesting" or "didn't pan out" are acceptable, informative outcomes here, not wasted effort.
 
 **Cross-Source Temporal Pattern Detection** — extend the [snapshot engine](Snapshot-Engine-and-Changes) to surface correlations *across* sources over time, not just per-source diffs. Recurring timing relationships between events (a door event consistently preceding a motion event, a particular weather shift consistently preceding a service hiccup) — closer to lightweight pattern-mining than search. Buildable on infrastructure that already exists; the actual risk is finding nothing beyond noise, which is a fine, honest result.
-
-**Adversarial Self-Testing** — a background job (reusing the same `apscheduler` infrastructure the snapshot engine already runs on) that periodically generates messy, compound, edge-case-shaped queries via the local LLM — seeded with the actual patterns that broke things during this project's testing history — runs them through the real pipeline, and logs results for periodic review. Institutionalizes the adversarial megaquery testing approach that found most of the bugs documented in [Design History](Home#design-history-real-bugs-real-fixes), instead of relying on someone doing it by hand each time. Open design question worth solving first: what makes a generated query actually useful versus trivial.
 
 ## Tabled, revisit in ~1 year
 

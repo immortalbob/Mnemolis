@@ -40,9 +40,10 @@ This wiki holds the deep-dive material that doesn't belong in the [README](https
 ## Operations
 
 - **[Health & Observability](Health-and-Observability)** — what `/health` and `/logs/stats` actually check, including fallback visibility and background job health
-- **[Backup & Restore](Backup-and-Restore)** — the four data files, the Docker volume naming gotcha, and how to actually restore from a backup
+- **[Backup & Restore](Backup-and-Restore)** — the five data files, the Docker volume naming gotcha, and how to actually restore from a backup
 - **[Benchmarks](Benchmarks)** — real performance data across every major release, cold cache vs. warm cache
 - **[Adding a New Source](Adding-a-New-Source)** — the four files a contributor touches, and the one optional fifth (fallback chains)
+- **[Adversarial Self-Testing](Adversarial-Self-Testing)** — the background job that generates combinatorial edge-case queries from Mnemolis's own real vocabulary and flags structural anomalies for review
 
 ## Design History — Real Bugs, Real Fixes
 

@@ -1,6 +1,6 @@
 # Backup & Restore
 
-Mnemolis's entire persisted state lives in exactly four files, all under `/app/data` inside the container:
+Mnemolis's entire persisted state lives in exactly five files, all under `/app/data` inside the container:
 
 | File | What it holds |
 |------|-----------------|
@@ -8,8 +8,9 @@ Mnemolis's entire persisted state lives in exactly four files, all under `/app/d
 | `routing_cache.json` | The [routing cache](Caching#routing-cache) |
 | `query_log.db` | The query log — every request's timestamp, source, success, latency, and fallback flag |
 | `snapshots.db` | [Snapshot history](Snapshot-Engine-and-Changes) for the background diff engine |
+| `adversarial_testing.db` | [Adversarial self-testing](Adversarial-Self-Testing) combination history — synthetic generated queries only, never real user queries |
 
-`GET /backup` tars all four into a downloadable `.tar.gz`. `GET /backup/info` shows what's currently in each file (size, last-modified time) without actually creating a backup — useful for a quick "is this worth backing up right now" check.
+`GET /backup` tars all five into a downloadable `.tar.gz`. `GET /backup/info` shows what's currently in each file (size, last-modified time) without actually creating a backup — useful for a quick "is this worth backing up right now" check.
 
 ## What's deliberately *not* in the backup
 
