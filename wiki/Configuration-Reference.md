@@ -12,6 +12,7 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 | `FRESHRSS_API_PASSWORD` | _(blank)_ | A separate password from your normal FreshRSS login — generated specifically for API access |
 | `FRESHRSS_MAX_ARTICLES` | `10` | |
 | `SEARXNG_URL` | `http://searxng:8080` | |
+| `SEARXNG_REQUEST_TIMEOUT_SECONDS` | `15` | Mnemolis's own client-side wait time for a SearXNG response — separate from SearXNG's own server-side `request_timeout` setting (see [The SearXNG Timeout Lesson](The-SearXNG-Timeout-Lesson)). Set this to match or exceed whatever SearXNG is itself configured to wait, or the documented timeout fix on the SearXNG side won't fully take effect — Mnemolis would still cut the connection first |
 | `UPTIME_KUMA_URL` | _(blank)_ | Leaving this blank disables the `uptime` source entirely, rather than erroring — `/health` will simply not report a status for it |
 | `UPTIME_KUMA_USERNAME` / `UPTIME_KUMA_PASSWORD` | _(blank)_ | |
 | `HA_URL` | _(blank)_ | Same graceful-disable behavior as `UPTIME_KUMA_URL` |
@@ -57,6 +58,15 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 |----------|---------|-------|
 | `CACHE_MAX_SIZE` | `500` | Max [result cache](Caching#result-cache) entries before oldest-eviction |
 | `ROUTING_CACHE_MAX_SIZE` | `1000` | Max [routing cache](Caching#routing-cache) entries before oldest-eviction — larger than the result cache's default, since the routing cache's real key space (every unique conditional query, discourse-framing phrase, and disambiguation candidate set) is genuinely bigger |
+| `ROUTING_CACHE_TTL_SECONDS` | `3600` | How long a routing decision (source, Kiwix book, disambiguation candidates) stays cached before the LLM gets asked again |
+| `CACHE_TTL_KIWIX_SECONDS` | `86400` | Result cache TTL for `kiwix` (24 hours — offline encyclopedic content barely changes within a day) |
+| `CACHE_TTL_FORECAST_SECONDS` | `1800` | Result cache TTL for `forecast` |
+| `CACHE_TTL_NEWS_SECONDS` | `900` | Result cache TTL for `news` |
+| `CACHE_TTL_WEB_SECONDS` | `3600` | Result cache TTL for `web` |
+| `CACHE_TTL_UPTIME_SECONDS` | `60` | Result cache TTL for `uptime` |
+| `CACHE_TTL_HA_SECONDS` | `30` | Result cache TTL for `ha` (the shortest of any source — lights and locks change state constantly) |
+| `CACHE_TTL_CHANGES_SECONDS` | `120` | Result cache TTL for `changes` |
+| `CACHE_TTL_FUSION_SECONDS` | `1800` | Result cache TTL for `fusion` |
 
 ## Kiwix tuning
 
@@ -64,6 +74,8 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 |----------|---------|-------|
 | `KIWIX_SEARCH_LIMIT` | `15` | Results requested per book per search — higher values give [scoring](Kiwix-Scoring) more candidates to find the right answer among when common terms collide with brand-name results |
 | `KIWIX_MAX_BOOKS` | `2` | Max books the LLM can select for one query — raise this to allow broader [multi-book fusion](Multi-Book-Fusion), at the cost of more searches per query |
+| `KIWIX_ARTICLE_MAX_CHARS` | `3000` | How many characters of a fetched article's body to keep before scoring/fusion ever sees it — distinct from `FUSION_MAX_CHARS_PER_SOURCE`, which truncates the already-combined multi-source response, not an individual Kiwix article on its own |
+| `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT` | `0.5` | The actual, central decision threshold for [multi-book fusion](Multi-Book-Fusion): a second book's best result must score at least this fraction of the leading book's top score to be included. Lower for more aggressive fusion, raise for more conservative |
 
 ## Web & news scoring
 
@@ -71,12 +83,15 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 |----------|---------|-------|
 | `WEB_NEWS_SCORE_THRESHOLD` | `0` | Results from [confidence-aware fusion](Confidence-Aware-Fusion) scoring at or below this are dropped |
 | `WEB_NEWS_TOP_N` | `10` | Max results kept after scoring |
+| `WEB_NEWS_RAW_RESULT_BUDGET` | `25` | How many raw, unscored results to pull from each web search before scoring filters them down — the scoring pipeline's *input* budget, distinct from `WEB_NEWS_TOP_N`'s *output* cap |
+| `QUERY_EXPANSION_MIN_WORDS` | `3` | Minimum query length (in words) for web search [query expansion](Query-Expansion) to trigger |
 
 ## Snapshot diff thresholds
 
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `BATTERY_LOW_THRESHOLD_PCT` | `20.0` | Battery level below which a [snapshot diff](Snapshot-Engine-and-Changes) reports "low" |
+| `SNAPSHOT_STALE_GRACE_MULTIPLIER` | `3` | How many multiples of a job's own expected interval can pass before [`/health`](Health-and-Observability#background-job-health) flags it as "stale" rather than "ok" — lower for tighter alerting on flakier hardware, raise if normal scheduler jitter on your own hardware is wider than the default assumes |
 
 ## Security
 

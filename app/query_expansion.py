@@ -15,11 +15,6 @@ from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
 
-# Minimum word count for a query to be eligible for expansion — very short
-# queries have little phrasing variance to exploit and aren't worth the
-# extra round-trip
-_MIN_WORDS = 3
-
 
 def _get_routing_fns():
     """Lazy import to avoid circular imports, same pattern as kiwix.py."""
@@ -45,7 +40,10 @@ def get_alternate_phrasing(query: str) -> str | None:
         return None
 
     word_count = len(query.split())
-    if word_count < _MIN_WORDS:
+    # Found via a deliberate config-completeness audit: README documents
+    # "3+ words" as the trigger for web query expansion, but this was
+    # hardcoded with no way to actually adjust it.
+    if word_count < settings.query_expansion_min_words:
         return None
 
     get_routing, set_routing = _get_routing_fns()

@@ -4,7 +4,7 @@ Mnemolis has two genuinely different caches, and conflating them is a common sou
 
 ## Result cache
 
-Keyed on `source:query` (lowercased, stripped). Every source has its own TTL, because "how stale is acceptable" is genuinely different per source:
+Keyed on `source:query` (lowercased, stripped). Every source has its own TTL, because "how stale is acceptable" is genuinely different per source — each is independently configurable (`CACHE_TTL_KIWIX_SECONDS`, `CACHE_TTL_FORECAST_SECONDS`, and so on, one per source; see [Configuration Reference](Configuration-Reference#caching)), but the defaults reflect deliberate, real reasoning about each source's own freshness needs:
 
 | Source | TTL | Why |
 |--------|-----|-----|
@@ -25,7 +25,7 @@ On a cache hit, none of the underlying sources get touched at all — no network
 
 ## Routing cache
 
-Keyed the same way (lowercased, stripped query — though the routing cache key doesn't include a source prefix, since the whole point is recording *which* source was chosen). A single flat TTL of 1 hour (`ROUTING_CACHE_TTL`) applies to every routing decision, regardless of source — a query's correct source assignment doesn't really depend on the kind of freshness concerns the result cache has to account for per-source.
+Keyed the same way (lowercased, stripped query — though the routing cache key doesn't include a source prefix, since the whole point is recording *which* source was chosen). A single flat TTL applies to every routing decision regardless of source (`ROUTING_CACHE_TTL_SECONDS`, default 1 hour) — a query's correct source assignment doesn't really depend on the kind of freshness concerns the result cache has to account for per-source. This was hardcoded for most of this project's life, the same way the per-source result cache TTLs above were — found and made configurable during the same audit that found those.
 
 This is a genuinely larger key space than it might first appear. Every unique conditional query, every discourse-framing phrase, every Kiwix disambiguation candidate set gets its own routing cache entry on top of plain single-source routing decisions — which is exactly why this cache, unlike the result cache, had **no size limit at all** for most of this project's life. That gap was found during a deliberate operational-maturity review, not a reported failure, and fixed by adding the exact same bounded-eviction pattern the result cache already had (`ROUTING_CACHE_MAX_SIZE`, default 1000).
 

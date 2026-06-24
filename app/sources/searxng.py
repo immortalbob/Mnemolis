@@ -35,7 +35,7 @@ def _fetch_searxng(query: str, raise_on_timeout: bool = False) -> list[dict] | N
             f"{settings.searxng_url}/search",
             params={"q": query, "format": "json", "language": "en"},
             headers={"Accept": "application/json"},
-            timeout=10,
+            timeout=settings.searxng_request_timeout_seconds,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -95,7 +95,7 @@ def search(query: str) -> str:
     # own ranking alone misses the point of scoring at all.
     seen_urls = set()
     raw_results = []
-    for r in (primary_results[:25] + alternate_results[:25]):
+    for r in (primary_results[:settings.web_news_raw_result_budget] + alternate_results[:settings.web_news_raw_result_budget]):
         url = r.get("url", "")
         normalized = normalize_url(url)
         if normalized and normalized in seen_urls:

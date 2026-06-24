@@ -152,13 +152,14 @@ def get_snapshot_job_health() -> dict[str, dict]:
     background scheduler actually still running and succeeding" without
     reading raw application logs.
 
-    Uses a 3x grace multiplier on each job's interval before considering
-    it stale — generous enough to absorb normal jitter (job execution
-    time, a slightly delayed scheduler start), tight enough to catch a
-    genuinely stuck job within a reasonable window (e.g. the 60-minute
-    news job is flagged after ~3 hours of silence, not days).
+    Uses a configurable grace multiplier (default 3x) on each job's
+    interval before considering it stale — generous enough to absorb
+    normal jitter (job execution time, a slightly delayed scheduler
+    start), tight enough to catch a genuinely stuck job within a
+    reasonable window at the default (e.g. the 60-minute news job is
+    flagged after ~3 hours of silence, not days). Found hardcoded via a
+    deliberate config-completeness audit; now SNAPSHOT_STALE_GRACE_MULTIPLIER.
     """
-    _GRACE_MULTIPLIER = 3
     now = datetime.now(timezone.utc)
     health = {}
 
@@ -191,7 +192,7 @@ def get_snapshot_job_health() -> dict[str, dict]:
             continue
 
         minutes_since = (now - last_timestamp).total_seconds() / 60
-        is_stale = minutes_since > interval_minutes * _GRACE_MULTIPLIER
+        is_stale = minutes_since > interval_minutes * settings.snapshot_stale_grace_multiplier
 
         health[source] = {
             "status": "stale" if is_stale else "ok",

@@ -122,6 +122,21 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `FRESHRSS_API_PASSWORD` | FreshRSS API password | |
 | `FRESHRSS_MAX_ARTICLES` | Max articles to fetch | `10` |
 | `SEARXNG_URL` | SearXNG container URL | `http://searxng:8080` |
+| `SEARXNG_REQUEST_TIMEOUT_SECONDS` | How long Mnemolis itself waits for a SearXNG response — separate from SearXNG's own server-side `request_timeout`. Set this to match or exceed whatever you've configured on the SearXNG side, or the documented [SearXNG timeout fix](#searxng-request-timeout) won't fully take effect | `15` |
+| `WEB_NEWS_RAW_RESULT_BUDGET` | How many raw, unscored results to pull from each web search before confidence-aware scoring filters them down — the scoring pipeline's *input* budget, distinct from `WEB_NEWS_TOP_N`'s *output* cap below | `25` |
+| `QUERY_EXPANSION_MIN_WORDS` | Minimum query length (in words) for web search query expansion to trigger | `3` |
+| `KIWIX_ARTICLE_MAX_CHARS` | How many characters of a fetched Kiwix article to keep before scoring/fusion sees it — distinct from `FUSION_MAX_CHARS_PER_SOURCE`, which truncates the already-combined multi-source response | `3000` |
+| `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT` | A second book's best result must score at least this fraction of the leading book's top score to be included in a multi-book fusion response. Lower for more aggressive fusion, raise for more conservative | `0.5` |
+| `SNAPSHOT_STALE_GRACE_MULTIPLIER` | How many multiples of a job's own expected interval can pass before `/health` flags it as "stale" rather than "ok" | `3` |
+| `ROUTING_CACHE_TTL_SECONDS` | How long a routing decision (source, Kiwix book, disambiguation candidates) stays cached before the LLM gets asked again | `3600` |
+| `CACHE_TTL_KIWIX_SECONDS` | Result cache TTL for `kiwix` | `86400` |
+| `CACHE_TTL_FORECAST_SECONDS` | Result cache TTL for `forecast` | `1800` |
+| `CACHE_TTL_NEWS_SECONDS` | Result cache TTL for `news` | `900` |
+| `CACHE_TTL_WEB_SECONDS` | Result cache TTL for `web` | `3600` |
+| `CACHE_TTL_UPTIME_SECONDS` | Result cache TTL for `uptime` | `60` |
+| `CACHE_TTL_HA_SECONDS` | Result cache TTL for `ha` | `30` |
+| `CACHE_TTL_CHANGES_SECONDS` | Result cache TTL for `changes` | `120` |
+| `CACHE_TTL_FUSION_SECONDS` | Result cache TTL for `fusion` | `1800` |
 | `FORECAST_LATITUDE` | Forecast location latitude — required for `forecast` to work at all; leaving it unset correctly reports `forecast` as not configured rather than returning weather for the wrong place | _(unset)_ |
 | `FORECAST_LONGITUDE` | Forecast location longitude — same requirement as above | _(unset)_ |
 | `FORECAST_LOCATION_NAME` | Human-readable location name | _(blank)_ |
@@ -184,6 +199,8 @@ outgoing:
 ```
 
 Restart SearXNG after changing this. If the error persists after the change, **verify SearXNG actually picked it up** — a correctly-edited config file doesn't help if the container was never restarted. Full story, including how this was diagnosed: **[The SearXNG Timeout Lesson](https://github.com/immortalbob/Mnemolis/wiki/The-SearXNG-Timeout-Lesson)**.
+
+**Also raise `SEARXNG_REQUEST_TIMEOUT_SECONDS` on the Mnemolis side to match or exceed whatever you set above.** Mnemolis has its own, separate client-side timeout for calling SearXNG (default `15`) — if it's shorter than SearXNG's own `max_request_timeout`, Mnemolis will cut the connection first regardless of how generously SearXNG itself is configured to wait.
 
 ### LLM-assisted routing
 Mnemolis uses a local LLM backend in five ways:
@@ -777,7 +794,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-1011 tests across every source module, the routing/decomposition/conditional-detection pipeline, caching, and the FastAPI/MCP endpoints — see the test file list under [Project Structure](#project-structure) below for what each file actually covers, or the [Contributing](https://github.com/immortalbob/Mnemolis/wiki/Contributing) page for what a good test for this project looks like.
+1012 tests across every source module, the routing/decomposition/conditional-detection pipeline, caching, and the FastAPI/MCP endpoints — see the test file list under [Project Structure](#project-structure) below for what each file actually covers, or the [Contributing](https://github.com/immortalbob/Mnemolis/wiki/Contributing) page for what a good test for this project looks like.
 
 ## Project Structure
 

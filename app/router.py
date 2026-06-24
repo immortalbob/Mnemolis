@@ -185,16 +185,23 @@ FALLBACK_CHAIN = {
     "news": "web",
 }
 
-# Cache TTL in seconds per source
+# Cache TTL in seconds per source. Built from individual settings rather
+# than hardcoded — found via a deliberate config-completeness audit: this
+# whole dict was previously fixed, despite the wiki's Caching page
+# presenting these exact numbers as deliberate, reasoned defaults someone
+# might want to tune for their own deployment's freshness needs. Every
+# existing `CACHE_TTL.get(source, ...)` call site keeps working unchanged,
+# since only the values backing this dict became configurable, not its
+# shape or how it's accessed.
 CACHE_TTL = {
-    "kiwix": 86400,   # 24 hours
-    "forecast": 1800, # 30 minutes
-    "news": 900,      # 15 minutes
-    "web": 3600,      # 1 hour
-    "uptime": 60,     # 1 minute
-    "ha": 30,         # 30 seconds
-    "changes": 120,   # 2 minutes — changes are near-real-time
-    "fusion": 1800,   # 30 minutes
+    "kiwix": settings.cache_ttl_kiwix_seconds,
+    "forecast": settings.cache_ttl_forecast_seconds,
+    "news": settings.cache_ttl_news_seconds,
+    "web": settings.cache_ttl_web_seconds,
+    "uptime": settings.cache_ttl_uptime_seconds,
+    "ha": settings.cache_ttl_ha_seconds,
+    "changes": settings.cache_ttl_changes_seconds,
+    "fusion": settings.cache_ttl_fusion_seconds,
 }
 
 # ---------------------------------------------------------------------------
@@ -202,7 +209,10 @@ CACHE_TTL = {
 # ---------------------------------------------------------------------------
 
 ROUTING_CACHE_FILE = "/app/data/routing_cache.json"
-ROUTING_CACHE_TTL = 3600  # 1 hour — routing decisions are stable but not permanent
+# Found via a deliberate config-completeness audit: presented as a
+# deliberate, reasoned default in the wiki's Caching page, but previously
+# impossible to actually adjust.
+ROUTING_CACHE_TTL = settings.routing_cache_ttl_seconds
 _routing_cache: dict[str, tuple[str, float]] = {}
 _ROUTING_CACHE_MAX_SIZE: int = settings.routing_cache_max_size  # max entries before evicting oldest
 

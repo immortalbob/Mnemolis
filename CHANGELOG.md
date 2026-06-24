@@ -4,6 +4,41 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.45.0]
+
+### Investigation Note — A Config-Completeness Audit, After Battle Testing and Bulletproofing
+With the complexity-investigation campaign and the bulletproofing pass both complete, a different kind of review: systematically searching every file in `app/` for hardcoded values a real homelab deployment might genuinely want to tune, rather than hunting for bugs. Deliberately left out of this audit's additions: LLM `max_tokens` values (internal sizing for a specific prompt, not a real user preference), the 3-disambiguation-candidates count in `kiwix.py` (tightly coupled to the actual prompt wording — changing the count without rewriting the prompt would produce inconsistent behavior), and `home_assistant.py`'s minute/hour/day formatting thresholds (structural facts about time, not deployment preferences).
+
+### Fixed — A Real Gap That Directly Undermined Existing Documentation
+`searxng.py`'s client-side request timeout was hardcoded at 10 seconds, while the README's own documented fix for `"Error reaching SearXNG: connection failed"` tells people to raise SearXNG's own server-side `max_request_timeout` to 20 seconds for genuinely slow engines. Following that documented advice exactly as written wouldn't have fully worked — Mnemolis's own client would have cut the connection at 10s regardless of how generously SearXNG itself was configured to wait. Now configurable via `SEARXNG_REQUEST_TIMEOUT_SECONDS` (default 15), with the README's own SearXNG timeout section updated to say so explicitly.
+
+### Added — 16 New Configurable Settings
+Found hardcoded with no way to adjust them, despite several being presented in the README/wiki as deliberate, reasoned design choices:
+
+- **`SEARXNG_REQUEST_TIMEOUT_SECONDS`** (default 15) — see above
+- **`KIWIX_ARTICLE_MAX_CHARS`** (default 3000) — per-article truncation before scoring/fusion ever sees it, distinct from `FUSION_MAX_CHARS_PER_SOURCE`'s post-merge truncation
+- **`KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT`** (default 0.5) — the actual, central "should a second book be fused in" decision, documented in the README/wiki as the real mechanism but previously impossible to tune
+- **`WEB_NEWS_RAW_RESULT_BUDGET`** (default 25) — the scoring pipeline's input budget, distinct from `WEB_NEWS_TOP_N`'s output cap
+- **`QUERY_EXPANSION_MIN_WORDS`** (default 3) — matches the README's documented "3+ words" trigger, which was previously just a fact, not a setting
+- **`SNAPSHOT_STALE_GRACE_MULTIPLIER`** (default 3) — `/health`'s staleness-alerting sensitivity
+- **`ROUTING_CACHE_TTL_SECONDS`** (default 3600) — presented as a deliberate default in the wiki's Caching page, previously not actually adjustable
+- **8 per-source result cache TTLs** (`CACHE_TTL_KIWIX_SECONDS`, `CACHE_TTL_FORECAST_SECONDS`, `CACHE_TTL_NEWS_SECONDS`, `CACHE_TTL_WEB_SECONDS`, `CACHE_TTL_UPTIME_SECONDS`, `CACHE_TTL_HA_SECONDS`, `CACHE_TTL_CHANGES_SECONDS`, `CACHE_TTL_FUSION_SECONDS`) — each independently configurable now rather than one shared hardcoded dict
+
+`config.py` itself now documents this audit's own scope and exclusions directly in the `Settings` class docstring, and groups every setting by what it actually controls rather than the order it happened to be added in.
+
+### Changed — Documentation
+- README's config table updated with all 16 new settings, grouped to match `config.py`
+- README's SearXNG timeout section updated to mention the new client-side setting explicitly
+- Wiki's [Configuration Reference](https://github.com/immortalbob/Mnemolis/wiki/Configuration-Reference) updated with all 16 settings, each in its matching existing section
+- Wiki's [Caching](https://github.com/immortalbob/Mnemolis/wiki/Caching) page's per-source TTL table and routing cache TTL description both updated to reference the real, now-configurable env var names instead of presenting the values as fixed facts
+
+### Changed
+- Version bumped to 3.45.0
+
+**Total test count: 1012**
+
+---
+
 ## [3.44.1]
 
 ### Documentation Release — No Code Changes

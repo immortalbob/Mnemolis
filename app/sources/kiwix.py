@@ -261,7 +261,18 @@ def _search_book(query: str, book: str, limit: int | None = None) -> list:
         return []
 
 
-def _fetch_article(url: str, max_chars: int = 3000) -> str:
+def _fetch_article(url: str, max_chars: int | None = None) -> str:
+    # Found via a deliberate config-completeness audit: every real call
+    # site relied on the same hardcoded default (3000), with no override
+    # anywhere — now configurable via KIWIX_ARTICLE_MAX_CHARS. The
+    # default can't simply be `= settings.kiwix_article_max_chars` in the
+    # function signature, since Python evaluates parameter defaults once
+    # at import time, before any test or runtime config change to
+    # `settings` would ever be picked up — reading it inside the
+    # function body instead means every call always sees the current,
+    # real setting.
+    if max_chars is None:
+        max_chars = settings.kiwix_article_max_chars
     try:
         response = requests.get(url, timeout=10)
         response.raise_for_status()
@@ -773,7 +784,12 @@ def search(query: str) -> str:
         relevant_books = []
         for book, result in best_per_book.items():
             score = _score_result(result, query, selected_books[0])
-            if score >= top_score * 0.5:
+            # Found via a deliberate config-completeness audit: this is
+            # the actual, central "should a second book be fused in, or
+            # dropped as noise" decision, documented in the README and
+            # wiki as the real mechanism behind multi-book fusion — but
+            # previously hardcoded with no way to tune it.
+            if score >= top_score * settings.kiwix_multi_book_fusion_threshold_pct:
                 relevant_books.append((book, result, score))
 
         if len(relevant_books) > 1:
