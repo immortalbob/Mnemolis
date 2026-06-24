@@ -1063,6 +1063,24 @@ def _is_proper_noun_pair_at(query: str, idx: int, conj_len: int) -> bool:
     # be 1-2 words ("Israel" or "New York"), but the entire bounded
     # segment doesn't need to be that short — trailing filler is fine.
     both_capitalized = before_tail[:1].isupper() and after_head[:1].isupper()
+
+    # Found via a deliberate, thorough complexity-investigation pass:
+    # the pronoun "I" is always capitalized in English regardless of
+    # sentence position, making it look exactly like a proper noun to
+    # this naive capitalization check. "what's happening in Texas, plus
+    # I need help with my router" was being incorrectly protected as a
+    # bare proper-noun pair ("Texas" + "I"), causing the ENTIRE query to
+    # not split at all — a genuinely common, natural way to phrase a
+    # second, unrelated request, not a contrived edge case. "I" can
+    # never be the real-world entity half of a genuine pair like "Iran
+    # and Israel," so it's excluded explicitly rather than trying to
+    # build a broader pronoun list — no other common English pronoun
+    # (he/she/they/we) is unconditionally capitalized regardless of
+    # context the way "I" uniquely is, so no other word produces this
+    # exact false-positive shape.
+    if after_head.rstrip(",.;:").lower() == "i":
+        return False
+
     after_name_is_short = (
         len(after_words) == 1
         or (len(after_words) >= 2 and after_words[1][:1].islower())

@@ -681,7 +681,23 @@ class TestDecompose:
         accumulating part begins) separately from search_from (where to
         resume looking for the next conjunction), so skipping a
         protected pair advances the search position without discarding
-        any of the real content that precedes it."""
+        any of the real content that precedes it.
+
+        UPDATED count: a later, separate fix (found via a deliberate,
+        thorough complexity-investigation pass on this same function)
+        discovered that "Israel, plus I..." was ALSO being incorrectly
+        protected as a proper-noun pair — "I" is always capitalized in
+        English regardless of context, making it look exactly like a
+        proper noun ("Texas" + "I") to the naive capitalization check.
+        This meant the numpy/GPIO clause could never be split out as
+        its own part; it was permanently stuck merged into part 1 as an
+        unavoidable side effect of that bug. With the pronoun fix in
+        place, this query now correctly produces 4 distinct parts, not
+        3 — the original test's expected count of 3 had unknowingly
+        baked in the limitation of a bug that hadn't been found yet.
+        Every original content-integrity assertion below still holds
+        true exactly as before; only the count and the new, more
+        precise per-part assertions are new."""
         query = (
             "also whats happening with Iran and Israel, plus I keep "
             "getting a weird numpy import error on my raspberry pi, and "
@@ -689,15 +705,40 @@ class TestDecompose:
             "thing whats the deal with sunspots"
         )
         parts = self.decompose(query)
-        assert len(parts) == 3
+        assert len(parts) == 4
         # The proper-noun pair AND the real content before it must both
         # survive in the same part — neither lost, neither split apart
         first_part = parts[0].lower()
         assert "iran and israel" in first_part
         assert "whats happening with" in first_part
-        assert any("numpy" in p.lower() for p in parts)
+        # The numpy/GPIO clause is now correctly its OWN separate part —
+        # previously impossible due to the "I" pronoun bug, which forced
+        # it to remain merged into part 1 alongside Iran/Israel
+        assert any("numpy" in p.lower() and "iran" not in p.lower() for p in parts)
         assert any("services are down" in p.lower() for p in parts)
         assert any("sunspots" in p.lower() for p in parts)
+
+    def test_pronoun_i_not_mistaken_for_proper_noun_in_pair_check(self):
+        """Direct regression test for the actual root-cause bug found
+        during the megaquery investigation above: _is_proper_noun_pair_at()
+        treating the pronoun "I" as if it were a real proper noun, since
+        "I" is always capitalized in English regardless of sentence
+        position. This is a genuinely common, natural phrasing pattern —
+        any place name, topic, or proper noun followed by ", plus I..."
+        or ", and I..." — not a contrived edge case."""
+        from app.router import _is_proper_noun_pair_at
+        query = "what's happening in Texas, plus I need help with my router"
+        idx = query.lower().find(" plus ")
+        assert _is_proper_noun_pair_at(query, idx, len(" plus ")) is False
+
+    def test_genuine_proper_noun_pair_still_protected_after_pronoun_fix(self):
+        """Confirms the pronoun-specific fix didn't accidentally weaken
+        protection for an actual, genuine proper-noun pair — only the
+        narrow "I" case should be excluded, not proper nouns generally."""
+        from app.router import _is_proper_noun_pair_at
+        query = "I want the weather for Texas and Arizona please"
+        idx = query.lower().find(" and ")
+        assert _is_proper_noun_pair_at(query, idx, len(" and ")) is True
 
     def test_explicit_source_not_decomposed(self):
         from app.router import route, clear_cache
