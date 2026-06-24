@@ -1317,6 +1317,72 @@ class TestLooksEmpty:
     def test_case_insensitive(self):
         assert self.check("NO RESULTS FOUND in kiwix") is True
 
+    def test_not_configured_message_recognized_as_empty(self):
+        """Regression test for a real, significant bug found via a
+        second, deliberate "bulletproofing" re-pass: router.py's own
+        _looks_empty() used to carry a separate, independently-
+        maintained phrase list that was missing "not configured" and
+        "could not connect" — meaning a genuinely real, reachable
+        scenario (FreshRSS unconfigured, asking for news) returned the
+        literal config-error string as if it were real, successful
+        content, and FALLBACK_CHAIN's real "news" -> "web" fallback
+        never triggered as a result. Confirmed end to end before fixing:
+        route_with_source("give me the news", "news") with
+        FRESHRSS_URL unset returned source_used="news" with the raw
+        config-error message, not the automatic fallback to "web"."""
+        assert self.check("FreshRSS is not configured. Set FRESHRSS_URL and FRESHRSS_USER.") is True
+        assert self.check("Forecast is not configured. Set FORECAST_LATITUDE and FORECAST_LONGITUDE.") is True
+
+    def test_could_not_connect_message_recognized_as_empty(self):
+        assert self.check("Could not connect to Home Assistant. Check HA_URL and HA_TOKEN.") is True
+
+    def test_error_reaching_message_recognized_as_empty(self):
+        """The real SearXNG timeout/connection message doesn't contain
+        a bare "error:" (the colon comes after "SearXNG", not
+        immediately after "Error"), so it needed its own phrase —
+        found while verifying the unified list against every real
+        failure message every source file actually produces."""
+        assert self.check("Error reaching SearXNG: connection failed.") is True
+
+    def test_genuinely_shares_the_same_function_as_fusion(self):
+        """Confirms the sharing is real, not coincidental — patches
+        fusion._looks_empty itself and verifies router.py's
+        _looks_empty actually delegates to it."""
+        from app.router import _looks_empty
+        from unittest.mock import patch
+        with patch("app.router.fusion._looks_empty", return_value="sentinel") as mock_fn:
+            result = _looks_empty("some result")
+        mock_fn.assert_called_once_with("some result")
+        assert result == "sentinel"
+
+
+class TestFallbackChainTriggersOnNotConfigured:
+    """The actual, real, end-to-end regression test for the _looks_empty
+    cross-file drift bug found via a second, deliberate "bulletproofing"
+    re-pass: FALLBACK_CHAIN's real "news" -> "web" fallback (and
+    "kiwix" -> "web") must genuinely trigger when the primary source
+    returns a real, recognizable "not configured" message, not just
+    when _looks_empty() is tested in isolation."""
+
+    def test_unconfigured_news_falls_back_to_web(self):
+        from app.router import route_with_source, clear_cache
+        import app.router as router_module
+        from app.config import settings
+
+        clear_cache()
+        original_url = settings.freshrss_url
+        settings.freshrss_url = ""
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["web"] = lambda q: "Real, genuine web search result content."
+        try:
+            result, source = route_with_source("give me the news", "news")
+        finally:
+            settings.freshrss_url = original_url
+            router_module.SOURCE_MAP.update(original_map)
+
+        assert source == "web"
+        assert result == "Real, genuine web search result content."
+
 
 class TestLlmPickFusionSources:
     """Tests for _llm_pick_fusion_sources LLM fusion source selection."""

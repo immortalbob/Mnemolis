@@ -457,3 +457,21 @@ class TestLooksEmpty:
 
     def test_error_prefix_is_empty(self):
         assert self.check("Error: connection refused") is True
+
+    def test_unknown_source_is_empty(self):
+        """Regression test confirming fusion.py's own list was
+        separately missing "unknown source" — found via a second,
+        deliberate "bulletproofing" re-pass while unifying this
+        function with router.py's own independently-maintained copy,
+        which already had this phrase from an earlier fix this same
+        release cycle."""
+        assert self.check("Unknown source 'xyz'. Valid options: kiwix, forecast, news, web.") is True
+
+    def test_error_reaching_is_empty(self):
+        """The real SearXNG timeout/connection message doesn't contain
+        a bare "error:" (the colon comes after "SearXNG", not
+        immediately after "Error"), so it needed its own phrase —
+        found while verifying the unified list against every real
+        failure message every source file actually produces."""
+        assert self.check("Error reaching SearXNG: connection failed.") is True
+

@@ -10,14 +10,50 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _looks_empty(result: str) -> bool:
-    """Check if a result is empty or an error."""
+    """Check if a result is empty or an error.
+
+    Genuinely shared with router.py, which used to carry a separate,
+    independently-maintained copy of this exact function with an
+    overlapping but NOT identical phrase list — found via a second,
+    deliberate "bulletproofing" re-pass specifically looking for the
+    same kind of cross-file drift already found and fixed once this
+    release cycle (_merge_same_source). The drift here was real and
+    significant, in both directions:
+
+    router.py's list was missing "not configured" and "could not
+    connect" — meaning a genuinely real, reachable scenario (FreshRSS
+    unconfigured, asking for news) returned the literal config-error
+    string "FreshRSS is not configured. Set FRESHRSS_URL and
+    FRESHRSS_USER." as if it were real, successful content, since
+    router.py's _looks_empty() never recognized it as empty — and
+    FALLBACK_CHAIN's real, configured "news" -> "web" fallback never
+    triggered as a result. Confirmed directly: route_with_source("give
+    me the news", "news") with FRESHRSS_URL unset returned the raw
+    config-error message with source_used="news", not the automatic
+    fallback to "web" the fallback chain is clearly designed to
+    provide.
+
+    fusion.py's own list was separately missing "unknown source" (the
+    real fix from a previous pass this same release cycle) and "error
+    reaching" — found while verifying the unified list against every
+    real failure message every source file actually produces:
+    "Error reaching SearXNG: connection failed." doesn't contain a bare
+    "error:" (the colon comes after "SearXNG", not immediately after
+    "Error"), so it needed its own, more specific phrase.
+
+    router.py already imports this module directly (it calls
+    fusion.search() for internal multi-source dispatch), making this
+    the safe home for the shared, canonical version — the reverse
+    import direction would create a circular import.
+    """
     if not result:
         return True
     result_lower = result.lower()
     empty_phrases = [
         "no results found", "no recent articles", "not yet implemented",
         "could not fetch", "no books available", "could not determine",
-        "not configured", "could not connect", "error:",
+        "unknown source", "not configured", "could not connect",
+        "error:", "error reaching",
     ]
     return any(phrase in result_lower for phrase in empty_phrases)
 

@@ -4,6 +4,30 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.40.0]
+
+### Fixed — A Significant, Real Bug: the Fallback Chain Silently Failed to Trigger on Misconfiguration
+A second, deliberate "bulletproofing" re-pass through `app/sources/` (specifically checking small helper functions the complexity-driven pass never flagged) found that `router.py` and `fusion.py` each carried their own, independently-maintained copy of `_looks_empty()` — with phrase lists that had drifted apart in **both directions** since the two were originally written separately.
+
+`router.py`'s copy was missing `"not configured"` and `"could not connect"` entirely. Confirmed the real, concrete consequence directly: with `FRESHRSS_URL` unset, `route_with_source("give me the news", "news")` returned the literal string *"FreshRSS is not configured. Set FRESHRSS_URL and FRESHRSS_USER."* as if it were a genuine, successful result — `source_used` stayed `"news"`, and `FALLBACK_CHAIN`'s real, designed `"news" → "web"` fallback never triggered, because `_looks_empty()` never recognized the config-error string as empty in the first place. The exact same gap applies to `"kiwix" → "web"` for any Kiwix-side "not configured"/"could not connect" message, though Kiwix doesn't currently produce one of those specific phrases.
+
+`fusion.py`'s own list was separately missing `"unknown source"` (the real fix from an earlier pass this same release cycle, which never made it into fusion.py's independent copy) and `"error reaching"` — the real SearXNG timeout/connection message (`"Error reaching SearXNG: connection failed."`) doesn't contain a bare `"error:"`, since the colon comes after "SearXNG," not immediately after "Error."
+
+Fixed by unifying both into one canonical `_looks_empty()` living in `fusion.py` (the safe import direction — `router.py` already imports `fusion` directly, the reverse would be circular), with the complete, merged phrase list verified against every real failure message every source file actually produces before being applied. `router.py`'s own copy now delegates to the shared one.
+
+### Added (Tests)
+- 4 new tests on the `router.py` side: the previously-missing "not configured" and "could not connect" phrases are now recognized, the real SearXNG "error reaching" message is recognized, and a direct test confirming the delegation to `fusion._looks_empty()` is genuine, not coincidental
+- 2 new tests on the `fusion.py` side: the previously-missing "unknown source" and "error reaching" phrases are now recognized
+- 1 new, real, end-to-end test confirming the actual fallback chain genuinely triggers when a source returns a real "not configured" message
+
+### Changed
+- `router.py`'s `_looks_empty`: now a trivial A(1) delegation
+- Version bumped to 3.40.0
+
+**Total test count: 984**
+
+---
+
 ## [3.39.0]
 
 ### Fixed — A Significant, Real Data-Retention Bug: `uptime` Snapshots Were Pruned Far Too Aggressively

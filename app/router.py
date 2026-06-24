@@ -328,26 +328,6 @@ def clear_routing_cache() -> int:
     return count
 
 
-NO_RESULT_PHRASES = [
-    "no results found",
-    "no recent articles",
-    "not yet implemented",
-    "could not fetch",
-    "no books available",
-    "could not determine",
-    # Found via a deliberate refactoring pass: an unknown/unregistered
-    # source (detect_intent() returning a name with no matching
-    # SOURCE_MAP entry — shouldn't normally happen since the two are
-    # kept in sync, but isn't provably unreachable) previously produced
-    # a message that matched none of the phrases above, meaning
-    # _looks_empty() incorrectly treated it as real content. In the
-    # decomposition loop specifically, this meant a stale/misconfigured
-    # state could silently append an "Unknown source" error string into
-    # an otherwise-clean merged response rather than being dropped the
-    # same way any other empty/failed result already is.
-    "unknown source",
-]
-
 # In-memory cache: key -> (result, timestamp)
 _cache: dict[str, tuple[str, float]] = {}
 _cache_dirty_count: int = 0
@@ -411,8 +391,16 @@ def _save_cache() -> None:
 
 
 def _looks_empty(result: str) -> bool:
-    result_lower = result.lower()
-    return any(phrase in result_lower for phrase in NO_RESULT_PHRASES)
+    # Genuinely shared with fusion.py's own _looks_empty() — found via a
+    # second, deliberate "bulletproofing" re-pass that these were two
+    # separate, independently-maintained copies with an overlapping but
+    # NOT identical phrase list, a real, significant drift (this
+    # module's own copy was missing "not configured" and "could not
+    # connect", meaning FALLBACK_CHAIN's real "news" -> "web" fallback
+    # never triggered when FreshRSS was genuinely unconfigured — see
+    # fusion.py's docstring for the full account, including the
+    # opposite-direction gaps found in fusion.py's own list too).
+    return fusion._looks_empty(result)
 
 
 # ---------------------------------------------------------------------------
