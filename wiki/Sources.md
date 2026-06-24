@@ -47,7 +47,7 @@ If you're seeing `"Error reaching SearXNG: connection failed"`, check [The SearX
 
 ## `uptime` — Service Monitoring
 
-Connects to Uptime Kuma over its Socket.IO interface and reports a simple summary: either "all N services are up" or a list of what's currently down. No scoring or disambiguation needed here — the data itself is already structured and unambiguous.
+Connects to Uptime Kuma over its Socket.IO interface and reports a simple summary: either "all N services are up" or a list of what's currently down, pending, in maintenance, or — a real, distinct category — has no heartbeat data at all yet (a brand-new monitor, or one whose check interval hasn't fired since Uptime Kuma's own restart). That last category was once silently misreported as "in maintenance," a specific, false claim about a deliberately-configured state the monitor was never actually in; found via a deliberate complexity-investigation pass and fixed by giving it its own honest label rather than reusing an existing one.
 
 This is one of three sources with a genuinely binary, structured signal (up/down) — which matters specifically for [Conditional Query Detection](Conditional-Query-Detection)'s yes/no verdicts.
 

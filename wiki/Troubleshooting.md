@@ -2,9 +2,9 @@
 
 Indexed by symptom — start here if something's behaving unexpectedly, before assuming it's a Mnemolis bug.
 
-## "Error reaching SearXNG: connection failed"
+## "Error reaching SearXNG: connection failed" or "request timed out"
 
-Check [Health & Observability](Health-and-Observability) first — `/health`'s `sources.web` field will show the real underlying error, which is almost always more specific and more useful than the generic message Mnemolis's own response shows. Two distinct real causes have actually been found and documented here:
+As of a later fix, Mnemolis distinguishes a genuine timeout from other connection failures in its own response — a timeout-specific message means exactly that, not a guess. Either way, check [Health & Observability](Health-and-Observability) first — `/health`'s `sources.web` field will show the real underlying error, which is almost always more specific and more useful than Mnemolis's own response. Two distinct real causes have actually been found and documented here:
 
 - **Timeout set too aggressively for real engine latency.** SearXNG's default `request_timeout` (3.0s) is genuinely too short — several real search engines routinely take 20+ seconds to respond under completely normal conditions. See [The SearXNG Timeout Lesson](The-SearXNG-Timeout-Lesson) for the exact fix and, more importantly, for the second part of that story: **a correctly-edited config file doesn't help if the container was never restarted to pick it up.** If you've already made this fix and the error persists, check whether SearXNG has actually been restarted since you edited `settings.yml` — `docker exec searxng grep -A2 "^outgoing:" /etc/searxng/settings.yml` reads the config the *live process* sees, which is the only way to be sure.
 - **Genuine upstream rate limiting.** A specific engine (Brave has been observed doing this) returning `SearxEngineTooManyRequestsException` after heavy query volume. This self-resolves after the engine's own suspension window; it's not something to "fix" so much as expect under sustained testing.

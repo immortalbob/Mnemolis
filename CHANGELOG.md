@@ -4,6 +4,29 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.30.0]
+
+### Investigation Note
+A fifteenth and final complexity-investigation pass this release cycle, applied to `app/sources/searxng.py` — the last completely untouched source file. Most of the file held up cleanly under direct verification, including a genuinely convoluted-looking dedup expression and `normalize_url`'s own behavior on several real edge cases (empty URLs, missing fields, mixed-case paths) — all traced through precisely and confirmed correct. One real, meaningful diagnostic gap was found.
+
+### Fixed — SearXNG Timeouts No Longer Misreported as a Generic "Connection Failed"
+`search()` always returned the same hardcoded `"Error reaching SearXNG: connection failed"` message regardless of the real failure cause — even though the actual exception was already captured and logged, just discarded before reaching the user. This is a real, documented pain point this project has already lived through once: [The SearXNG Timeout Lesson](https://github.com/immortalbob/Mnemolis/wiki/The-SearXNG-Timeout-Lesson) describes exactly how confusing it was to diagnose a real timeout when the only visible signal was a generic failure message — and that same gap was still present at the source, just never fixed there directly.
+
+Fixed by adding a `raise_on_timeout` parameter to `_fetch_searxng()`: the primary fetch (the one whose failure reaches the user) now distinguishes a genuine `requests.exceptions.Timeout` from every other failure kind, returning a specific, more actionable message pointing at the real, documented fix. The alternate-query fetch (query expansion's second search) deliberately keeps the original, simpler contract — that failure is genuinely non-fatal already, and doesn't need its own distinct message, confirmed directly with a dedicated test that a timeout on the alternate fetch never produces the new timeout-specific wording when the primary result still succeeded.
+
+### Added (Tests)
+- 3 new tests: a genuine timeout produces the new, distinct message; a genuine connection refusal still correctly uses the generic message (confirming the fix didn't make every failure claim to be a timeout); and an alternate-query-only timeout stays correctly non-fatal and silent
+- 4 existing tests updated (`fake_fetch` mock signatures) to accept the new `raise_on_timeout` keyword argument
+
+### Changed
+- `searxng.search`: C(12) → C(13) — a small, honest increase for the genuine diagnostic improvement
+- [Troubleshooting](https://github.com/immortalbob/Mnemolis/wiki/Troubleshooting) wiki page updated — the SearXNG section header and intro now reflect that a timeout gets its own distinct message rather than the old generic one
+- Version bumped to 3.30.0
+
+**Total test count: 945**
+
+---
+
 ## [3.29.0]
 
 ### Investigation Note
