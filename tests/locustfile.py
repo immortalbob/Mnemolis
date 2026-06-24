@@ -2,13 +2,29 @@
 Mnemolis Load Testing — Locust
 Tests realistic query patterns across all sources under concurrent load.
 
+For a genuine cold-cache run, clear both caches first — neither
+"cold cache" nor anything else here happens automatically:
+    curl -X POST http://your-mnemolis-host:8888/cache/clear
+    curl -X POST http://your-mnemolis-host:8888/cache/routing/clear
+
 Run:
-    locust -f tests/locustfile.py --host http://your-host:8888
+    locust -f tests/locustfile.py --host http://192.168.1.50:8888
+
+Replace 192.168.1.50 with your actual Mnemolis host's real IP or
+hostname — not a placeholder. --host silently accepts anything that
+looks like a URL, so a leftover example value doesn't fail loudly; it
+fails much later as a DNS error ("Temporary failure in name
+resolution") on every single request, which doesn't obviously point
+back to the --host flag as the cause.
 
 Then open http://localhost:8089 and configure:
     - Users: 10
     - Spawn rate: 2
     - Run for 60 seconds
+
+Run the identical command again immediately afterward, without
+clearing anything in between, for the warm-cache comparison — the
+second run's populated caches are the point.
 
 p95 targets:
     Single source, cache hit:      < 100ms
@@ -74,6 +90,14 @@ HA_QUERIES = [
     "what lights are on in the living room",
     "indoor air quality",
     "security status",
+    # The exact query shape behind a real, severe bug found and fixed
+    # this release cycle: "on" (a bare keyword for "lights on") matched
+    # as a substring inside "front", silently filtering out the actual
+    # entity being asked about. Included here specifically so a real
+    # benchmark run against live HA data can confirm the fix holds
+    # under real, concurrent load, not just in the test suite.
+    "is the front door locked",
+    "is the download finished yet",
 ]
 
 # Leading "if X, Y" conditional queries — exercises detect_conditional(),
