@@ -7,11 +7,28 @@ from app.query_expansion import get_alternate_phrasing
 _LOGGER = logging.getLogger(__name__)
 
 
-def _fetch_searxng(query: str) -> list[dict] | None:
+def _fetch_searxng(query: str, raise_on_timeout: bool = False) -> list[dict] | None:
     """Fetch raw SearXNG results for a single query.
     Returns None on failure (connection error, bad response) so callers
     can distinguish 'the request failed' from 'the request succeeded but
     found nothing' — returns an empty list for the latter.
+
+    raise_on_timeout: if True, a genuine timeout re-raises as
+    requests.exceptions.Timeout instead of being swallowed into the same
+    generic None every other failure produces. Found via a deliberate
+    complexity-investigation pass: search() always returned the same
+    hardcoded "Error reaching SearXNG: connection failed" message
+    regardless of the real cause — even though the actual exception
+    (already logged below) could be a timeout, a refused connection, a
+    bad HTTP status, or malformed JSON. Given timeouts are this
+    project's own documented, historically real failure mode for
+    SearXNG specifically (see the wiki's "The SearXNG Timeout Lesson"),
+    distinguishing it from other failures gives a meaningfully more
+    accurate, more actionable error message. Used only for the primary
+    fetch in search() — the alternate-query fetch always uses the
+    default False, since that failure is genuinely non-fatal (the
+    primary result still stands either way) and doesn't need its own
+    distinct user-facing message.
     """
     try:
         resp = requests.get(
@@ -23,6 +40,11 @@ def _fetch_searxng(query: str) -> list[dict] | None:
         resp.raise_for_status()
         data = resp.json()
         return data.get("results", [])
+    except requests.exceptions.Timeout as e:
+        _LOGGER.warning("SearXNG request timed out for query '%s': %s", query[:50], e)
+        if raise_on_timeout:
+            raise
+        return None
     except Exception as e:
         _LOGGER.warning("SearXNG request failed for query '%s': %s", query[:50], e)
         return None
@@ -33,7 +55,14 @@ def search(query: str) -> str:
     if not settings.searxng_url:
         return "SearXNG is not configured. Set SEARXNG_URL."
 
-    primary_results = _fetch_searxng(query)
+    try:
+        primary_results = _fetch_searxng(query, raise_on_timeout=True)
+    except requests.exceptions.Timeout:
+        return (
+            "Error reaching SearXNG: request timed out. If this happens "
+            "consistently, check SearXNG's own request_timeout setting "
+            "(see the wiki's \"SearXNG request timeout\" troubleshooting page)."
+        )
     if primary_results is None:
         return "Error reaching SearXNG: connection failed."
 

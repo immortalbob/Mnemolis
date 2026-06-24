@@ -53,7 +53,7 @@ class TestSearxngQueryExpansion:
         from app.sources import searxng
         from unittest.mock import patch
 
-        def fake_fetch(query):
+        def fake_fetch(query, **kwargs):
             if "alternate" in query:
                 return [{"title": "Alternate Result", "url": "https://example.com/alt", "content": "python programming alternate content"}]
             return [{"title": "Primary Result", "url": "https://example.com/primary", "content": "python programming primary content"}]
@@ -71,7 +71,7 @@ class TestSearxngQueryExpansion:
         from app.sources import searxng
         from unittest.mock import patch
 
-        def fake_fetch(query):
+        def fake_fetch(query, **kwargs):
             if "alternate" in query:
                 return [{"title": "Sourdough Guide", "url": "https://zoebakes.com/2025/04/21/sourdough/", "content": "sourdough starter recipe content"}]
             return [{"title": "Sourdough Guide", "url": "https://www.zoebakes.com/2025/04/21/sourdough/", "content": "sourdough starter recipe content"}]
@@ -88,7 +88,7 @@ class TestSearxngQueryExpansion:
 
         call_count = {"n": 0}
 
-        def fake_fetch(query):
+        def fake_fetch(query, **kwargs):
             call_count["n"] += 1
             return [{"title": "Same Result", "url": "https://example.com/same", "content": "python programming content here"}]
 
@@ -116,7 +116,7 @@ class TestSearxngQueryExpansion:
         from app.sources import searxng
         from unittest.mock import patch
 
-        def fake_fetch(query):
+        def fake_fetch(query, **kwargs):
             if "alternate" in query:
                 return None  # alternate search genuinely fails (connection error etc)
             return [{"title": "Primary Result", "url": "https://example.com/primary", "content": "python programming content here"}]
@@ -215,6 +215,70 @@ class TestSearxngSearch:
         with patch("app.sources.searxng.requests.get", side_effect=requests.exceptions.ConnectionError("refused")):
             result = searxng.search("test")
         assert "error" in result.lower()
+
+    def test_timeout_returns_distinct_timeout_specific_message(self):
+        """Regression test for a real gap found via a deliberate
+        complexity-investigation pass: search() used to return the same
+        hardcoded "connection failed" message regardless of the real
+        failure cause — even though a genuine timeout is this project's
+        own documented, historically real failure mode for SearXNG
+        specifically (see the wiki's "The SearXNG Timeout Lesson").
+        Confirms a real requests.exceptions.Timeout now produces a
+        distinct, more accurate, more actionable message rather than
+        the same generic "connection failed" every other failure gets."""
+        from app.sources import searxng
+        import requests
+        with patch("app.sources.searxng.requests.get",
+                   side_effect=requests.exceptions.ReadTimeout("Read timed out. (read timeout=10)")):
+            result = searxng.search("test")
+        assert "timed out" in result.lower()
+        assert "connection failed" not in result.lower()
+
+    def test_connection_error_still_uses_generic_message_not_timeout_specific(self):
+        """Confirms the fix didn't accidentally make every failure claim
+        to be a timeout — a genuine connection refusal (not a timeout)
+        must still get the honest, generic "connection failed" message,
+        not the timeout-specific one."""
+        from app.sources import searxng
+        import requests
+        with patch("app.sources.searxng.requests.get",
+                   side_effect=requests.exceptions.ConnectionError("Connection refused")):
+            result = searxng.search("test")
+        assert "connection failed" in result.lower()
+        assert "timed out" not in result.lower()
+
+    def test_alternate_query_timeout_does_not_produce_user_facing_timeout_message(self):
+        """Confirms raise_on_timeout only applies to the PRIMARY fetch —
+        if the alternate-query fetch times out, that failure stays
+        non-fatal (the primary result still stands), and must NOT
+        surface the new timeout-specific message, since the primary
+        fetch itself succeeded."""
+        from app.sources import searxng
+        import requests
+
+        def fake_get(url, params=None, **kwargs):
+            if "alternate" in params.get("q", ""):
+                raise requests.exceptions.ReadTimeout("Read timed out.")
+            mock = MagicMock()
+            mock.status_code = 200
+            mock.json.return_value = {"results": [
+                {"title": "Primary Result", "url": "https://example.com/x", "content": "python programming content here"}
+            ]}
+            mock.raise_for_status.return_value = None
+            return mock
+
+        from app.config import settings
+        original_threshold = settings.web_news_score_threshold
+        settings.web_news_score_threshold = -100
+        try:
+            with patch("app.sources.searxng.requests.get", side_effect=fake_get), \
+                 patch.object(searxng, "get_alternate_phrasing", return_value="alternate python query"):
+                result = searxng.search("python programming guide")
+        finally:
+            settings.web_news_score_threshold = original_threshold
+
+        assert "timed out" not in result.lower()
+        assert "Primary Result" in result
 
     def test_fetch_returns_none_on_failure_not_empty_list(self):
         """Regression test — _fetch_searxng must distinguish 'request failed'
