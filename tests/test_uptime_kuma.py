@@ -99,6 +99,26 @@ class TestUptimeKumaStatus:
         assert "maintenance" in result.lower()
         assert "ServiceB" in result
 
+    def test_monitor_with_no_heartbeat_data_reported_honestly_not_as_maintenance(self):
+        """Regression test for a real bug found via a deliberate
+        complexity-investigation pass: a brand-new monitor (or one
+        whose check interval hasn't fired yet) has NO heartbeat entry
+        at all — the previous version silently reported this as "In
+        maintenance," a specific, false claim about a deliberately-
+        configured state the monitor was never actually in. Confirms
+        the real, user-facing fix: such a monitor is now reported under
+        its own honest "No heartbeat data yet" category instead."""
+        from app.sources import uptime_kuma
+        monitors = [_make_monitor(1, "ServiceA"), _make_monitor(2, "BrandNewService")]
+        # ServiceA has a real heartbeat; BrandNewService has NONE at all
+        heartbeats = _make_heartbeats(1, 1)
+        mock_api = self._mock_api(monitors, heartbeats)
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api):
+            result = uptime_kuma.search("status")
+        assert "maintenance" not in result.lower()
+        assert "no heartbeat data" in result.lower()
+        assert "BrandNewService" in result
+
     def test_no_monitors_returns_message(self):
         from app.sources import uptime_kuma
         mock_api = self._mock_api([], {})
@@ -143,20 +163,38 @@ class TestGetStatusFromHeartbeats:
         heartbeats = {1: [{"status": 0}, {"status": 1}]}
         assert self.get_status(heartbeats, 1) == 1
 
-    def test_missing_monitor_returns_3(self):
-        assert self.get_status({}, 99) == 3
+    def test_missing_monitor_returns_none(self):
+        """Regression test for a real bug found via a deliberate
+        complexity-investigation pass: this used to default to 3
+        (MAINTENANCE) when no heartbeat data existed at all, silently
+        misreporting a monitor that simply hasn't run its first check
+        yet as "in maintenance" — a specific, false claim about a
+        deliberately-configured state the monitor was never actually
+        in. None is now used as an explicit "no data" sentinel, distinct
+        from every real MonitorStatus value (0/1/2/3 are all genuine
+        statuses), so callers can tell "genuinely in maintenance" apart
+        from "no data exists yet" rather than conflating the two."""
+        assert self.get_status({}, 99) is None
 
-    def test_empty_list_returns_3(self):
-        assert self.get_status({1: []}, 1) == 3
+    def test_empty_list_returns_none(self):
+        assert self.get_status({1: []}, 1) is None
 
-    def test_missing_status_key_returns_3(self):
+    def test_missing_status_key_returns_none(self):
         heartbeats = {1: [{"no_status_key": True}]}
-        assert self.get_status(heartbeats, 1) == 3
+        assert self.get_status(heartbeats, 1) is None
 
     def test_down_status(self):
         heartbeats = {1: [{"status": 0}]}
         assert self.get_status(heartbeats, 1) == 0
 
-    def test_non_list_heartbeat_returns_3(self):
+    def test_non_list_heartbeat_returns_none(self):
         heartbeats = {1: "not a list"}
+        assert self.get_status(heartbeats, 1) is None
+
+    def test_genuine_maintenance_status_still_reported_correctly(self):
+        """Confirms the fix didn't break the real, legitimate case —
+        a monitor genuinely set to MAINTENANCE (status 3) by a real
+        heartbeat record should still be reported as such, distinct
+        from the None sentinel for missing data entirely."""
+        heartbeats = {1: [{"status": 3}]}
         assert self.get_status(heartbeats, 1) == 3

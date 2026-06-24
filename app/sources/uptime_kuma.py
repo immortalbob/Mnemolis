@@ -5,8 +5,22 @@ from app.config import settings
 _LOGGER = logging.getLogger(__name__)
 
 
-def _get_status_from_heartbeats(heartbeats: dict, monitor_id: int) -> int:
-    """Extract most recent status from heartbeats for a given monitor."""
+def _get_status_from_heartbeats(heartbeats: dict, monitor_id: int) -> int | None:
+    """Extract most recent status from heartbeats for a given monitor.
+
+    Returns None — not a status code — when no real heartbeat data
+    exists at all. Found via a deliberate complexity-investigation pass:
+    the previous version defaulted to 3 (MAINTENANCE) when no heartbeat
+    existed, silently misreporting a monitor that simply hasn't run its
+    first check yet (a brand-new monitor, or one whose check interval
+    hasn't fired since Uptime Kuma's own restart) as "in maintenance" —
+    a specific, false claim about a deliberately-configured state the
+    monitor was never actually in. None is used as the sentinel
+    specifically because 0/1/2/3 are all real, valid MonitorStatus
+    values (DOWN/UP/PENDING/MAINTENANCE) — reusing any of them to also
+    mean "no data" would create the exact same kind of ambiguity this
+    fix is meant to close.
+    """
     hb = heartbeats.get(monitor_id, [])
     if not isinstance(hb, list):
         hb = []
@@ -14,7 +28,7 @@ def _get_status_from_heartbeats(heartbeats: dict, monitor_id: int) -> int:
     for item in hb:
         if isinstance(item, dict):
             last = item
-    return last.get("status", 3) if last else 3
+    return last.get("status") if last else None
 
 
 def search(query: str) -> str:
@@ -40,6 +54,7 @@ def search(query: str) -> str:
     down = []
     pending = []
     maintenance = []
+    no_data = []
     up_count = 0
 
     for monitor in monitors:
@@ -47,7 +62,9 @@ def search(query: str) -> str:
         name = monitor.get("name", f"Monitor {mid}")
         status = _get_status_from_heartbeats(heartbeats, mid)
 
-        if status == 1:
+        if status is None:
+            no_data.append(name)
+        elif status == 1:
             up_count += 1
         elif status == 0:
             down.append(name)
@@ -58,11 +75,11 @@ def search(query: str) -> str:
 
     total = len(monitors)
     _LOGGER.info(
-        "Uptime Kuma: %d up, %d down, %d pending, %d maintenance of %d total",
-        up_count, len(down), len(pending), len(maintenance), total
+        "Uptime Kuma: %d up, %d down, %d pending, %d maintenance, %d no data, of %d total",
+        up_count, len(down), len(pending), len(maintenance), len(no_data), total
     )
 
-    if not down and not pending:
+    if not down and not pending and not no_data:
         parts = [f"All {up_count} monitored services are up."]
         if maintenance:
             parts.append(f"In maintenance: {', '.join(maintenance)}.")
@@ -75,6 +92,8 @@ def search(query: str) -> str:
         parts.append(f"PENDING ({len(pending)}): {', '.join(pending)}.")
     if maintenance:
         parts.append(f"In maintenance: {', '.join(maintenance)}.")
+    if no_data:
+        parts.append(f"No heartbeat data yet ({len(no_data)}): {', '.join(no_data)}.")
     parts.append(f"{up_count} of {total} services are up.")
 
     return " ".join(parts)

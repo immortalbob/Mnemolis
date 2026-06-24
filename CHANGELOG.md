@@ -4,6 +4,31 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.28.0]
+
+### Investigation Note
+A thirteenth complexity-investigation pass this release cycle, applied to `app/sources/uptime_kuma.py`'s `search()` (C, 16) — a complete file never read at all this cycle, despite being one of three sources with a genuinely structured, binary signal trusted for [Conditional Query Detection](Conditional-Query-Detection)'s yes/no verdicts. The heartbeat-ordering assumption (`_get_status_from_heartbeats` walks a list and keeps the last dict seen, assuming chronological ascending order) was verified directly against the actual installed `uptime-kuma-api` library's own documented example and the official Uptime Kuma wiki — both confirm heartbeats are genuinely returned oldest-first, so this part was correct and is now verified rather than just assumed.
+
+### Fixed — A Real Misclassification: No Heartbeat Data Was Silently Reported as "In Maintenance"
+`_get_status_from_heartbeats` defaulted to status `3` (MAINTENANCE) whenever a monitor had no heartbeat data at all — a brand-new monitor that hasn't run its first check yet, or one whose check interval hasn't fired since Uptime Kuma's own restart. This is a real, reachable, everyday scenario, not a contrived edge case, and it produced a specific, false claim: a monitor genuinely never set to maintenance mode would be reported in `/search` and `/changes` summaries as "In maintenance," a deliberately-configured state it was never actually in.
+
+Fixed by using `None` as an explicit "no data" sentinel — distinct from `0`/`1`/`2`/`3`, all genuine `MonitorStatus` values — and adding a new, honest `"No heartbeat data yet"` category to the response, reported separately from genuine maintenance. Two pre-existing tests that directly asserted the old, buggy `== 3` default were updated to assert the new, correct `None` sentinel instead, and a new test confirms genuine maintenance status (from a real heartbeat record) still reports correctly, distinct from the missing-data case.
+
+### Added (Tests)
+- Updated 4 existing tests (`test_missing_monitor_returns_none`, `test_empty_list_returns_none`, `test_missing_status_key_returns_none`, `test_non_list_heartbeat_returns_none`) to assert the corrected behavior
+- 1 new test confirming a genuine MAINTENANCE status (from a real heartbeat) is still reported correctly, distinct from the no-data sentinel
+- 1 new test confirming the actual user-facing fix end to end: a monitor with no heartbeat data is now reported under its own honest category, never as "in maintenance"
+
+### Changed
+- `uptime_kuma.search`: C(16) → C(19) — an honest, accepted increase as the cost of the new category and branch
+- `_get_status_from_heartbeats`: A(5), now returns `int | None` instead of always `int`
+- [Sources](https://github.com/immortalbob/Mnemolis/wiki/Sources) wiki page updated — the `uptime` section's claim that "the data itself is already structured and unambiguous" was true of the protocol, but not of how this code interpreted missing data; corrected with an honest note about the real distinction found
+- Version bumped to 3.28.0
+
+**Total test count: 931**
+
+---
+
 ## [3.27.0]
 
 ### Investigation Note
