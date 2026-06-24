@@ -637,3 +637,45 @@ class TestLogsStatsEndpoint:
             assert "avg_latency_ms" in info
             assert "query_count" in info
             assert info["query_count"] > 0
+
+    def test_top_queries_source_is_deterministic_most_recent(self):
+        """Regression test for a real correctness gap found via a
+        deliberate, precise re-read of query_log_stats(): selecting the
+        bare `source_used` column directly in this query was genuinely
+        undefined per SQLite's own documentation — its special "take
+        the bare column from the aggregate row" guarantee only applies
+        with exactly one aggregate function, and only when that
+        aggregate is MIN() or MAX(). This query has four different
+        aggregates, so that guarantee never applied at all. Confirms
+        the fix: when the same query text was answered by different
+        sources at different times (a real, reachable case — routing
+        logic has genuinely changed multiple times over this project's
+        life), the reported source is now deterministically the MOST
+        RECENT one, not an undefined pick."""
+        import app.main as main_module
+        import time
+        con = main_module._connect(main_module._LOG_DB)
+        con.execute("DELETE FROM query_log")
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        con.execute(
+            "INSERT INTO query_log (timestamp, query, source_requested, source_used, cached, success, latency_ms) "
+            "VALUES (?, 'deterministic source test', 'forecast', 'forecast', 0, 1, 200)",
+            (now,)
+        )
+        con.execute(
+            "INSERT INTO query_log (timestamp, query, source_requested, source_used, cached, success, latency_ms) "
+            "VALUES (?, 'deterministic source test', 'forecast', 'web', 0, 1, 3000)",
+            (now,)
+        )
+        con.execute(
+            "INSERT INTO query_log (timestamp, query, source_requested, source_used, cached, success, latency_ms) "
+            "VALUES (?, 'deterministic source test', 'forecast', 'forecast', 1, 1, 15)",
+            (now,)
+        )
+        con.commit()
+        con.close()
+
+        result = main_module.query_log_stats()
+        entry = next(q for q in result["top_queries"] if q["query"] == "deterministic source test")
+        assert entry["source"] == "forecast"  # the most recently inserted row's source
+

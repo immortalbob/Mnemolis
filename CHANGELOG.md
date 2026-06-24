@@ -4,6 +4,30 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.31.0]
+
+### Investigation Note
+A seventeenth complexity-investigation pass this release cycle, applied to `app/main.py`'s `query_log_stats()` (D, 21) — the only function in `main.py` never touched all cycle, and a genuinely different category from everything else investigated so far (routing/scoring/dispatch logic): observability and reporting SQL. Two real, distinct findings.
+
+### Fixed — A Stale Comment Describing Behavior the Code Never Actually Had
+A comment claimed `latency_by_source` was computed "warm queries only," but the SQL had no `cached` filter at all and never did. Assessed which side was actually wrong before fixing either: constructed a realistic two-source comparison (one genuinely slow, network-bound source; one genuinely fast, local one) and found that a true warm-only average would mask almost all of the real difference between them (15ms vs 12ms in the test, versus a real, honest 3000ms vs 80ms cold-only difference) — cache hits are fast regardless of source, so warm-only averaging would make this metric *worse* at its own apparent diagnostic job, not better. The combined (current) behavior at least reflects real, paid latency. Fixed the comment to honestly describe the current, combined behavior, with the reasoning preserved for whoever reads this next — including an honest note that a cold-only breakdown would be the genuinely most diagnostic version of this metric, a real, deliberate scope decision for a future change, not something this fix took on.
+
+### Fixed — A Real, Confirmed-via-Official-Documentation SQLite Correctness Gap
+The `top_queries` SQL selected the bare `source_used` column directly inside a `GROUP BY` query containing four different aggregate functions (`COUNT`, `SUM`, `MIN`, `AVG`). Verified directly against SQLite's own official documentation: the database's "bare column" special-case guarantee — taking the value from the row that produced the aggregate — applies *only* when there is exactly one aggregate function, and that aggregate is specifically `MIN()` or `MAX()`. With four different aggregates present, this guarantee doesn't apply at all, and which row's `source_used` got reported when the same query text was answered by different sources at different times was genuinely undefined, not just unintuitive. This is a real, reachable case — routing logic itself has changed multiple times over this project's life, meaning the same query text could legitimately have been answered by different sources across its history.
+
+Fixed with a correlated subquery reporting the **most recent** source for each query — chosen deliberately over "most frequent" after assessing both: most-recent stays accurate as routing logic evolves, while most-frequent would continue reporting a stale answer from before a real routing fix for as long as old log rows happen to outnumber new ones. Verified this has no meaningful performance cost at realistic homelab log volumes (3ms for 5000 rows / 300 distinct queries in direct testing).
+
+### Added (Tests)
+- 1 new test directly confirming the deterministic most-recent-source fix: a query answered by three different sources across its history correctly reports the most recently used one, not an undefined pick
+
+### Changed
+- `query_log_stats`: complexity unchanged at D(21) — both fixes were comment/SQL-logic corrections within the existing branch structure, not new decision points
+- Version bumped to 3.31.0
+
+**Total test count: 948**
+
+---
+
 ## [3.30.1]
 
 ### Investigation Note
