@@ -4,6 +4,30 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.47.3]
+
+### Fixed — Real GitHub Actions CI Failure: Cross-Test Cache Pollution in `test_cache_persistence.py`
+A genuine CI failure, reported directly from a real GitHub Actions run of `tests.yml` (`pip install -r requirements.txt` + `pytest tests/ -v`, no special flags or environment): `TestLoadCache::test_no_file_starts_fresh` failed with a real, leftover entry — `'kiwix:a real concurrent user query'` — sitting in `app.router._cache` when the test asserted it should be empty.
+
+Root cause: `app.router._cache` and `_routing_cache` are plain module-level dicts, shared across the entire pytest process. Several test classes — some predating this release entirely, spread across `test_router.py`, `test_routing_cache.py`, `test_fusion.py`, `test_cache_persistence.py`, and the two new tests added in 3.47.2 (`TestFullCycle::test_cycle_does_not_pollute_real_cache_with_unmocked_routing` and `test_real_user_query_unaffected_by_concurrent_adversarial_suppression`) — write real entries into one or both dicts and never restore prior state afterward. Each individual test passes in isolation; the bug only surfaces when a *different* test, running later in the same process, depends on either cache being empty.
+
+This had been silently masked, for the entire life of this project so far, by a mundane but real environmental fact: any dev machine or CI runner that has ever started the app for real leaves a `cache.json`/`routing_cache.json` file on disk, and `load_cache()`/`load_routing_cache()` reset the in-memory dict to whatever that file contains as a side effect of successfully parsing it — incidentally cleaning up leftover pollution from a prior test, purely by accident. A genuinely fresh GitHub Actions checkout has no such file, so `load_cache()`'s early-return path (taken specifically when the file doesn't exist) leaves whatever a prior test left behind completely untouched — confirmed directly by reproducing the exact two-test sequence (`test_real_user_query_unaffected_by_concurrent_adversarial_suppression` followed by `test_no_file_starts_fresh`) with `/app/data` genuinely absent, which deterministically reproduces the exact reported failure, byte-for-byte matching cache key included.
+
+Fixed with a new `tests/conftest.py`: a single `autouse=True` fixture that snapshots and restores both `_cache` and `_routing_cache` around **every** test in the suite, regardless of file or class — closing the entire bug class at the root rather than hand-patching each affected class's own `setup_method`/`teardown_method` individually (a real fix for the classes found this round, but one that just reintroduces the same risk for the next test someone adds without remembering the same discipline). A test that already manages this state correctly itself is unaffected; the fixture's own save/restore is simply a redundant, harmless second safety net in that case.
+
+Also restored `.github/workflows/`, `.github/dependabot.yml`, `.gitignore`, and `.dockerignore` to the repository — all four confirmed missing from every tarball produced since the 3.47.0 release, an oversight in archive packaging unrelated to the cache-pollution bug itself, but the reason the original report's CI failure couldn't initially be reproduced against the shipped tarball. `.gitignore`/`.dockerignore` were found in a second pass after the `.github` restoration prompted a fuller audit of the original archive's top-level file listing against what had actually been shipping; a stray `.ruff_cache/` directory (a local lint-run artifact, never meant to be packaged) was found and removed in the same pass.
+
+### Added (Tests)
+- `tests/conftest.py` — the autouse fixture described above
+- Direct hand-verification (not a committed test, since it duplicates existing coverage once the fixture is in place) that the exact two-test sequence from the original failure report passes deterministically with the fix applied
+
+### Changed
+- Version bumped to 3.47.3
+
+**Total test count: 1138** (unchanged from 3.47.2 — this release fixes test isolation, not test coverage)
+
+---
+
 ## [3.47.2]
 
 ### Fixed — Adversarial Self-Testing's Synthetic Queries Were Silently Polluting the Real Result and Routing Caches

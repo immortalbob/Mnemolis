@@ -220,6 +220,30 @@ class TestFusionFailureHandling:
 class TestFusionCacheKey:
     """Tests for fusion cache key behavior in router."""
 
+    def setup_method(self):
+        import app.router as router_module
+        self._original_cache = dict(router_module._cache)
+        self._original_routing_cache = dict(router_module._routing_cache)
+
+    def teardown_method(self):
+        # Found via a deliberate reverse-collection-order run, surfacing
+        # a real, pre-existing gap: test_fusion_result_cached_after_search
+        # below calls clear_cache()/clear_routing_cache() before it runs
+        # (clean setup) but, before this fix, never restored either
+        # cache afterward — it deliberately writes a real
+        # "fusion:..." entry to prove the cache-hit assertion, then
+        # leaves it sitting in the real, shared _cache dict for whatever
+        # test happens to run next in the same pytest process. Masked in
+        # normal forward collection order for the same reason
+        # TestSaveCache's identical gap was: something later in the
+        # suite happens to reset _cache to {} via a real cache.json file
+        # on disk, which isn't present on a genuinely clean checkout.
+        import app.router as router_module
+        router_module._cache.clear()
+        router_module._cache.update(self._original_cache)
+        router_module._routing_cache.clear()
+        router_module._routing_cache.update(self._original_routing_cache)
+
     def test_fusion_cache_key_sorted(self):
         """Same sources in different order should produce same cache key."""
         from app.router import _cache_key

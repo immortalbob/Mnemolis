@@ -279,6 +279,7 @@ class TestSaveCache:
     def setup_method(self):
         import app.router as router_module
         self._original_file = router_module.CACHE_FILE
+        self._original_cache = dict(router_module._cache)
         self.temp_dir = tempfile.mkdtemp()
         router_module.CACHE_FILE = os.path.join(self.temp_dir, "subdir", "cache.json")
 
@@ -286,6 +287,23 @@ class TestSaveCache:
         import app.router as router_module
         import shutil
         router_module.CACHE_FILE = self._original_file
+        # Found via a deliberate reverse-collection-order run, surfacing
+        # a real, pre-existing gap: test_writes_valid_json below writes
+        # directly into the real, shared _cache dict and, before this
+        # fix, never cleaned it up afterward — only the CACHE_FILE path
+        # was being restored. In normal forward collection order this
+        # was masked because TestLoadCache's own test_no_file_starts_fresh
+        # happens to run later and load_cache() resets _cache to {} on
+        # its own, but ONLY when a cache.json file genuinely exists on
+        # disk at the time; load_cache() takes an early-return path that
+        # leaves _cache completely untouched when no file exists at all
+        # — exactly the situation on a clean checkout with no leftover
+        # /app/data from prior runs. Restoring _cache here, not just
+        # clearing it, so this doesn't itself wipe any real state a
+        # differently-ordered prior test may have legitimately left in
+        # place.
+        router_module._cache.clear()
+        router_module._cache.update(self._original_cache)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_creates_parent_directory_if_missing(self):

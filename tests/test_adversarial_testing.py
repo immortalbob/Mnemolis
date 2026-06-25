@@ -465,10 +465,30 @@ class TestFullCycle:
         _cache and _routing_cache dicts are still empty afterward — the
         thing the previous, route_with_source-mocking version of this
         test could never have actually verified.
+
+        Saves and restores _cache/_routing_cache around the test (the
+        same convention test_cache_persistence.py's tests already use)
+        rather than just clearing them — these are real, shared,
+        process-global module state in app.router, and a test that only
+        clears without restoring leaves any pre-existing legitimate
+        state wiped for whatever runs after it in the same pytest
+        process. The companion concurrency test below this one
+        originally only cleared, not saved-and-restored, and that gap
+        was real: it passed in a sandbox where a stale on-disk
+        cache.json from earlier ad-hoc runs happened to reset _cache to
+        {} via load_cache()'s normal startup path before the next test
+        ran, but failed on a genuinely clean CI checkout with no such
+        file — load_cache() only resets _cache when CACHE_FILE doesn't
+        already exist; if it exists (even as an empty `{}`), it parses
+        and assigns over _cache, masking exactly this kind of leftover
+        pollution. A bare checkout has no such file at all, so the
+        early-return path leaves whatever a prior test left behind.
         """
         import app.router as router_module
 
         temp_db = str(tmp_path / "test_adversarial.db")
+        original_cache = dict(router_module._cache)
+        original_routing_cache = dict(router_module._routing_cache)
         router_module._cache.clear()
         router_module._routing_cache.clear()
         original_source_map = dict(router_module.SOURCE_MAP)
@@ -485,18 +505,22 @@ class TestFullCycle:
                  patch("app.router._save_routing_cache"):
                 init_adversarial_db()
                 run_adversarial_test_cycle()
+
+            assert len(router_module._cache) == 0, (
+                f"Adversarial testing's synthetic queries leaked into the real "
+                f"result cache: {list(router_module._cache.keys())}"
+            )
+            assert len(router_module._routing_cache) == 0, (
+                f"Adversarial testing's synthetic queries leaked into the real "
+                f"routing cache: {list(router_module._routing_cache.keys())}"
+            )
         finally:
             router_module.SOURCE_MAP.clear()
             router_module.SOURCE_MAP.update(original_source_map)
-
-        assert len(router_module._cache) == 0, (
-            f"Adversarial testing's synthetic queries leaked into the real "
-            f"result cache: {list(router_module._cache.keys())}"
-        )
-        assert len(router_module._routing_cache) == 0, (
-            f"Adversarial testing's synthetic queries leaked into the real "
-            f"routing cache: {list(router_module._routing_cache.keys())}"
-        )
+            router_module._cache.clear()
+            router_module._cache.update(original_cache)
+            router_module._routing_cache.clear()
+            router_module._routing_cache.update(original_routing_cache)
 
     def test_real_user_query_unaffected_by_concurrent_adversarial_suppression(self, tmp_path):
         """Confirms router.suppress_cache_writes() is genuinely
@@ -508,10 +532,19 @@ class TestFullCycle:
         the one this whole fix addresses): a real live request landing
         in the same window would have its own legitimate cache write
         silently dropped too.
+
+        Saves and restores _cache around the test rather than just
+        clearing it — see the longer explanation in the test directly
+        above this one; this test deliberately leaves a real entry in
+        _cache to prove its own assertion, and skipping the restore
+        step here was the actual root cause of a real, confirmed CI
+        failure on a clean checkout (no stale cache.json on disk to
+        accidentally reset _cache before the next test ran).
         """
         import threading
         import app.router as router_module
 
+        original_cache = dict(router_module._cache)
         router_module._cache.clear()
         original_source_map = dict(router_module.SOURCE_MAP)
 
@@ -538,12 +571,14 @@ class TestFullCycle:
             t2.start()
             t1.join()
             t2.join()
+
+            assert results["cached"] is True
+            assert "kiwix:synthetic adversarial query" not in router_module._cache
         finally:
             router_module.SOURCE_MAP.clear()
             router_module.SOURCE_MAP.update(original_source_map)
-
-        assert results["cached"] is True
-        assert "kiwix:synthetic adversarial query" not in router_module._cache
+            router_module._cache.clear()
+            router_module._cache.update(original_cache)
 
     def test_cycle_is_a_safe_noop_when_disabled(self, tmp_path):
         """run_adversarial_test_cycle() must check ADVERSARIAL_TEST_ENABLED
