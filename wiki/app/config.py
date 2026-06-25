@@ -1,0 +1,367 @@
+import os
+from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
+
+
+class Settings(BaseSettings):
+    """
+    All settings grouped by source/feature, not by when they were added —
+    found via a deliberate config-completeness audit (after the battle-
+    testing and bulletproofing passes) that searched every file in app/
+    for hardcoded values a real homelab deployment might genuinely want to
+    tune. Some hardcoded values were deliberately left out of this audit's
+    additions: LLM max_tokens values (internal sizing for a specific
+    prompt, not a real user preference), the 3-disambiguation-candidates
+    count in kiwix.py (tightly coupled to the actual prompt wording —
+    changing the count without rewriting the prompt would produce
+    inconsistent behavior), and home_assistant.py's minute/hour/day
+    formatting thresholds (structural facts about time, not deployment
+    preferences).
+    """
+
+    model_config = ConfigDict(env_file=".env")
+
+    # -------------------------------------------------------------------
+    # Kiwix
+    # -------------------------------------------------------------------
+    kiwix_url: str = "http://kiwix:8080"
+
+    # Results requested per book per search. Higher values give the
+    # scoring function more candidates to find the right answer among
+    # when common terms are crowded out by brand-name collisions (e.g.
+    # "galaxy" returning dozens of Samsung phone articles). Increases
+    # Kiwix request size.
+    kiwix_search_limit: int = 15
+
+    # Maximum number of books the LLM can select for a single query.
+    # Raise this if you want broader multi-book fusion (e.g. querying
+    # Python, Raspberry Pi, and Unix Stack Exchange together) at the cost
+    # of more concurrent Kiwix requests per search and more candidates to
+    # score.
+    kiwix_max_books: int = 2
+
+    # How many characters of a fetched article's body to keep before
+    # scoring/fusion ever sees it. Found via a deliberate config-
+    # completeness audit: every real call site relied on this same
+    # hardcoded default, with no override anywhere — distinct from
+    # FUSION_MAX_CHARS_PER_SOURCE, which truncates the already-combined
+    # multi-source response, not an individual Kiwix article on its own.
+    kiwix_article_max_chars: int = 3000
+
+    # The actual, central "should a second book be fused in, or dropped
+    # as noise" decision: a second book's best result must score at
+    # least this fraction of the leading book's top score to be included
+    # in a multi-book fusion response. Found hardcoded via the same
+    # audit — documented in the README and wiki as the real mechanism,
+    # but previously impossible to tune. Lower this for more aggressive
+    # fusion (more books included more often); raise it for more
+    # conservative fusion (only fuse when a second book is genuinely
+    # competitive).
+    kiwix_multi_book_fusion_threshold_pct: float = 0.5
+
+    # -------------------------------------------------------------------
+    # FreshRSS
+    # -------------------------------------------------------------------
+    freshrss_url: str = "http://freshrss"
+    freshrss_user: str = ""
+    freshrss_api_password: str = ""
+    freshrss_max_articles: int = 10
+
+    # -------------------------------------------------------------------
+    # SearXNG / Web Search
+    # -------------------------------------------------------------------
+    searxng_url: str = "http://searxng:8080"
+
+    # How long Mnemolis itself waits for a SearXNG response, separate
+    # from SearXNG's own server-side request_timeout setting. Found
+    # hardcoded via a deliberate config-completeness audit: this client-
+    # side timeout was fixed at 10s regardless of what SearXNG's own
+    # config allowed, meaning the documented fix for "Error reaching
+    # SearXNG" (raising SearXNG's max_request_timeout to 20s — see The
+    # SearXNG Timeout Lesson) wouldn't fully work, since Mnemolis's own
+    # client would still cut the connection at 10s first. Set this to
+    # match or exceed whatever you've configured on the SearXNG side.
+    searxng_request_timeout_seconds: int = 10
+
+    # How many raw, unscored results to pull from each of the (up to two)
+    # SearXNG searches before confidence-aware scoring filters them down.
+    # This is the scoring pipeline's INPUT budget, distinct from
+    # WEB_NEWS_TOP_N below, which caps the OUTPUT after scoring. Raise
+    # this if you want scoring to consider a deeper pool of SearXNG's own
+    # results per search; lower it to reduce how much raw data gets
+    # pulled and scored per query.
+    web_news_raw_result_budget: int = 25
+
+    # Web/News confidence-aware fusion — results scoring at or below this
+    # threshold are dropped as irrelevant before formatting. Survivors are
+    # capped at top_n to bound response size.
+    web_news_score_threshold: int = 0
+    web_news_top_n: int = 10
+
+    # Minimum query length (in words) for web search query expansion to
+    # trigger — below this, a query is assumed simple enough that a
+    # second, LLM-generated alternate phrasing wouldn't meaningfully
+    # improve results, and isn't worth the extra LLM call. Documented in
+    # the README as "3+ words"; found hardcoded with no way to adjust it.
+    query_expansion_min_words: int = 3
+
+    # -------------------------------------------------------------------
+    # Forecast (Open-Meteo)
+    # -------------------------------------------------------------------
+    forecast_latitude: float = 0.0
+    forecast_longitude: float = 0.0
+    forecast_location_name: str = ""
+    forecast_timezone: str = "UTC"
+
+    # When to mention precipitation/wind in the summary, and when a
+    # snapshot-to-snapshot temperature shift counts as a meaningful
+    # "change" — deployment-specific preferences, not algorithm tuning.
+    forecast_precip_threshold_pct: int = 20
+    forecast_wind_threshold_mph: int = 15
+    forecast_temp_change_threshold: float = 5.0
+
+    # -------------------------------------------------------------------
+    # Uptime Kuma
+    # -------------------------------------------------------------------
+    uptime_kuma_url: str = ""
+    uptime_kuma_username: str = ""
+    uptime_kuma_password: str = ""
+
+    # -------------------------------------------------------------------
+    # Home Assistant
+    # -------------------------------------------------------------------
+    ha_url: str = ""
+    ha_token: str = ""
+
+    # Battery level (%) below which a snapshot diff reports "low"
+    battery_low_threshold_pct: float = 20.0
+
+    # -------------------------------------------------------------------
+    # Timezone — shared across any feature that needs to convert a stored
+    # UTC timestamp into the person's actual local time
+    # -------------------------------------------------------------------
+    # Found via a deliberate cross-check while researching two separate,
+    # not-yet-built design docs (Predictive Pre-Fetching, Ambient Intent
+    # Disambiguation): every database timestamp this project writes
+    # (query_log.db, snapshots.db, adversarial_testing.db,
+    # temporal_patterns.db) is hardcoded UTC, confirmed directly — but
+    # _hours_since() (app/router.py, resolves "this morning"/"while at
+    # work") already has a real, working, separate notion of local time,
+    # sourced entirely from the container's OS-level TZ environment
+    # variable (documented in README.md's "Timezone configuration"
+    # section), with no reference to anything in this file at all. These
+    # were two independent, previously-unreconciled mechanisms for "what
+    # time is it for this person." Rather than have a third, new feature
+    # invent yet another way to answer that question, or — far worse —
+    # silently bucket a stored UTC timestamp by raw UTC hour-of-day,
+    # which is only correct for a deployment physically in the UTC zone,
+    # this setting names the SAME timezone concept _hours_since() already
+    # implicitly depends on, and defaults to reading the exact same TZ
+    # variable, so a deployment that's already correctly set TZ per the
+    # README gets this conversion capability for free, at zero new
+    # configuration cost. See app/timeutil.py for the actual conversion
+    # logic this setting feeds.
+    local_timezone: str = os.environ.get("TZ", "UTC")
+
+    # -------------------------------------------------------------------
+    # Snapshot Engine — time-window phrase defaults and job health
+    # -------------------------------------------------------------------
+    # Used to resolve phrases like "this morning" or "while at work" into
+    # hour windows.
+    morning_start_hour: int = 6   # "this morning" looks back to this hour, local time
+    work_start_hour: int = 9      # "while at work" / "since work" looks back to this hour, local time
+
+    # How many multiples of a job's own expected interval can pass before
+    # /health flags it as "stale" rather than "ok" — generous enough by
+    # default to absorb normal scheduler jitter without false-alarming on
+    # a slightly delayed tick. Found hardcoded via a deliberate config-
+    # completeness audit: lower this for tighter alerting on flakier
+    # hardware where you want to know sooner; raise it if normal jitter
+    # on your own hardware is wider than 3x the expected interval.
+    snapshot_stale_grace_multiplier: int = 3
+
+    # -------------------------------------------------------------------
+    # LLM backend — for intelligent source and Kiwix book selection
+    # -------------------------------------------------------------------
+    # Leave LLM_URL blank to disable LLM routing and fall back to keyword
+    # matching + Wikipedia.
+    llm_url: str = ""
+    llm_model: str = "qwen3:8b"
+    llm_api_type: str = "ollama"  # "ollama" (native) or "openai" (OpenAI-compatible)
+
+    # -------------------------------------------------------------------
+    # Fusion — concurrency, payload size, and timeout limits
+    # -------------------------------------------------------------------
+    fusion_max_sources: int = 4
+    fusion_max_chars_per_source: int = 1500
+    fusion_timeout_seconds: int = 15
+
+    # -------------------------------------------------------------------
+    # Caching — result cache, routing cache, and per-source TTLs
+    # -------------------------------------------------------------------
+    # Result cache — max entries before oldest-eviction kicks in.
+    # Lower this on memory-constrained hardware (e.g. an N100 with
+    # limited RAM).
+    cache_max_size: int = 500
+
+    # Routing cache — max entries before oldest-eviction kicks in.
+    # Separate from cache_max_size since the routing cache key space is
+    # genuinely larger: every unique conditional query, discourse-framing
+    # phrase, and disambiguation candidate set gets its own entry, on top
+    # of plain source-routing decisions. Found via real usage — this
+    # cache had NO size limit at all until this setting was added, unlike
+    # the result cache, which could grow unboundedly over sustained
+    # real-world usage.
+    routing_cache_max_size: int = 1000
+
+    # How long a routing decision (which source, which Kiwix book, which
+    # disambiguation candidates) stays cached before the LLM gets asked
+    # again. Found hardcoded via a deliberate config-completeness audit —
+    # presented as a deliberate, reasoned default in the wiki's Caching
+    # page, but previously impossible to actually adjust.
+    routing_cache_ttl_seconds: int = 3600
+
+    # Per-source result cache TTLs — found hardcoded via the same audit.
+    # Each reflects how stale an answer from that specific source is
+    # acceptable to be, by design (offline encyclopedic content barely
+    # changes within a day; lights and locks change state constantly).
+    # Lower a given source's TTL if your own deployment needs fresher
+    # answers from it than the default assumes; raise it to reduce real
+    # backend load from repeated identical queries.
+    cache_ttl_kiwix_seconds: int = 86400      # 24 hours
+    cache_ttl_forecast_seconds: int = 1800    # 30 minutes
+    cache_ttl_news_seconds: int = 900         # 15 minutes
+    cache_ttl_web_seconds: int = 3600         # 1 hour
+    cache_ttl_uptime_seconds: int = 60        # 1 minute
+    cache_ttl_ha_seconds: int = 30            # 30 seconds
+    cache_ttl_changes_seconds: int = 120      # 2 minutes — changes are near-real-time
+    cache_ttl_fusion_seconds: int = 1800      # 30 minutes
+
+    # -------------------------------------------------------------------
+    # API key authentication — protects /search and /changes
+    # -------------------------------------------------------------------
+    # Leave blank to disable auth entirely (default, backward compatible).
+    # Comma-separated list of valid keys, e.g. "key1,key2,key3".
+    api_keys: str = ""
+
+    # -------------------------------------------------------------------
+    # Adversarial self-testing — background combinatorial query generation
+    # -------------------------------------------------------------------
+    # Master on/off switch. Disabling skips DB init, never registers the
+    # scheduler job, and POST /adversarial/trigger returns a clear
+    # "disabled" response instead of silently running anyway — a real
+    # opt-out for anyone who'd rather not have any extra background
+    # traffic hitting their LLM/SearXNG/Kiwix backends, not a setting
+    # that only half-works.
+    adversarial_test_enabled: bool = True
+
+    # How often the adversarial test scheduler tick runs. 60 minutes is
+    # frequent enough to accumulate real coverage over days/weeks while
+    # never meaningfully competing with real traffic for resources. Don't
+    # hardcode this — per the project's own config-completeness audit
+    # philosophy, anything with a reasonable default still gets a real
+    # setting rather than a magic number buried in main.py.
+    adversarial_test_interval_minutes: int = 60
+
+    # How many queries to generate per scheduler tick. A small batch costs
+    # nothing extra (no LLM calls in the hot path — generation is pure
+    # combinatorics) and produces more real coverage per tick than
+    # generating one query at a time. Raise this on more powerful
+    # hardware (e.g. The Beast) for faster coverage accumulation; lower
+    # it on weaker hardware (e.g. MiniDock's N100) if a tick visibly
+    # competes with real query latency.
+    adversarial_test_batch_size: int = 8
+
+    # How many multiples of a recipe's own historical p95 latency counts
+    # as a real outlier, not just normal variance — same role as
+    # SNAPSHOT_STALE_GRACE_MULTIPLIER, but for the latency-outlier check
+    # rather than job staleness. Real, observed variance within a single
+    # recipe (two conditional_with_remainder queries differing 2028ms vs.
+    # 276ms on identical hardware, almost certainly a cache hit/miss
+    # difference) means this needs real headroom by default rather than
+    # a tight multiplier that flags normal cache behavior as an anomaly.
+    adversarial_test_latency_outlier_multiplier: float = 1.5
+
+    # A floor below which latency is never flagged as an outlier
+    # regardless of the multiplier — protects against flagging
+    # genuinely fast, cache-hit-driven queries (276ms in real testing)
+    # just because they happen to be 1.5x some even-faster historical
+    # sample. Different hardware has very different "fast" baselines,
+    # so this is exposed rather than fixed.
+    adversarial_test_latency_outlier_floor_ms: int = 1000
+
+    # How many historical latency samples a recipe needs before the
+    # latency-outlier check engages at all — below this, "is this slow"
+    # genuinely isn't yet decidable, so the check stays silent rather
+    # than guessing off too little data. Lower this for faster feedback
+    # on a high-traffic deployment; raise it if early flags before
+    # enough real history exists feel premature.
+    adversarial_test_latency_outlier_min_samples: int = 10
+
+    # -------------------------------------------------------------------
+    # Cross-Source Temporal Pattern Detection — speculative pattern-mining
+    # over structured event history. See the design doc and wiki page for
+    # the full statistical reasoning; the settings below are summarized
+    # here only.
+    # -------------------------------------------------------------------
+    # Master on/off switch, following the exact precedent
+    # ADVERSARIAL_TEST_ENABLED established: checked at both
+    # scheduler-registration time and inside the cycle function itself
+    # (defense in depth), reporting {"status": "disabled"} directly in
+    # /health rather than eventually reading as stale.
+    temporal_pattern_detection_enabled: bool = True
+
+    # How often the mining cycle runs. Deliberately much longer than
+    # either the snapshot engine's or adversarial testing's intervals —
+    # mining over a short window is statistically meaningless (nothing
+    # to find yet) and wasteful to re-run constantly. Once daily is
+    # plenty given the real event volumes involved (see the design
+    # doc's section 2.1 — tens to low hundreds of genuine events per
+    # month even on the densest structured source).
+    temporal_pattern_mining_interval_hours: int = 24
+
+    # The maximum lag ("expiry time", in the frequent-episode-mining
+    # sense) within which event B must follow event A to count as one
+    # real occurrence of the (A, B) pair. Mirrors the AID/frequent-
+    # episode-mining "expiry time" concept directly — searching for "did
+    # B ever follow A, at any distance" is both statistically
+    # meaningless (something will eventually match, given enough time)
+    # and far more expensive to compute.
+    temporal_pattern_lag_window_minutes: int = 30
+
+    # A hard floor below which a pattern is never even considered,
+    # regardless of what the corrected significance test says. A
+    # pattern based on 2-3 raw occurrences shouldn't be reported no
+    # matter what the math says — the literal, honest truth is there
+    # isn't enough data yet to say anything (design doc section 2.4's
+    # "under-specified with limited data" finding).
+    temporal_pattern_min_occurrences: int = 5
+
+    # The significance level for Bonferroni-corrected hypothesis tests
+    # — the per-comparison alpha gets divided by the total number of
+    # (A, B, lag-bucket) tests run in a single mining pass before being
+    # compared against. 0.05 is the conventional default; lower this
+    # for a stricter bar (fewer, more confident candidates), raise it
+    # only with a clear understanding that this widens the
+    # already-documented false-positive risk this feature is built
+    # around minimizing.
+    temporal_pattern_significance_level: float = 0.05
+
+    # How much later (non-overlapping) data a candidate pattern needs
+    # to be re-checked against before it can be promoted to
+    # "confirmed". A separate setting from the mining interval above —
+    # so re-validation cadence isn't accidentally coupled to how often
+    # the scheduler tick happens to fire. Default: one full mining
+    # interval's worth of new data (24h), the simplest concrete
+    # definition of "a later, independent window" that doesn't require
+    # tracking anything beyond what the mining cycle already does.
+    temporal_pattern_validation_window_hours: int = 24
+
+    # Same role as SNAPSHOT_STALE_GRACE_MULTIPLIER / the adversarial
+    # testing job's own staleness convention — how many multiples of
+    # the mining interval can pass before /health flags this job
+    # "stale" rather than "ok".
+    temporal_pattern_stale_grace_multiplier: int = 3
+
+
+settings = Settings()

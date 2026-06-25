@@ -1,0 +1,157 @@
+# Adversarial Self-Testing
+
+A background job, running on the same `apscheduler` infrastructure the [snapshot engine](Snapshot-Engine-and-Changes) already uses, that generates structurally-novel queries by combining Mnemolis's own real ingredient vocabulary, runs each one through the real `route_with_source()` pipeline, and flags structural anomalies for human review. It exists to institutionalize the adversarial megaquery testing approach that found most of the bugs documented in [Design History](Home#design-history-real-bugs-real-fixes) — the [proper-noun-pair saga](The-Proper-Noun-Pair-Saga)'s bug 5, in particular — instead of relying on someone deliberately constructing a nasty test sentence by hand each time.
+
+## The one hard rule
+
+**Nothing in this feature ever judges whether a response was correct.** That's not a stylistic choice — it's the load-bearing design constraint the whole feature depends on.
+
+An LLM-as-judge approach to this exact shape of problem (generate a test input *and* an expected answer, then trust an LLM's own judgment about whether a system's real output matches) was measured in real research at 6.3% precision — 93.7% of flagged "failures" were the judge's own invented expected-answer being wrong, not the system under test. Building this feature around that approach would have meant trading a few hours of setup for a permanent, self-inflicted false-positive problem.
+
+Instead, every check here verifies one of Mnemolis's own *documented, already-stated* behavioral guarantees against what the real pipeline actually did:
+
+- Does a `discourse_framing_plus_real_keyword` query actually keep kiwix in the result, the way [the discourse-framing bias](The-Discourse-Framing-Investigation) is supposed to guarantee?
+- Does a query built from N independent intents produce something close to N `[SOURCE — LABEL]` headers, the same signal that originally caught the proper-noun-pair bug?
+- Does the response contain a raw traceback, an empty-result phrase from `fusion._looks_empty()`, or a source that doesn't match anything the query actually said?
+
+None of those require knowing whether the *content* of the answer was right. They require knowing whether Mnemolis did the thing it claims to do — a fundamentally more reliable kind of check, and one that needs no LLM call and no ground truth.
+
+## Generation — pure combinatorics, no LLM calls
+
+Every generated query comes from one of seven recipes, each pure Python combining real vocabulary already defined elsewhere in the codebase:
+
+- `router.INTENT_MAP` — the same dict `detect_intent()` uses for keyword routing
+- `router._CONJUNCTIONS` / `router._NOSPLIT_PATTERNS` — the same lists [query decomposition](Query-Decomposition) uses
+- `kiwix.DISCOURSE_FRAMING_PATTERNS` — the same list behind the [discourse-framing investigation](The-Discourse-Framing-Investigation)
+- A small hardcoded seed corpus: real proper-noun pairs, and the real conditional phrases from `tests/locustfile.py`'s `CONDITIONAL_QUERIES`/`CONDITIONAL_WITH_REMAINDER_QUERIES` — reused directly rather than re-typed, so the two test surfaces can never silently drift apart
+
+| Recipe | What it stresses |
+|---|---|
+| `proper_noun_plus_pronoun_intent` | The exact shape that found proper-noun-pair bug 5 — a real pair immediately followed by a conjunction and the pronoun "I" |
+| `multi_intent_chain` | 3–5 independent intents from different sources, joined by different conjunctions |
+| `conditional_with_remainder` | A real conditional seed plus a genuinely unrelated remainder intent after it |
+| `nosplit_adjacent_to_real_conjunction` | A nosplit phrase ("compare", "versus", etc.) placed next to a *different*, unrelated real conjunction elsewhere in the query |
+| `discourse_framing_plus_real_keyword` | A discourse phrase followed by a clean keyword match for a different source |
+| `nested_proper_noun_pairs` | Two distinct proper-noun pairs in the same query, testing whether the per-occurrence guard protects both independently |
+| `no_intent_fallthrough` | A query with no `INTENT_MAP` keyword at all — does it fall through to Kiwix/LLM routing sanely? |
+
+Each generated query is fingerprinted by the *ingredients* used (not the literal string), and generation biases toward fingerprints never seen before, falling back to a repeat only once a recipe's seed vocabulary is genuinely exhausted — confirmed directly: against a single-recipe, five-topic test vocabulary, all five topics surface as novel within the first five generations before repeats begin.
+
+The one place an LLM call would actually be worth its cost is periodic (weekly-scale, not per-cycle) expansion of the seed lists themselves — `PROPER_NOUN_PAIRS`, `CONDITIONAL_SEEDS`, `_DISCOURSE_TOPICS` — not the generation loop itself. That's a deliberate, not-yet-built follow-up, not part of the hot path.
+
+## What gets flagged
+
+Seven checks run in priority order against every generated query's real result:
+
+1. **Crash** — an exception escaped, or a raw traceback ended up in the response body
+2. **Source mismatch** — `source_used` doesn't match any source the query's own keywords actually pointed at (fusion is always allowed, since merging multiple real sources is itself correct behavior)
+3. **Part-count mismatch** — a `multi_intent_chain` query's intended intent count is significantly off from its result's `[SOURCE — LABEL]` header count
+4. **Discourse framing dropped kiwix** — a `discourse_framing_plus_real_keyword` query's result has neither `source_used == "kiwix"` nor a `[KIWIX — ...]` header
+5. **Conditional remainder missing sections** — a `conditional_with_remainder` query's result has zero `[SOURCE — LABEL]` headers at all
+6. **Unexpected empty** — the result matches one of `fusion._looks_empty()`'s own canonical empty/error phrases
+7. **Latency outlier** — more than 1.5x the same recipe's own historical p95, once at least 10 samples exist
+
+A flagged combination is stored, never silently dropped. `GET /adversarial/flagged` returns the union of two things: combinations flagged on their most recent run, and combinations that have *ever* been flagged and haven't been explicitly dismissed by a human yet — not just the narrower "currently flagged" set alone.
+
+This distinction exists because of a real gap a reviewer caught in an earlier version of this feature: the original design only tracked "currently flagged," which meant a combination flagged once for an intermittent anomaly (a flaky latency outlier, a transient bug that doesn't reproduce on every run) could silently vanish from the review queue the moment the same fingerprint happened to be re-rolled and came back clean — with no human ever having reviewed or dismissed it. Each row now carries `ever_flagged` (sticky, never auto-resets), `first_flagged_reason`/`first_flagged_timestamp` (the *original* anomaly, preserved even after later clean runs overwrite the `last_*` columns), and `currently_flagged` (true only if the most recent run is still actively anomalous) — so a person can tell "still broken right now" apart from "flagged once, currently clean, still genuinely needs a look."
+
+The only way a combination actually leaves the default review queue is `POST /adversarial/dismiss?fingerprint=...` — a real human action, not a side effect of a lucky clean run. Dismissal doesn't delete history (`include_dismissed=true` still shows it), and a genuinely *new* flag on a previously-dismissed combination correctly resurfaces it — an old, closed-out review doesn't permanently suppress a fresh, unrelated anomaly on the same fingerprint later.
+
+## A bug this feature found in itself, before it ever ran in production
+
+Building the discourse-framing check exposed a real logic bug during its own unit testing, worth recording here in the same spirit as the rest of [Design History](Home#design-history-real-bugs-real-fixes): the first version checked `"kiwix" in result.lower()` as one of its two ways to confirm kiwix was actually used. A genuinely realistic mock result reading `"plain web result, no kiwix involved"` — explicitly *stating* kiwix was **not** used — contains the literal substring `"kiwix"`, so the naive check passed it as if kiwix had been present. Fixed by trusting only `source_used` and the real, structural `"[KIWIX —"` header marker `fusion.py` actually emits — never a freeform substring search across response text. A small, contained version of exactly the kind of trap this whole feature exists to catch in Mnemolis itself, caught here by a real failing unit test rather than by accident.
+
+A second, more consequential bug surfaced during code review of the *first* fix above: the original design explicitly documented "a flag is only ever cleared by a clean re-roll of the same fingerprint" as a deliberate choice — but a reviewer correctly identified that this was a real risk, not a stylistic tradeoff, specifically for intermittent anomalies. The `ever_flagged`/`first_flagged_*`/`review_status` design above is the actual fix, not a reframing of the old behavior — and writing the fix surfaced two more real bugs in its own first draft: a schema-migration ordering bug (an index was created on the new `ever_flagged` column before the column itself had been added to a pre-existing table, raising `no such column: ever_flagged` on every real, already-deployed database), and a missing `review_status` reset (a dismissed combination that got a genuinely new, different flag later stayed permanently invisible, since nothing ever cleared the earlier dismissal). Both were caught by failing tests written specifically to exercise the scenario, not found by inspection — the same discipline this whole feature exists to apply to Mnemolis itself, applied here to its own code.
+
+## First real run, on MiniDock
+
+The first cycle ever run against the real, fully-reachable Kiwix/SearXNG/Ollama stack came back clean — 8/8, zero flags. Worth recording what it actually generated, since "clean" doesn't mean "boring":
+
+```
+nested_proper_noun_pairs           fusion   11909ms
+conditional_with_remainder         uptime    2028ms
+no_intent_fallthrough              kiwix     1092ms
+discourse_framing_plus_real_keyword fusion   6080ms
+discourse_framing_plus_real_keyword fusion   3080ms
+conditional_with_remainder         fusion     276ms
+no_intent_fallthrough              kiwix     1990ms
+nosplit_adjacent_to_real_conjunction web      2502ms
+```
+
+Two real things worth noting, neither of which got flagged (correctly — no history existed yet for the latency check to compare against):
+
+- *"whats the deal with the Beatles and the Rolling Stones plus Mercury and Venus, in addition since last time"* — two proper-noun pairs in one query, resolved to `fusion` in 11.9 seconds, by far the slowest of the eight. A real, legitimately slow case the recipe was built to surface; worth watching once more history accumulates.
+- Two `conditional_with_remainder` queries differing 2028ms vs. 276ms — almost certainly a cache hit/miss difference on the sub-query, not a real anomaly. Exactly the kind of normal variance `ADVERSARIAL_TEST_LATENCY_OUTLIER_FLOOR_MS` exists to absorb.
+
+## Real bugs this feature found in Mnemolis itself, after running for real
+
+This is the actual point of the feature, not a footnote: after running for roughly a day against MiniDock's real stack (136 real combinations tried, 9 flagged), tracing every single flag — not just the ones that looked interesting — turned up two genuine, previously-unknown bugs in Mnemolis's actual routing/decomposition logic, one genuine false positive in this feature's own detector, and one real, structural (not buggy) latency characteristic worth documenting rather than chasing.
+
+### Real bug: discourse-framing escalation never ran on the keyword-match path
+
+[The Discourse-Framing Investigation](The-Discourse-Framing-Investigation) documents fixing "all four real code paths" inside `_llm_detect()` — fresh and cached, single- and multi-source. All four genuinely were fixed. What none of those four cover: `detect_intent()`'s own `if source: return source` early-returns the instant `_keyword_detect()` matches **any** real `INTENT_MAP` keyword — even a single, common, generic one like `"rss"` or `"news"` — short-circuiting before `_llm_detect()` (and therefore every one of its four correctly-fixed escalation paths) is ever reached.
+
+A real, live flag caught this directly: `"everyone keeps talking about black holes, and rss"` resolved to bare `"news"` in 35ms — far too fast to have touched the LLM at all, confirming pure keyword-match resolution. Reproduced and generalized immediately: every natural discourse-framed sentence tried that happened to mention any ordinary `INTENT_MAP` word (`"news"`, `"weather"`, `"rss"`, `"feeds"`, `"door locked"`) hit the identical gap, for both single- and multi-keyword matches. The original fix narrowed the bug's surface area — closing the LLM-routing version — without ever closing the keyword-routing version, since `INTENT_MAP` contains dozens of short, ordinary words that can easily co-occur with genuine discourse framing in a real sentence.
+
+**Fixed** by applying the exact same, already-existing `_escalate_single_source_for_discourse_framing()` / `_escalate_multi_source_for_discourse_framing()` helpers directly inside `detect_intent()`'s keyword-match branch — no new escalation logic, just reusing what `_llm_detect()` already had, at the one call site that was missing it.
+
+### Real bug: two real `INTENT_MAP` keywords made entirely of stop words were silently dropped during decomposition
+
+A second flagged row — `"feeds plus is it up in addition later today also door locked as well as google"` — was meant to test 5 independent intents but only resolved to 3 visible sections. Traced directly: `_decompose()` only produced **4** parts, not 5, with `"is it up"` (the literal, real `uptime` keyword phrase) missing entirely — not folded into a neighboring clause, just gone.
+
+Root cause: `_filter_meaningful()`'s stop-word-stripping check has no awareness of `INTENT_MAP` at all. `"is it up"` and `"are they up"` — confirmed the *only* two of all 113 real keyword phrases across every source — are made entirely of common English stop words (`"is"`, `"it"`, `"up"`, `"are"`, `"they"`). A clause consisting only of one of these phrases came back with zero `content_words`, and was discarded as not meaningful.
+
+**Fixed** the same way this function already handles a structurally identical problem for `_COLLOQUIAL_PHRASES` — checking the clause against the real, flattened `INTENT_MAP` keyword list (`_ALL_INTENT_KEYWORDS`, computed once at import time) before falling through to generic stop-word stripping. A real keyword phrase now always counts as meaningful, even if every individual word in it happens to be a stop word — closing the general case, not just these two phrases by name, so a future `INTENT_MAP` addition with the same property is automatically covered too.
+
+## Real bug: a flagged-clean fusion result still had a real, visible answer-quality problem
+
+A real `/search` call against MiniDock, run to manually confirm the discourse-framing keyword-path fix above, returned a *technically correct* result by every check this feature runs — `source_used: "fusion"`, real `[NEWS — ...]` and `[KIWIX — ...]` sections both present — and would have scored a clean pass on every one of the seven checks above. But the actual kiwix section was bad: for `"everyone keeps talking about black holes, and rss"`, kiwix returned an unrelated Space StackExchange thread about Hubble telescope camera placement and an unrelated Wikipedia article about a true-crime podcast — never the real Black Hole article. This is exactly the kind of thing this feature's own hard rule (never judge correctness) means it *can't* catch on its own — finding it took a human actually reading a result and asking "is this actually good," not a structural check. Worth recording here anyway, since the eventual fix traces back through the exact same recipe this feature generates.
+
+Tracing it found two distinct, real root causes, both upstream of anything `discourse_framing_plus_real_keyword`'s own check inspects:
+
+**`fusion.search()` calls every selected source with the identical, full, unmodified query string** — `"everyone keeps talking about black holes, and rss"` in its entirety, not separated per-source. Kiwix has no way to know `"rss"` is the literal text that triggered `news` as a co-source, not part of its own topic — confirmed this is general, pre-existing behavior, not specific to discourse framing: an ordinary, non-discourse multi-keyword fusion query (`"check the news and tell me about black holes"`) shows the identical pattern.
+
+The actual fix wasn't to make kiwix defensively robust against arbitrary cross-source noise — a generic "strip every other source's keywords" approach was checked and confirmed unsafe: words like `"weather"`, `"forecast"`, `"google"` are real `INTENT_MAP` triggers for *other* sources but also genuinely legitimate kiwix topics in their own right (rejecting a fix that would have broken real queries like "tell me about google's history" is exactly the kind of check this project's own bug-hunting culture insists on before shipping). The real fix was upstream: **`_decompose()` should have split `"black holes"` and `"rss"` into two independent clauses in the first place** — the same mechanism that already correctly handles every other multi-intent query in the system — but didn't, because of a second, separate bug: `"rss"` (confirmed the *only* real `INTENT_MAP` keyword that is itself 3 characters or shorter) was being discarded by `_filter_meaningful()`'s `if len(p) <= 3: continue` length gate *before* the `_ALL_INTENT_KEYWORDS` check (added earlier this same investigation, for `"is it up"`/`"are they up"`) ever got a chance to protect it — the two checks existed in the wrong order. **Fixed** by reordering the keyword/colloquial checks ahead of the length gate. Once decomposition correctly splits the query, kiwix only ever receives `"black holes"` as its own search text — the cross-source pollution problem doesn't need a separate fix at all, because the noise word never reaches kiwix in the first place.
+
+**Scoring never actually used the cleaned text `_build_search_terms()` already builds.** Separately, and worth fixing regardless of the decomposition fix above (since fusion's "same full query to every source" behavior is itself a real, broader, pre-existing pattern that could resurface this class of problem elsewhere): [The Discourse-Framing Investigation](The-Discourse-Framing-Investigation) documents fixing search-term pollution from discourse-framing words (`"everyone"`, `"obsessed"`) by stripping them in `_build_search_terms()` — and that part is genuinely true. But `_score_result()`, which ranks whatever Kiwix's search actually returns, was never updated to use that same cleaned text — it scores against the raw, original `query` parameter, where `"everyone"`/`"keeps"`/`"talking"` are still real, counted words today, confirmed even for the *original* bitcoin case the wiki documents as fully fixed. That case's real winner just never visibly changed, because the real Bitcoin article's title-overlap signal was strong enough to win regardless of the noise; "black holes" had no such margin. **Fixed** by stripping discourse framing from the specific word set used for keyword-overlap scoring (`query_words`) — `query_lower` itself stays the full, original phrasing, since the exact-match check and `_is_definitional_query()` genuinely need the real leading phrase structure (`"what's the deal with"`) that `_strip_discourse_framing()` was never meant to touch.
+
+## A real false positive this feature's own detector had, fixed
+
+Tracing a *third* flagged row — `"what's offline as well as while i've been at work in addition this weekend plus news and security status"`, 5 intended intents, only 3 headers — turned out to be a false positive, not a Mnemolis bug. Decomposition produced all 5 correct parts; every part resolved to the correct source. The 2 "missing" sources legitimately and correctly returned empty results, and `route_with_source()` deliberately drops an empty sub-query result before merging — `if not _looks_empty(sub_result): parts.append(...)` — exactly the right behavior; nobody wants an answer cluttered with empty sections.
+
+The real problem: by the time `_check_multi_intent_part_count` sees the final merged string, there's no trace anywhere of which sub-queries were tried and legitimately came back empty versus which results were silently lost to a bug — that information is gone before merging ever happens, and recovering it would mean re-running every real backend call a second time just to validate the check, doubling real load on every test cycle.
+
+**Fixed** by loosening the check from an exact-count comparison to **"fewer than half of the intended sources produced any header at all."** The original proper-noun-pair bug 5 this check exists to catch was a *global veto* — collapsing an entire multi-intent query down to a single, un-split result (0 or 1 headers against 4+ intended sources) — not a partial 2-of-5 gap. "Less than half" is loose enough to never fire on ordinary empty-result variance across this recipe's real range (3–5 intended sources), while still catching a genuine large-scale collapse with the same shape as the original bug. As a direct consequence, the now-removed `ADVERSARIAL_TEST_PART_COUNT_MISMATCH_TOLERANCE` setting no longer exists — there's nothing left to tune; the new threshold is a fixed, principled rule derived from the original bug's actual signature, not a per-deployment knob.
+
+(This also corrected an unrelated, separate defect in the *old* check that the new logic improves on for free: the old version's `n_headers > 0` guard meant a complete collapse to **zero** headers could never be flagged at all, for any number of intended sources — a worse blind spot than the false positive this same fix closes, since a total collapse is exactly bug 5's real signature. The new check correctly flags 0 headers for 2+ intended sources.)
+
+## A real, structural latency characteristic — not a bug, documented rather than fixed
+
+Three of the real latency-outlier flags, plus one near-timeout `unexpected_empty` flag, all traced to the same mechanical cause: `route_with_source()` handles a `conditional_with_remainder` query's condition and remainder as **two separate, sequential, blocking calls** — `sub_condition_result, sub_source = route_with_source(sub_condition, "auto")`, then, afterward, `remainder_result, remainder_source = route_with_source(sub_remainder, "auto")`. If either half hits a slow LLM call or a slow fusion fan-out, the total wall-clock time is additive, not the max of the two — a real, consistent, and entirely explainable latency cost of how conditional queries are structured, not a defect.
+
+This is deliberately **not** being fixed as a concurrency change. Making the two calls run in parallel would touch the same conditional-handling code that's already had two separate, carefully-reasoned bug fixes (see [The Recursion Design Bug](The-Recursion-Design-Bug)), and would introduce real new risk — concurrent cache writes from two threads, `ContextVar` propagation across the parallel calls — for a payoff that only matters when both halves happen to be slow at the same time, which the real data so far shows is the less common case, not the typical one. Recorded here as a known, understood, accepted latency characteristic specific to this one recipe — worth knowing when reading a `conditional_with_remainder` latency flag, not worth the risk of touching working, already-hardened routing code to shave off an occasional few extra seconds.
+
+## One known limitation worth tracking, not yet tuned
+
+- **Source mismatch on the conditional path** — a conditional query's *condition* text gets routed through LLM-based source selection, which can validly land on a source that doesn't literally appear as an `INTENT_MAP` keyword in the query. The check doesn't yet distinguish "the LLM made a different valid call" from "the LLM made a wrong call" — right now it flags both the same way. Not yet a confirmed real false-positive rate against live traffic (unlike the part-count issue above, which was directly traced and confirmed) — recorded here as a standing, plausible concern worth watching, not yet acted on.
+
+## Configuration
+
+| Setting | Default | What it controls |
+|---|---|---|
+| `ADVERSARIAL_TEST_ENABLED` | `true` | Master on/off switch. `false` skips DB init, never registers the scheduler job, and `POST /adversarial/trigger` returns `{"status": "disabled"}` instead of running anyway — checked at both scheduler-registration time and inside `run_adversarial_test_cycle()` itself, so a direct call can never accidentally run real queries against the LLM/SearXNG/Kiwix backends while turned off |
+| `ADVERSARIAL_TEST_INTERVAL_MINUTES` | `60` | How often the scheduler tick fires |
+| `ADVERSARIAL_TEST_BATCH_SIZE` | `8` | Queries generated per tick — cheap to raise (no LLM calls in the hot path) |
+| `ADVERSARIAL_TEST_LATENCY_OUTLIER_MULTIPLIER` | `1.5` | How many multiples of a recipe's own historical p95 counts as a real latency outlier |
+| `ADVERSARIAL_TEST_LATENCY_OUTLIER_FLOOR_MS` | `1000` | A floor below which latency is never flagged regardless of the multiplier — protects fast, cache-hit-driven queries from getting flagged just for being a multiple of an even-faster sample |
+| `ADVERSARIAL_TEST_LATENCY_OUTLIER_MIN_SAMPLES` | `10` | How many historical samples a recipe needs before the latency-outlier check engages at all |
+
+`/health` reports `adversarial_testing` alongside `snapshot_jobs`, using the same staleness-grace-multiplier convention (`SNAPSHOT_STALE_GRACE_MULTIPLIER`, default 3x) the snapshot engine already uses. When disabled, it reports `{"status": "disabled"}` directly rather than eventually reading as `"stale"` — a deliberate off-switch shouldn't look like a job that silently stopped running.
+
+## Endpoints
+
+`POST /adversarial/trigger` — manually run one cycle immediately, rather than waiting for the next scheduled tick. Mirrors `/snapshots/trigger`'s exact pattern. Returns `{"status": "ran", "queries_run": N, "flagged": N}`, or `{"status": "disabled", "queries_run": 0, "flagged": 0}` without touching any real backend if `ADVERSARIAL_TEST_ENABLED` is `false`.
+
+`GET /adversarial/flagged?limit=50&include_dismissed=false` — the union of currently-flagged and ever-flagged-but-not-dismissed combinations, most recent first. Each row includes `ever_flagged`, `currently_flagged`, `first_flagged_reason`/`first_flagged_timestamp` (the original anomaly), and `review_status`. Pass `include_dismissed=true` for the full audit trail including closed-out rows. Reports `{"status": "disabled", ...}` the same way if turned off. Deliberately left unauthenticated, the same way `/health` and `/areas` already are: it exposes only synthetic, generated test queries and their structural anomaly flags, never real user queries or cache contents, so it sits outside `API_KEYS`' documented scope (`POST /search` and `GET /changes` only) for the same reason those two already do.
+
+`POST /adversarial/dismiss?fingerprint=...` — mark a flagged combination as reviewed and closed. The `fingerprint` is the exact value from a flagged row's own `fingerprint` field, copied verbatim — not constructed by hand. Returns `404` for an unknown fingerprint. History is never deleted by a dismissal; a genuinely new flag on the same fingerprint later resurfaces it normally.

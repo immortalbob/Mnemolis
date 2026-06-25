@@ -1,0 +1,120 @@
+# Mnemolis Full Stack — Example Docker Compose
+# This file shows all services that Mnemolis can connect to, running together on mnemo-net.
+# Copy to docker-compose.yml and fill in your credentials before running.
+#
+# Usage:
+#   docker network create mnemo-net
+#   docker compose up -d
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Mnemolis — unified knowledge broker
+  # REST API: http://your-host:8888
+  # MCP SSE:  http://your-host:8888/mcp/sse
+  # API docs: http://your-host:8888/docs
+  # ---------------------------------------------------------------------------
+  mnemolis:
+    build: .
+    container_name: mnemolis
+    restart: unless-stopped
+    ports:
+      - "8888:8000"
+    environment:
+      TZ: ""                          # your timezone e.g. America/New_York — REQUIRED for accurate "this morning"/"while at work" changes queries, container defaults to UTC otherwise
+      KIWIX_URL: "http://kiwix:8080"
+      FRESHRSS_URL: "http://freshrss"
+      FRESHRSS_USER: ""               # your FreshRSS username
+      FRESHRSS_API_PASSWORD: ""       # your FreshRSS API password (Profile → API password)
+      FRESHRSS_MAX_ARTICLES: "10"
+      SEARXNG_URL: "http://searxng:8080"
+      FORECAST_LATITUDE: ""           # your latitude (e.g. 40.7128)
+      FORECAST_LONGITUDE: ""          # your longitude (e.g. -74.0060)
+      FORECAST_LOCATION_NAME: ""      # e.g. "New York, NY"
+      # Home Assistant
+      HA_URL: ""
+      HA_TOKEN: ""
+      # Uptime Kuma
+      UPTIME_KUMA_URL: ""              # e.g. http://minikuma.local:3001
+      UPTIME_KUMA_USERNAME: ""         # your Uptime Kuma username
+      UPTIME_KUMA_PASSWORD: ""         # your Uptime Kuma password
+      FORECAST_TIMEZONE: ""           # e.g. America/New_York — see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+    volumes:
+      - mnemolis_data:/app/data
+    networks:
+      - mnemo-net
+    depends_on:
+      - kiwix
+      - freshrss
+      - searxng
+
+  # ---------------------------------------------------------------------------
+  # Kiwix — offline knowledge base
+  # Web UI: http://your-host:8081
+  # Add ZIM files to your data directory, then mount them here.
+  # Download ZIMs at: https://library.kiwix.org
+  # ---------------------------------------------------------------------------
+  kiwix:
+    image: ghcr.io/kiwix/kiwix-serve:latest
+    container_name: kiwix
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./data/kiwix:/data   # place your .zim files here
+    command: /data
+    networks:
+      - mnemo-net
+
+  # ---------------------------------------------------------------------------
+  # FreshRSS — self-hosted RSS reader
+  # Web UI: http://your-host:8082
+  # After first run, complete setup at the web UI, then:
+  #   1. Administration → Authentication → Allow API access
+  #   2. Profile → API password → set a password
+  #   3. Add that password to FRESHRSS_API_PASSWORD above
+  # ---------------------------------------------------------------------------
+  freshrss:
+    image: freshrss/freshrss:latest
+    container_name: freshrss
+    restart: unless-stopped
+    ports:
+      - "8082:80"
+    environment:
+      TZ: ""                # your timezone e.g. America/New_York
+      CRON_MIN: "*/15"      # feed refresh interval
+    volumes:
+      - freshrss_data:/var/www/FreshRSS/data
+      - freshrss_extensions:/var/www/FreshRSS/extensions
+    networks:
+      - mnemo-net
+
+  # ---------------------------------------------------------------------------
+  # SearXNG — self-hosted web search
+  # Web UI: http://your-host:8080
+  # Requires custom settings.yml — see searxng/settings.yml in this repo.
+  # ---------------------------------------------------------------------------
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng   # must contain settings.yml
+    networks:
+      - mnemo-net
+
+  # ---------------------------------------------------------------------------
+  # Note: Open-Meteo (weather forecast) is an external API — no container needed.
+  # It requires no API key and is the only external call Mnemolis makes.
+  # ---------------------------------------------------------------------------
+
+volumes:
+  mnemolis_data:
+  freshrss_data:
+  freshrss_extensions:
+
+networks:
+  mnemo-net:
+    external: true
