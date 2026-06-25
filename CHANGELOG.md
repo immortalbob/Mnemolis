@@ -4,6 +4,29 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.48.2]
+
+### Fixed — A Real Answer-Quality Bug a Manual Verification Check Surfaced, Not Adversarial Self-Testing Itself
+Manually confirming the 3.48.1 discourse-framing keyword-path fix against a live `/search` call returned a result that was technically correct by every Adversarial Self-Testing check (`source_used: "fusion"`, real `[NEWS — ...]` and `[KIWIX — ...]` sections both present) but had a real, visible answer-quality problem: kiwix returned an unrelated Space StackExchange thread and an unrelated podcast Wikipedia article for `"everyone keeps talking about black holes, and rss"`, never the real Black Hole article. Exactly the kind of thing this feature's own hard rule (never judge correctness) means it can't catch — finding it took a human reading a result, not a structural check — but worth fixing since it traces through the same recipe shape this project already generates synthetically.
+
+Two distinct, real root causes, both upstream of anything already shipped:
+
+**Decomposition failed to split the query, due to a real ordering bug.** `"rss"` — confirmed the only real `INTENT_MAP` keyword that is itself 3 characters or shorter — was discarded by `_filter_meaningful()`'s `if len(p) <= 3: continue` length gate *before* the `_ALL_INTENT_KEYWORDS` check (added in 3.48.1, for `"is it up"`/`"are they up"`) ever got a chance to protect it. Fixed by reordering the keyword/colloquial checks ahead of the length gate. Once decomposition correctly splits `"black holes"` from `"rss"` into two independent clauses, each routes and resolves on its own — kiwix never receives `"rss"` as part of its own search text at all, closing the cross-source pollution problem at the actual root rather than trying to make kiwix defensively robust against arbitrary noise it shouldn't have received in the first place. (A generic "strip every other source's keywords inside kiwix.py" approach was deliberately checked and rejected: confirmed real, legitimate kiwix queries like "tell me about the weather" or "what is google" would have been broken by stripping words that are simultaneously other sources' triggers AND genuine standalone topics.)
+
+**Scoring never used the cleaned text search-term-building already produces.** [The Discourse-Framing Investigation](https://github.com/immortalbob/Mnemolis/wiki/The-Discourse-Framing-Investigation) correctly fixed discourse-framing words polluting the actual Kiwix search query, but `_score_result()` — which ranks whatever comes back — was never updated to match, and still scores against the raw, unstripped query. Confirmed this gap exists even for the *original* bitcoin case the wiki documents as fully fixed (`"everyone"`/`"obsessed"` are still real, counted words in that case's scoring today); it just never visibly changed the outcome there, since the real Bitcoin article's title-overlap signal was strong enough to win regardless. Fixed by stripping discourse framing from the word set used for keyword-overlap scoring specifically — the exact-match check and `_is_definitional_query()` still use the full, original phrasing, since both genuinely need real leading-phrase structure that the discourse strip doesn't touch.
+
+### Added (Tests)
+- `TestDecomposeShortKeywordBeforeLengthGate` (7 tests) in `test_router.py` — the real, live regression case plus boundary coverage confirming the reordering can't let trivial filler fragments through
+- `TestScoreResultDiscourseFramingWordsExcluded` (5 tests) in `test_kiwix.py` — the real article now winning against both wrong candidates, the original bitcoin case still correctly passing, and `_is_definitional_query()` confirmed unaffected
+
+### Changed
+- Version bumped to 3.48.2
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) updated with the full investigation — both root causes, why the generic cross-source-stripping approach was rejected, and why this was found by manual verification rather than the automated checks themselves
+
+**Total test count: 1189**
+
+---
+
 ## [3.48.1]
 
 ### Fixed — Two Real Bugs Found by Tracing Real Adversarial Self-Testing Production Data

@@ -393,3 +393,159 @@ class TestScoreResult:
         wiki_def = self.score(wiki_result, query_def, primary)
         se_def = self.score(se_result, query_def, primary)
         assert wiki_def > se_def
+
+
+class TestScoreResultDiscourseFramingWordsExcluded:
+    """Regression tests for a real bug found by tracing a live, bad
+    kiwix result on MiniDock: The Discourse-Framing Investigation's own
+    fix only ever called _strip_discourse_framing() inside
+    _build_search_terms() — cleaning what gets SENT to Kiwix's search
+    API — but never inside _score_result(), which ranks whatever comes
+    back. "everyone", "keeps", "talking", "obsessed" all survived as
+    real, counted words in query_words, scored identically to genuine
+    topic words.
+
+    Confirmed this gap existed even for the ORIGINAL bitcoin case this
+    project's own wiki documents as fully fixed — "everyone"/"obsessed"
+    are still real members of query_words for that exact query today.
+    That case's real winner just happened not to change, because the
+    real Bitcoin article's title overlap with "bitcoin" was dominant
+    enough to win regardless of the noise. A real, live "black holes"
+    query without that same lopsided signal-to-noise ratio surfaced the
+    actual gap directly: an unrelated Stack Exchange thread and an
+    unrelated podcast Wikipedia article both outscored the real,
+    correct Black Hole article.
+
+    Fixed by stripping discourse framing from the word set used for
+    keyword-overlap scoring specifically (query_words) — NOT from
+    query_lower itself, which intentionally stays the full original
+    phrasing for the exact/whole-string match checks and for
+    _is_definitional_query() (genuinely needs the real leading phrase
+    structure, e.g. "what's the deal with", which
+    _strip_discourse_framing() doesn't touch).
+    """
+
+    def setup_method(self):
+        from app.sources.kiwix import _score_result
+        self.score = _score_result
+
+    def _result(self, title: str, excerpt: str = "", book: str = "wikipedia_en_all_maxi_2026-02") -> dict:
+        return {"title": title, "excerpt": excerpt, "url": f"http://kiwix/{title}", "book": book}
+
+    def test_real_world_regression_case_correct_article_now_wins(self):
+        """The exact real, live query from the MiniDock result that
+        found this bug, with the two real wrong candidates that
+        actually won before this fix, plus the real article that
+        should have won — confirms the correct article now scores
+        higher than both wrong ones."""
+        raw_query = "everyone keeps talking about black holes, and rss"
+        primary = "wikipedia_en_all_maxi_2026-02"
+
+        hubble_result = self._result(
+            "Why do these two Hubble Space Telescope star cameras point in nearly the same direction, "
+            "and what's the other window for?",
+            excerpt="I believe that those three holes are cameras, but are they very fancy star cameras.",
+            book="space.stackexchange.com_en_all_2026-02",
+        )
+        podcast_result = self._result(
+            "And That's Why We Drink",
+            excerpt="And That's Why We Drink is a comedy true crime and paranormal podcast.",
+        )
+        black_hole_result = self._result(
+            "Black hole",
+            excerpt="A black hole is a region of spacetime where gravity is so strong that nothing can escape.",
+        )
+
+        black_hole_score = self.score(black_hole_result, raw_query, primary)
+        hubble_score = self.score(hubble_result, raw_query, primary)
+        podcast_score = self.score(podcast_result, raw_query, primary)
+
+        assert black_hole_score > hubble_score
+        assert black_hole_score > podcast_score
+
+    def test_discourse_framing_words_excluded_from_query_words(self):
+        """Directly confirms 'everyone'/'keeps'/'talking' no longer
+        contribute to title/excerpt overlap scoring — a result whose
+        ONLY overlap with the query is one of these discourse words
+        must score the same as a result with no overlap at all."""
+        primary = "wikipedia_en_all_maxi_2026-02"
+        raw_query = "everyone keeps talking about black holes"
+        clean_query = "black holes"
+
+        # A result that only overlaps via "everyone" (the discourse
+        # word) and has zero real topical relevance.
+        noise_result = self._result("Everyone (1989 film)")
+
+        noise_score_raw = self.score(noise_result, raw_query, primary)
+        noise_score_clean = self.score(noise_result, clean_query, primary)
+        # If discourse words still contributed, the raw-query score
+        # would be higher than the clean-query score (extra "everyone"
+        # overlap). They must be equal — discourse words contribute
+        # zero overlap in the raw case, the same as in the clean case.
+        assert noise_score_raw == noise_score_clean
+
+    def test_original_bitcoin_case_still_correctly_wins_after_fix(self):
+        """Regression coverage for the ORIGINAL discourse-framing
+        investigation's case — must still produce the correct winner
+        after this fix, not just the newly-found black-holes case.
+        Confirms this fix doesn't regress the case the project's own
+        wiki already documents as fixed."""
+        primary = "wikipedia_en_all_maxi_2026-02"
+        raw_query = "what's the deal with bitcoin everyone is obsessed with"
+
+        bitcoin_result = self._result(
+            "Bitcoin",
+            excerpt="Bitcoin is a decentralized digital currency without a central bank.",
+        )
+        unrelated_result = self._result(
+            "Howard Wolowitz",
+            excerpt="Howard Joel Wolowitz is a fictional character.",
+        )
+
+        assert self.score(bitcoin_result, raw_query, primary) > self.score(unrelated_result, raw_query, primary)
+
+    def test_is_definitional_query_still_uses_full_phrase_structure(self):
+        """Confirms the fix did NOT break _is_definitional_query()'s
+        own need for the real, unstripped leading phrase — "what's the
+        deal with X everyone keeps talking about" must still
+        correctly register as a definitional query. Tests the actual
+        mechanism directly (is_definitional_query() itself returning
+        True) rather than inferring it indirectly through score
+        differences — _score_result()'s only consumer of this flag is
+        inside the list/index-article penalty branch, not a standalone
+        bonus, so a generic non-list-article score comparison wouldn't
+        actually exercise this path at all."""
+        from app.sources.kiwix import _is_definitional_query
+        query = "what's the deal with bitcoin everyone keeps talking about"
+        assert _is_definitional_query(query) is True
+
+        # And directly confirm _score_result() passes the REAL,
+        # unstripped query (not scoring_query_lower) through to
+        # _is_definitional_query() — exercised via the list-article
+        # penalty branch, the only place this flag is actually
+        # consumed by _score_result() in the current implementation.
+        primary = "wikipedia_en_all_maxi_2026-02"
+        list_result = self._result("List of cryptocurrencies")
+        definitional_score = self.score(list_result, query, primary)
+        non_definitional_score = self.score(list_result, "bitcoin", primary)
+        # The definitional case gets the LARGER of the two list-penalty
+        # offsets (+8 vs +3) — must still score higher despite the
+        # extra discourse-framing words in the definitional query.
+        assert definitional_score >= non_definitional_score
+
+    def test_query_with_no_discourse_framing_is_completely_unaffected(self):
+        """Sanity check: a query with no discourse framing at all must
+        be a true no-op under _strip_discourse_framing() — confirms
+        this fix can't change scoring for the overwhelming majority of
+        real, non-discourse-framed queries, since the new
+        scoring_query_lower step is provably identical to the
+        unmodified query_lower in that case."""
+        from app.sources.kiwix import _strip_discourse_framing
+        ordinary_queries = [
+            "molybdenum",
+            "what is the history of rome",
+            "tell me about black holes",
+            "how does photosynthesis work",
+        ]
+        for q in ordinary_queries:
+            assert _strip_discourse_framing(q.lower().strip()) == q.lower().strip()

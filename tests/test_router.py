@@ -924,6 +924,107 @@ class TestDecomposeStopWordOnlyKeywordPhrases:
         assert len(parts) == 2
 
 
+class TestDecomposeShortKeywordBeforeLengthGate:
+    """Regression tests for a real, second bug found while researching
+    whether a real fusion-pollution problem (the discourse-framing
+    recipe's unrelated trailing keyword riding along into kiwix's own
+    search/scoring as noise) could be fixed safely. Root cause:
+    "rss" — confirmed the ONLY real INTENT_MAP keyword that is itself
+    <=3 characters — was discarded by _filter_meaningful()'s
+    `if len(p) <= 3: continue` length gate BEFORE the INTENT_MAP keyword
+    check (added earlier this session for "is it up"/"are they up")
+    ever got a chance to protect it, since that check previously ran
+    AFTER the length gate, not before.
+
+    Real, observed effect: "everyone keeps talking about black holes,
+    and rss" never decomposed into ["...black holes,", "rss"] — it
+    stayed one unsplit string, sent whole to fusion, with "rss" riding
+    along as real, counted noise into kiwix's own search API call and
+    scoring for a query that should only ever be about black holes.
+    Confirmed and traced directly against a live MiniDock result: an
+    unrelated Stack Exchange thread and an unrelated podcast Wikipedia
+    article both outscored the real Black Hole article.
+
+    Fixed by reordering _filter_meaningful() so the colloquial-phrase
+    and INTENT_MAP-keyword checks run BEFORE the length<=3 gate — once
+    decomposition correctly isolates "rss" into its own clause, it
+    routes to `news` independently, and kiwix never receives it as
+    part of its own search text at all. This closes the actual root
+    cause (decomposition failing to split a genuinely independent
+    clause) rather than trying to make kiwix's scoring defensively
+    robust against noise it should never have received in the first
+    place — a real, structural fix, not a narrower patch.
+    """
+
+    def setup_method(self):
+        from app.router import _decompose
+        self.decompose = _decompose
+
+    def test_real_world_regression_case_from_production_data(self):
+        """The exact query from the real, live MiniDock result that
+        found this bug."""
+        parts = self.decompose("everyone keeps talking about black holes, and rss")
+        assert len(parts) == 2
+        assert any("rss" in p for p in parts)
+        # Critically: "rss" must be its OWN clause, not still bundled
+        # into the same clause as "black holes" — that's the entire
+        # point of this fix.
+        rss_part = next(p for p in parts if "rss" in p)
+        assert "black holes" not in rss_part
+
+    def test_bare_minimal_case_without_discourse_framing(self):
+        """Confirms the fix is about the length gate itself, not
+        anything specific to discourse framing — a bare 'X and rss'
+        query with no discourse phrase at all must also split."""
+        parts = self.decompose("black holes and rss")
+        assert parts == ["black holes", "rss"]
+
+    def test_rss_resolves_to_news_after_decomposition(self):
+        """Confirms a real, end-to-end effect — not just that "rss"
+        survives decomposition, but that it correctly resolves to its
+        real source afterward, independently of the other clause."""
+        from app.router import detect_intent
+        parts = self.decompose("black holes and rss")
+        assert detect_intent("rss") == "news"
+        assert "rss" in parts
+
+    def test_kiwix_clause_never_receives_rss_as_search_text(self):
+        """The actual real-world payoff: once decomposed, the
+        discourse-framed clause that resolves to kiwix must consist
+        ONLY of the real topic words, never the unrelated trailing
+        keyword — confirms the root cause is genuinely closed, not
+        just that decomposition produces 2 parts."""
+        parts = self.decompose("everyone keeps talking about black holes, and rss")
+        kiwix_bound_part = next(p for p in parts if "black holes" in p)
+        assert "rss" not in kiwix_bound_part
+
+    def test_rss_alone_still_correctly_returned_as_single_part(self):
+        """A query consisting of JUST 'rss' with no conjunction at all
+        must still return itself as a single part — confirms this
+        fix doesn't cause "rss" to be treated as splittable on its
+        own, only that it correctly survives as a genuine part when
+        a real conjunction is present."""
+        assert self.decompose("rss") == ["rss"]
+
+    def test_trivial_short_filler_fragments_still_correctly_discarded(self):
+        """Confirms the reordering didn't accidentally let through
+        genuinely trivial short fragments that aren't real keywords —
+        the length gate still applies normally to anything that ISN'T
+        "rss" or a colloquial phrase. A genuinely trivial <=3-character
+        fragment ("ok") sitting between two real clauses must still be
+        dropped entirely, with both real clauses surviving — the same
+        behavior this had before the reordering fix."""
+        parts = self.decompose("weather report also ok also news today")
+        assert parts == ["weather report", "news today"]
+        assert "ok" not in parts
+
+    def test_unrelated_decomposition_behavior_unaffected(self):
+        """Sanity check: ordinary decomposition of queries with no
+        short keyword involved must be completely unaffected."""
+        parts = self.decompose("what is the weather and are my services up")
+        assert len(parts) == 2
+
+
 class TestDetectIntent:
     """Tests for detect_intent — full routing with LLM fallback disabled."""
 

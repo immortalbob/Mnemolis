@@ -1490,13 +1490,32 @@ def _decompose(query: str) -> list[str]:
         """
         meaningful = []
         for p in parts:
+            p_lower = p.lower()
+            # Colloquial-phrase and real-keyword checks run BEFORE the
+            # length<=3 gate below — found via tracing a real, live bad
+            # fusion result: "rss" is the only INTENT_MAP keyword that is
+            # itself <=3 characters, and the length gate previously
+            # discarded it outright before the keyword check just below
+            # (added earlier for "is it up"/"are they up") ever got a
+            # chance to protect it. The practical effect: "black holes,
+            # and rss" never decomposed into ["black holes", "rss"] —
+            # the whole unsplit string got routed to fusion, "rss" rode
+            # along as noise into kiwix's own search/scoring for a query
+            # about black holes, and an unrelated Stack Exchange/podcast
+            # result outscored the real Black Hole article. Confirmed
+            # this reordering can't accidentally keep a trivial filler
+            # fragment ("and", "the", a stray comma) that happens to be
+            # <=3 chars: none of those substring-match any real
+            # INTENT_MAP keyword, since "rss" is the only keyword short
+            # enough to even be a candidate, and substring matching
+            # requires p to contain the WHOLE keyword, not the reverse.
+            if any(s in p_lower for s in _COLLOQUIAL_PHRASES):
+                meaningful.append(p)
+                continue
+            if any(kw in p_lower for kw in _ALL_INTENT_KEYWORDS):
+                meaningful.append(p)
+                continue
             if len(p) <= 3:
-                continue
-            if any(s in p.lower() for s in _COLLOQUIAL_PHRASES):
-                meaningful.append(p)
-                continue
-            if any(kw in p.lower() for kw in _ALL_INTENT_KEYWORDS):
-                meaningful.append(p)
                 continue
             # Strip trailing 's/'t contractions before stop-word matching —
             # "internet's" otherwise survives as "internet'" after a naive

@@ -454,8 +454,36 @@ def _score_result(result: dict, query: str, primary_book: str) -> int:
     excerpt_lower = result["excerpt"].lower()
     book = result.get("book", "")
 
+    # Strip discourse-framing phrases ("everyone keeps talking about",
+    # "everyone's obsessed with") from the words actually used for
+    # keyword-overlap scoring below — NOT from query_lower itself, which
+    # stays the full, original phrasing for the exact/whole-string match
+    # checks just below and for _is_definitional_query() further down
+    # (genuinely needs the real leading phrase structure, e.g. "what's
+    # the deal with", which _strip_discourse_framing() doesn't touch and
+    # search_terms's stop-word stripping would destroy).
+    #
+    # Found via tracing a real, live bad result: The Discourse-Framing
+    # Investigation's own fix only ever called _strip_discourse_framing()
+    # inside _build_search_terms() — cleaning what gets SENT to Kiwix's
+    # search API, but never what gets used HERE, in scoring, to rank
+    # whatever comes back. "everyone", "keeps", "talking" all survived
+    # as real, counted words in query_words below, scored identically to
+    # genuine topic words — confirmed directly even for the original
+    # bitcoin case this page's own wiki documents as fully fixed: the
+    # literal words "everyone"/"obsessed" are STILL real members of
+    # query_words there too. That case's real winner happened not to
+    # change only because the real Bitcoin article's title overlap with
+    # "bitcoin" was dominant enough to win anyway — a real, live "black
+    # holes" query without that same lopsided signal-to-noise ratio
+    # surfaced the actual gap: an unrelated Stack Exchange thread and an
+    # unrelated podcast Wikipedia article both outscored the real,
+    # correct Black Hole article, in part because "everyone"/"keeps"/
+    # "talking" never got excluded from real scoring at all.
+    scoring_query_lower = _strip_discourse_framing(query_lower)
+
     # Strip stop words from query for word-level scoring
-    query_words = set(query_lower.split()) - _STOP_WORDS
+    query_words = set(scoring_query_lower.split()) - _STOP_WORDS
 
     title_words = set(title_lower.split()) - _STOP_WORDS
     excerpt_words = set(excerpt_lower.split()) - _STOP_WORDS
