@@ -3,6 +3,8 @@ import time
 import json
 import logging
 import os
+import contextvars
+from contextlib import contextmanager
 from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma, fusion, home_assistant
 from app.snapshots import get_changes, format_changes
 from app.config import settings
@@ -10,6 +12,79 @@ from app.config import settings
 _LOGGER = logging.getLogger(__name__)
 
 CACHE_FILE = "/app/data/cache.json"
+
+# ---------------------------------------------------------------------------
+# Synthetic-traffic cache write suppression
+# ---------------------------------------------------------------------------
+#
+# Found via a deliberate cross-check while researching a separate design
+# doc: adversarial_testing.py's run_adversarial_test_cycle() docstring
+# claims it "never touches cache.json, routing_cache.json... or any real
+# user-facing state" — but route_with_source() writes to BOTH _cache and
+# _routing_cache (via _set_cached()/_set_routing(), deep inside the call
+# graph: _resolve_single_source(), the fusion paths in route_with_source()
+# itself, and _llm_detect()/_llm_pick_fusion_sources()) as an unconditional
+# side effect of any successful query, synthetic or real. Confirmed
+# directly with an unmocked call: a single synthetic adversarial query
+# really does land in _cache and would really persist to cache.json on
+# the next batched save. The existing test for this
+# (test_cycle_never_touches_real_cache_files) only proved this couldn't
+# happen because it mocks out route_with_source() entirely — it never
+# actually exercised the real write path it claims to guard.
+#
+# _SUPPRESS_CACHE_WRITES is a contextvars.ContextVar, NOT a plain module
+# global. This distinction is load-bearing, not a style preference: a
+# plain global boolean would be a genuine, real race condition, not a
+# theoretical one — main.py's lifespan runs adversarial testing on
+# APScheduler's own BackgroundScheduler thread pool, fully concurrent
+# with FastAPI's synchronous /search request handlers running on
+# Starlette's own thread pool. A real live request's _set_cached() call
+# landing in the exact window between adversarial testing setting and
+# clearing a plain global flag would have its OWN legitimate write
+# silently dropped — a strictly worse bug than the one this fixes.
+# ContextVar is the correct primitive specifically because it is
+# thread-local (and task-local under asyncio): one thread's call to
+# suppress_cache_writes() is invisible to every other concurrently
+# running thread, confirmed directly against this exact concern before
+# choosing this approach over threading a parameter through every
+# _set_cached()/_set_routing() call site in this file (there are 8,
+# spanning _llm_detect(), _llm_pick_fusion_sources(),
+# _resolve_single_source(), and two sites inside route_with_source()'s
+# own fusion handling) — a far larger, riskier change to heavily-tested
+# routing logic for what is fundamentally a "don't let synthetic test
+# traffic touch production state" problem, not a routing problem.
+_SUPPRESS_CACHE_WRITES: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_SUPPRESS_CACHE_WRITES", default=False
+)
+
+
+@contextmanager
+def suppress_cache_writes():
+    """Suppress _set_cached()/_set_routing() writes for the duration of
+    this context, scoped strictly to the current thread/task — see the
+    module-level comment above for why a ContextVar, not a plain global,
+    is required for this to be safe under real concurrency.
+
+    Intended for exactly one real caller: adversarial_testing.py's
+    run_adversarial_test_cycle(), so its synthetic, generated queries can
+    run through the genuinely real route_with_source() pipeline (proving
+    real routing/fallback/fusion behavior, which is the entire point of
+    that feature) without any of those synthetic queries' results or
+    routing decisions ever being written into cache.json/routing_cache.json
+    — closing the real gap this comment block documents.
+
+    Uses try/finally, not a bare set-then-clear, specifically so an
+    exception raised anywhere inside the `with` block (a query that
+    crashes mid-route, for instance — already a normal, expected,
+    individually-caught case in run_adversarial_test_cycle()'s own loop)
+    can never leave the suppression flag stuck on for this context
+    afterward.
+    """
+    token = _SUPPRESS_CACHE_WRITES.set(True)
+    try:
+        yield
+    finally:
+        _SUPPRESS_CACHE_WRITES.reset(token)
 
 INTENT_MAP = {
     "forecast": [
@@ -253,7 +328,14 @@ def _evict_oldest_routing() -> None:
 
 
 def _set_routing(query: str, decision: str) -> None:
-    """Cache a routing decision for a query."""
+    """Cache a routing decision for a query.
+
+    No-ops if called inside a suppress_cache_writes() context — see that
+    function's docstring; this is the actual enforcement point for the
+    real, found gap it documents.
+    """
+    if _SUPPRESS_CACHE_WRITES.get():
+        return
     key = _routing_cache_key(query)
     # Evict oldest if at capacity (and this is a new entry)
     if key not in _routing_cache and len(_routing_cache) >= _ROUTING_CACHE_MAX_SIZE:
@@ -387,7 +469,15 @@ def _evict_oldest() -> None:
 
 
 def _set_cached(source: str, query: str, result: str) -> None:
+    """Cache a result for a source+query.
+
+    No-ops if called inside a suppress_cache_writes() context — see
+    that function's docstring; this is the actual enforcement point for
+    the real, found gap it documents.
+    """
     global _cache_dirty_count
+    if _SUPPRESS_CACHE_WRITES.get():
+        return
     key = _cache_key(source, query)
     # Evict oldest if at capacity (and this is a new entry)
     if key not in _cache and len(_cache) >= _CACHE_MAX_SIZE:

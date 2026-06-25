@@ -4,6 +4,28 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.47.2]
+
+### Fixed — Adversarial Self-Testing's Synthetic Queries Were Silently Polluting the Real Result and Routing Caches
+Found via a deliberate cross-check while researching an unrelated design doc, not a reported failure. `run_adversarial_test_cycle()`'s own docstring claimed it "never touches cache.json, routing_cache.json... or any real user-facing state" — confirmed directly, with an unmocked call, that this was false: `route_with_source()` writes to both the result cache and routing cache as an unconditional side effect of any successful query, synthetic or real, several calls deep inside `_resolve_single_source()` and `_llm_detect()`/`_llm_pick_fusion_sources()`. A single synthetic adversarial query really did land in the real, in-memory `_cache` dict, and would have persisted to `cache.json` on the next batched disk save. `test_cycle_never_touches_real_cache_files` could never have caught this — it mocks `route_with_source()` out entirely, proving only "if this function doesn't run, nothing else here touches the cache files either," not the actual claim the test is named for.
+
+Fixed with a new `router.suppress_cache_writes()` context manager, which `run_adversarial_test_cycle()` now wraps its real `route_with_source()` call in. `_set_cached()`/`_set_routing()` both check it and no-op if set.
+
+**Deliberately built on `contextvars.ContextVar`, not a plain module-level boolean** — a plain flag would have been a real, not theoretical, new bug: `BackgroundScheduler` runs Adversarial Self-Testing on its own thread pool, genuinely concurrent with FastAPI's request-handling threads, and a real live request's legitimate cache write landing in the same window a plain global flag was set would have been silently dropped too — strictly worse than the bug being fixed. `ContextVar` is thread-local (and task-local under asyncio) by construction; verified directly with a real two-thread test that a concurrent live request is completely unaffected by suppression active on another thread for an overlapping window.
+
+### Added (Tests)
+- `test_cycle_does_not_pollute_real_cache_with_unmocked_routing` — the actual regression test for the found gap: runs the real cycle with `route_with_source()` genuinely unmocked (only the underlying source handler and LLM call are stubbed) and confirms the real `_cache`/`_routing_cache` dicts are empty afterward
+- `test_real_user_query_unaffected_by_concurrent_adversarial_suppression` — two real threads, proving a live request's cache write survives a concurrent, overlapping adversarial-testing suppression window
+- `TestSuppressCacheWrites` (5 tests) in `test_cache_persistence.py` — direct unit coverage for the new context manager itself: basic suppression for both caches, resumption after the context exits, exception-safety (the flag must reset even if the suppressed code raises), and correct behavior under nested suppression calls
+
+### Changed
+- Version bumped to 3.47.2
+- Wiki's [Caching](https://github.com/immortalbob/Mnemolis/wiki/Caching) updated with a new section explaining the found gap and the fix, including why `ContextVar` was required over a plain flag
+
+**Total test count: 1138**
+
+---
+
 ## [3.47.1]
 
 ### Fixed — Cross-Source Temporal Pattern Detection: Motion Events Were Never Actually Extracted

@@ -708,8 +708,21 @@ def run_adversarial_test_cycle() -> dict:
     """The scheduled job body. Generates a small batch of queries, routes
     each through the real route_with_source() pipeline exactly the way a
     real user query would, checks for structural anomalies, and persists
-    results. Never touches cache.json, routing_cache.json, query_log.db,
-    or any real user-facing state — writes only to adversarial_testing.db.
+    results to adversarial_testing.db only.
+
+    Wraps the route_with_source() call in router.suppress_cache_writes()
+    so these synthetic, generated queries can exercise the genuinely real
+    routing/fallback/fusion pipeline (the entire point of this feature)
+    without writing into cache.json or routing_cache.json — the real,
+    found gap this docstring used to claim didn't exist. Confirmed
+    directly, before this fix: route_with_source() writes to both files
+    as an unconditional side effect of any successful query, synthetic or
+    not, since caching happens deep inside _resolve_single_source() and
+    _llm_detect()/_llm_pick_fusion_sources(), several calls below
+    anything this function controls directly. See router.py's own
+    module-level comment next to _SUPPRESS_CACHE_WRITES for the full
+    account, including why this needed a context-local mechanism rather
+    than a plain flag.
 
     Returns a small summary dict so POST /adversarial/trigger has
     something real to report back, rather than a bare 200 with no way
@@ -741,7 +754,8 @@ def run_adversarial_test_cycle() -> dict:
             source_used = None
             error = None
             try:
-                result, source_used = router.route_with_source(query, source="auto")
+                with router.suppress_cache_writes():
+                    result, source_used = router.route_with_source(query, source="auto")
             except Exception as e:
                 error = str(e)
             latency_ms = int((time.monotonic() - start) * 1000)

@@ -10,6 +10,7 @@ file via unittest.mock.patch on the module-level path constant, matching
 test_snapshots.py's existing convention exactly.
 """
 import random
+import time
 from unittest.mock import patch
 
 from app import router
@@ -425,7 +426,24 @@ class TestFullCycle:
 
     def test_cycle_never_touches_real_cache_files(self, tmp_path, monkeypatch):
         """Must write only to adversarial_testing.db — never cache.json,
-        routing_cache.json, or query_log.db."""
+        routing_cache.json, or query_log.db.
+
+        NOTE on this test's own history: an earlier version of this test
+        mocked out router.route_with_source() entirely, which meant it
+        could never have caught the real gap found and fixed alongside
+        this test — route_with_source() writes to the real, in-memory
+        _cache/_routing_cache dicts (and, eventually, their disk files)
+        as an unconditional side effect of routing, via _set_cached()/
+        _set_routing() deep inside _resolve_single_source() and
+        _llm_detect()/_llm_pick_fusion_sources(). Mocking the whole
+        function meant this test was only ever proving "if
+        route_with_source doesn't run, nothing else here touches the
+        cache files either" — true, but not the actual claim in the
+        docstring this test's name asserts. This version (and the two
+        below it) keeps the sentinel-file check AND adds the real,
+        previously-missing check: that the actual in-memory cache dicts
+        stay empty when route_with_source() genuinely runs, unmocked.
+        """
         temp_db = str(tmp_path / "test_adversarial.db")
         sentinel_cache = tmp_path / "cache.json"
         sentinel_cache.write_text('{"sentinel": true}')
@@ -437,6 +455,95 @@ class TestFullCycle:
             run_adversarial_test_cycle()
             # The sentinel cache file must be byte-for-byte untouched.
             assert sentinel_cache.read_text() == '{"sentinel": true}'
+
+    def test_cycle_does_not_pollute_real_cache_with_unmocked_routing(self, tmp_path):
+        """The actual, real regression test for the found gap: run
+        run_adversarial_test_cycle() with route_with_source() genuinely
+        UNMOCKED (only the underlying source handler and LLM are
+        stubbed, the same minimum needed to make a real run
+        deterministic and offline-safe) and confirm the real, in-memory
+        _cache and _routing_cache dicts are still empty afterward — the
+        thing the previous, route_with_source-mocking version of this
+        test could never have actually verified.
+        """
+        import app.router as router_module
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        router_module._cache.clear()
+        router_module._routing_cache.clear()
+        original_source_map = dict(router_module.SOURCE_MAP)
+
+        def fake_kiwix(query):
+            return f"# Real Article\nSome genuinely real-shaped content about {query[:20]}"
+
+        router_module.SOURCE_MAP["kiwix"] = fake_kiwix
+        try:
+            with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+                 patch("app.adversarial_testing.settings.adversarial_test_batch_size", 5), \
+                 patch("app.router._llm_detect", return_value="kiwix"), \
+                 patch("app.router._save_cache"), \
+                 patch("app.router._save_routing_cache"):
+                init_adversarial_db()
+                run_adversarial_test_cycle()
+        finally:
+            router_module.SOURCE_MAP.clear()
+            router_module.SOURCE_MAP.update(original_source_map)
+
+        assert len(router_module._cache) == 0, (
+            f"Adversarial testing's synthetic queries leaked into the real "
+            f"result cache: {list(router_module._cache.keys())}"
+        )
+        assert len(router_module._routing_cache) == 0, (
+            f"Adversarial testing's synthetic queries leaked into the real "
+            f"routing cache: {list(router_module._routing_cache.keys())}"
+        )
+
+    def test_real_user_query_unaffected_by_concurrent_adversarial_suppression(self, tmp_path):
+        """Confirms router.suppress_cache_writes() is genuinely
+        thread-local, not a plain shared flag — a real concurrent
+        request on another thread must still get cached normally even
+        while an adversarial testing cycle is actively suppressing
+        writes for ITS OWN call stack. A plain module-level boolean
+        would fail this test (and would be a strictly worse bug than
+        the one this whole fix addresses): a real live request landing
+        in the same window would have its own legitimate cache write
+        silently dropped too.
+        """
+        import threading
+        import app.router as router_module
+
+        router_module._cache.clear()
+        original_source_map = dict(router_module.SOURCE_MAP)
+
+        def slow_handler(query):
+            time.sleep(0.1)
+            return "# Real content"
+
+        router_module.SOURCE_MAP["kiwix"] = slow_handler
+        results = {}
+        try:
+            def adversarial_thread():
+                with router_module.suppress_cache_writes():
+                    router_module._resolve_single_source("kiwix", "synthetic adversarial query")
+                    time.sleep(0.05)
+
+            def real_user_thread():
+                time.sleep(0.02)
+                router_module._resolve_single_source("kiwix", "a real concurrent user query")
+                results["cached"] = "kiwix:a real concurrent user query" in router_module._cache
+
+            t1 = threading.Thread(target=adversarial_thread)
+            t2 = threading.Thread(target=real_user_thread)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+        finally:
+            router_module.SOURCE_MAP.clear()
+            router_module.SOURCE_MAP.update(original_source_map)
+
+        assert results["cached"] is True
+        assert "kiwix:synthetic adversarial query" not in router_module._cache
 
     def test_cycle_is_a_safe_noop_when_disabled(self, tmp_path):
         """run_adversarial_test_cycle() must check ADVERSARIAL_TEST_ENABLED

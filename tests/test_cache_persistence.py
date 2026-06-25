@@ -10,6 +10,7 @@ import json
 import os
 import tempfile
 import time
+import pytest
 from unittest.mock import patch
 
 
@@ -49,6 +50,88 @@ class TestEvictOldest:
         router_module._cache["c"] = ("3", 300.0)
         _evict_oldest()
         assert len(router_module._cache) == 2
+
+
+class TestSuppressCacheWrites:
+    """Tests for suppress_cache_writes() — the contextvars-based mechanism
+    that lets a caller (currently only adversarial_testing.py) run real
+    queries through the routing pipeline without writing into _cache or
+    _routing_cache. See router.py's own module-level comment next to
+    _SUPPRESS_CACHE_WRITES for the real, found gap this fixes: an earlier
+    version of run_adversarial_test_cycle() claimed to never touch real
+    cache state, but route_with_source() writes to both caches as an
+    unconditional side effect of any successful query.
+    """
+
+    def setup_method(self):
+        import app.router as router_module
+        self._original_cache = dict(router_module._cache)
+        self._original_routing_cache = dict(router_module._routing_cache)
+        router_module._cache.clear()
+        router_module._routing_cache.clear()
+
+    def teardown_method(self):
+        import app.router as router_module
+        router_module._cache.clear()
+        router_module._cache.update(self._original_cache)
+        router_module._routing_cache.clear()
+        router_module._routing_cache.update(self._original_routing_cache)
+
+    def test_set_cached_is_suppressed_inside_the_context(self):
+        from app.router import suppress_cache_writes, _set_cached
+        import app.router as router_module
+        with suppress_cache_writes():
+            _set_cached("kiwix", "some query", "some result")
+        assert len(router_module._cache) == 0
+
+    def test_set_routing_is_suppressed_inside_the_context(self):
+        from app.router import suppress_cache_writes, _set_routing
+        import app.router as router_module
+        with suppress_cache_writes():
+            _set_routing("source:some query", "kiwix")
+        assert len(router_module._routing_cache) == 0
+
+    def test_writes_resume_normally_after_the_context_exits(self):
+        """The flag must reset, not stay stuck on, once the `with` block
+        ends — confirms this is a scoped suppression, not an accidental
+        permanent disable."""
+        from app.router import suppress_cache_writes, _set_cached
+        import app.router as router_module
+        with suppress_cache_writes():
+            _set_cached("kiwix", "suppressed query", "result")
+        _set_cached("kiwix", "normal query", "result")
+        assert "kiwix:suppressed query" not in router_module._cache
+        assert "kiwix:normal query" in router_module._cache
+
+    def test_flag_resets_even_if_the_context_body_raises(self):
+        """try/finally, not a bare set-then-clear — an exception inside
+        the `with` block (a real, expected case: a query that crashes
+        mid-route) must not leave the suppression flag stuck on for
+        every subsequent call on this same thread/task."""
+        from app.router import suppress_cache_writes, _set_cached
+        import app.router as router_module
+
+        with pytest.raises(ValueError):
+            with suppress_cache_writes():
+                raise ValueError("simulated mid-route crash")
+
+        _set_cached("kiwix", "query after a crash", "result")
+        assert "kiwix:query after a crash" in router_module._cache
+
+    def test_nested_contexts_do_not_prematurely_clear_the_outer_suppression(self):
+        """A nested suppress_cache_writes() call exiting must not turn
+        suppression off for an outer call that's still active — relevant
+        if a future caller ever nests calls (e.g. a sub-query inside an
+        already-suppressed batch)."""
+        from app.router import suppress_cache_writes, _set_cached
+        import app.router as router_module
+
+        with suppress_cache_writes():
+            with suppress_cache_writes():
+                pass
+            # Still inside the OUTER context here — must still be suppressed.
+            _set_cached("kiwix", "still inside outer context", "result")
+        assert "kiwix:still inside outer context" not in router_module._cache
 
 
 class TestSetCachedEviction:
