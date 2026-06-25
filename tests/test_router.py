@@ -3,6 +3,7 @@ Tests for app/router.py — intent detection, cache logic, fallback detection.
 No network calls required.
 """
 import time
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -2388,3 +2389,125 @@ class TestRecursiveConditionalDetection:
         assert "conditional question" not in result.lower()
         assert "clear" in result.lower()
         assert "all up" in result.lower()
+
+
+class TestGetRecentQueries:
+    """Tests for get_recent_queries() and _connect_log_db_readonly() — the
+    read-only query_log.db access added as shared groundwork for two
+    not-yet-built design docs (Self-Healing Source Selection, Ambient
+    Intent Disambiguation), both of which need router.py to read recent
+    rows from a database app/main.py exclusively owns and writes to.
+    """
+
+    def _build_real_query_log_db(self, path, rows):
+        """rows: list of (query, timestamp) tuples, inserted in order
+        (so the last one in the list is the most recently inserted)."""
+        import sqlite3
+        con = sqlite3.connect(path)
+        con.execute("""
+            CREATE TABLE query_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                query TEXT NOT NULL,
+                source_requested TEXT NOT NULL,
+                source_used TEXT NOT NULL,
+                cached INTEGER NOT NULL,
+                success INTEGER NOT NULL,
+                latency_ms INTEGER NOT NULL,
+                fallback_occurred INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        for query, timestamp in rows:
+            con.execute(
+                "INSERT INTO query_log (timestamp, query, source_requested, source_used, cached, success, latency_ms, fallback_occurred) "
+                "VALUES (?, ?, 'auto', 'kiwix', 0, 1, 100, 0)",
+                (timestamp, query),
+            )
+        con.commit()
+        con.close()
+
+    def test_returns_most_recent_first(self, tmp_path):
+        from app.router import get_recent_queries
+        from unittest.mock import patch
+        db_path = str(tmp_path / "query_log.db")
+        self._build_real_query_log_db(db_path, [
+            ("what is the weather", "2026-01-15T12:00:00Z"),
+            ("is the door locked", "2026-01-15T12:01:00Z"),
+            ("what is nitrogen", "2026-01-15T12:02:00Z"),
+        ])
+        with patch("app.router._LOG_DB", db_path):
+            results = get_recent_queries(limit=5)
+        assert len(results) == 3
+        assert results[0] == ("what is nitrogen", "2026-01-15T12:02:00Z")
+        assert results[-1] == ("what is the weather", "2026-01-15T12:00:00Z")
+
+    def test_limit_is_respected(self, tmp_path):
+        from app.router import get_recent_queries
+        from unittest.mock import patch
+        db_path = str(tmp_path / "query_log.db")
+        self._build_real_query_log_db(
+            db_path, [(f"query {i}", f"2026-01-15T12:{i:02d}:00Z") for i in range(10)]
+        )
+        with patch("app.router._LOG_DB", db_path):
+            results = get_recent_queries(limit=3)
+        assert len(results) == 3
+
+    def test_missing_database_file_returns_empty_list_not_a_crash(self, tmp_path):
+        """A real, reachable case: a process that imports router.py before
+        main.py's own lifespan has ever run (a standalone script, a test
+        constructing router.py's own objects directly) has no query_log.db
+        on disk at all yet."""
+        from app.router import get_recent_queries
+        from unittest.mock import patch
+        nonexistent = str(tmp_path / "does_not_exist.db")
+        with patch("app.router._LOG_DB", nonexistent):
+            results = get_recent_queries()
+        assert results == []
+
+    def test_file_exists_but_table_does_not_returns_empty_list(self, tmp_path):
+        import sqlite3
+        from app.router import get_recent_queries
+        from unittest.mock import patch
+        db_path = str(tmp_path / "empty.db")
+        sqlite3.connect(db_path).close()
+        with patch("app.router._LOG_DB", db_path):
+            results = get_recent_queries()
+        assert results == []
+
+    def test_connection_is_genuinely_read_only_not_just_conventionally(self, tmp_path):
+        """The actual, enforced safety property this function depends on
+        — router.py does not own query_log's schema, and a future bug
+        introduced in this module that accidentally tries to write should
+        fail loudly and immediately, not silently succeed."""
+        import sqlite3
+        from app.router import _connect_log_db_readonly
+        from unittest.mock import patch
+        db_path = str(tmp_path / "query_log.db")
+        self._build_real_query_log_db(db_path, [("test", "2026-01-15T12:00:00Z")])
+        with patch("app.router._LOG_DB", db_path):
+            con = _connect_log_db_readonly()
+            try:
+                with pytest.raises(sqlite3.OperationalError):
+                    con.execute(
+                        "INSERT INTO query_log (timestamp, query, source_requested, source_used, cached, success, latency_ms) "
+                        "VALUES ('2026-01-01T00:00:00Z', 'x', 'auto', 'kiwix', 0, 1, 1)"
+                    )
+            finally:
+                con.close()
+
+    def test_readonly_mode_does_not_create_a_missing_file(self, tmp_path):
+        """Confirms the read-only connection behaves differently from
+        main.py's own writable _connect() in exactly the way that matters
+        here — it must never silently create the database file as a side
+        effect of being asked to read from it, since router.py has no
+        business creating a database it doesn't own the schema for."""
+        import os
+        from app.router import _connect_log_db_readonly
+        from unittest.mock import patch
+        nonexistent = str(tmp_path / "should_not_be_created.db")
+        with patch("app.router._LOG_DB", nonexistent):
+            try:
+                _connect_log_db_readonly().execute("SELECT 1")
+            except Exception:
+                pass
+        assert not os.path.exists(nonexistent)

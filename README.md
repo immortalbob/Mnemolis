@@ -237,6 +237,16 @@ environment:
   TZ: "America/New_York"
 ```
 
+This same `TZ` value is also used by `LOCAL_TIMEZONE`, a setting that converts stored UTC timestamps (every database timestamp in Mnemolis is UTC internally) into real local time for any feature that needs to bucket activity by local hour-of-day or day-of-week — set `TZ` once and both get the correct timezone for free. If you specifically want that conversion to use a *different* zone than `TZ`, set `LOCAL_TIMEZONE` explicitly; it always takes priority over `TZ`:
+
+```yaml
+environment:
+  TZ: "America/New_York"
+  LOCAL_TIMEZONE: "America/Los_Angeles"   # only if you want these to differ
+```
+
+Most deployments should only ever need to set `TZ`.
+
 ### API key authentication (optional)
 
 **By default, Mnemolis has no authentication at all — anyone who can reach it on your network can query it, with no key required.** This matches the trust model of a homelab where Mnemolis sits behind your own firewall and isn't reachable from the open internet. If Mnemolis is ever exposed beyond a fully trusted local network — a VPN with split tunneling, a reverse proxy, a port forward — set `API_KEYS` before doing so, not after.
@@ -794,7 +804,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-1126 tests across every source module, the routing/decomposition/conditional-detection pipeline, caching, adversarial self-testing, cross-source temporal pattern detection, and the FastAPI/MCP endpoints — see the test file list under [Project Structure](#project-structure) below for what each file actually covers, or the [Contributing](https://github.com/immortalbob/Mnemolis/wiki/Contributing) page for what a good test for this project looks like.
+1161 tests across every source module, the routing/decomposition/conditional-detection pipeline, caching, adversarial self-testing, cross-source temporal pattern detection, timezone conversion, and the FastAPI/MCP endpoints — see the test file list under [Project Structure](#project-structure) below for what each file actually covers, or the [Contributing](https://github.com/immortalbob/Mnemolis/wiki/Contributing) page for what a good test for this project looks like.
 
 ## Project Structure
 
@@ -812,10 +822,12 @@ Mnemolis/
 ├── searxng/
 │   └── settings.yml               # SearXNG config with JSON enabled
 ├── tests/
-│   ├── test_router.py              # intent detection, cache, decomposition, conditional detection, time-window resolution
+│   ├── conftest.py                 # autouse fixture isolating router.py's shared in-memory caches between tests
+│   ├── test_router.py              # intent detection, cache, decomposition, conditional detection, time-window resolution, read-only query_log.db access
 │   ├── test_routing_cache.py       # routing cache logic and corruption handling
 │   ├── test_cache_persistence.py   # cache eviction, disk persistence, .corrupt recovery
 │   ├── test_config.py              # settings defaults and env isolation
+│   ├── test_timeutil.py            # UTC-to-local-time conversion, DST handling, timezone setting resolution
 │   ├── test_kiwix.py               # scoring, stemming, search term cleaning, discourse-framing phrase stripping (pure logic)
 │   ├── test_kiwix_network.py       # catalog parsing, book selection, disambiguation, multi-book fusion
 │   ├── test_freshrss.py            # general query detection, recency bonus
@@ -842,8 +854,9 @@ Mnemolis/
     ├── snapshots.py                # Snapshot engine — scheduler, diff logic, change detection, background job health reporting
     ├── adversarial_testing.py      # Adversarial self-testing — combinatorial query generation, structural anomaly detection
     ├── temporal_patterns.py        # Cross-source temporal pattern detection — event extraction, Bonferroni-corrected mining, out-of-sample validation
+    ├── timeutil.py                 # UTC-to-local-time conversion, shared groundwork for time-of-day-aware features
     ├── mcp_server.py               # MCP server (Streamable HTTP transport)
-    ├── router.py                   # Intent detection, source routing, decomposition, conditional detection, caching
+    ├── router.py                   # Intent detection, source routing, decomposition, conditional detection, caching, read-only query_log.db access
     ├── llm.py                      # LLM client — Ollama native and OpenAI-compatible
     ├── scoring.py                  # Shared relevance scoring for web/news — keyword overlap, generic-result penalty
     ├── query_expansion.py          # Alternate query phrasing for web search multi-query expansion

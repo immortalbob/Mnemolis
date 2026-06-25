@@ -1,3 +1,4 @@
+import os
 from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
 
@@ -134,6 +135,33 @@ class Settings(BaseSettings):
 
     # Battery level (%) below which a snapshot diff reports "low"
     battery_low_threshold_pct: float = 20.0
+
+    # -------------------------------------------------------------------
+    # Timezone — shared across any feature that needs to convert a stored
+    # UTC timestamp into the person's actual local time
+    # -------------------------------------------------------------------
+    # Found via a deliberate cross-check while researching two separate,
+    # not-yet-built design docs (Predictive Pre-Fetching, Ambient Intent
+    # Disambiguation): every database timestamp this project writes
+    # (query_log.db, snapshots.db, adversarial_testing.db,
+    # temporal_patterns.db) is hardcoded UTC, confirmed directly — but
+    # _hours_since() (app/router.py, resolves "this morning"/"while at
+    # work") already has a real, working, separate notion of local time,
+    # sourced entirely from the container's OS-level TZ environment
+    # variable (documented in README.md's "Timezone configuration"
+    # section), with no reference to anything in this file at all. These
+    # were two independent, previously-unreconciled mechanisms for "what
+    # time is it for this person." Rather than have a third, new feature
+    # invent yet another way to answer that question, or — far worse —
+    # silently bucket a stored UTC timestamp by raw UTC hour-of-day,
+    # which is only correct for a deployment physically in the UTC zone,
+    # this setting names the SAME timezone concept _hours_since() already
+    # implicitly depends on, and defaults to reading the exact same TZ
+    # variable, so a deployment that's already correctly set TZ per the
+    # README gets this conversion capability for free, at zero new
+    # configuration cost. See app/timeutil.py for the actual conversion
+    # logic this setting feeds.
+    local_timezone: str = os.environ.get("TZ", "UTC")
 
     # -------------------------------------------------------------------
     # Snapshot Engine — time-window phrase defaults and job health

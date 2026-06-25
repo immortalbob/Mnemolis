@@ -24,6 +24,7 @@ This wiki holds the deep-dive material that doesn't belong in the [README](https
 - **[Fusion](Fusion)** — how multiple sources get queried concurrently and merged into one coherent response
 - **[Snapshot Engine & Changes](Snapshot-Engine-and-Changes)** — the background scheduler that captures source state over time, diffs it, and answers "what changed since X"
 - **[Caching](Caching)** — the result cache and routing cache: what's cached, for how long, and how size is bounded
+- **[Timezone Conversion](Timezone-Conversion)** — converting stored UTC timestamps into real local time, and why this needed its own dedicated piece rather than reusing `_hours_since()`'s existing logic
 - **[MCP Server](MCP-Server)** — the Model Context Protocol interface, how it differs from the REST API, and connecting Claude Desktop or other MCP clients
 
 ## Kiwix Deep Dive

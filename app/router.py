@@ -3,6 +3,7 @@ import time
 import json
 import logging
 import os
+import sqlite3
 import contextvars
 from contextlib import contextmanager
 from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma, fusion, home_assistant
@@ -12,6 +13,102 @@ from app.config import settings
 _LOGGER = logging.getLogger(__name__)
 
 CACHE_FILE = "/app/data/cache.json"
+
+# ---------------------------------------------------------------------------
+# Read-only query_log.db access
+# ---------------------------------------------------------------------------
+#
+# Found via research for two separate, not-yet-built design docs (Self-
+# Healing Source Selection Through Reinforcement, Ambient Intent
+# Disambiguation Through Context): both need router.py to read recent rows
+# from query_log.db (recent queries as a disambiguating signal; historical
+# routing outcomes as training labels), but query_log.db, _LOG_DB, and
+# _log_query() all live in app/main.py today, and router.py has zero
+# existing access to any of them — confirmed directly, no references
+# anywhere in this file before this addition.
+#
+# This is a direct, independent SQLite connection by file path — mirroring
+# main.py's own _connect()/_LOG_DB pattern exactly, and the same general
+# shape snapshots.py, adversarial_testing.py, and temporal_patterns.py each
+# already use for their own separate .db files — deliberately NOT an import
+# from app.main. main.py already imports from router.py
+# (`from app.router import (...)`, confirmed directly at the top of that
+# file); the reverse import direction would be a genuine circular import —
+# the identical class of problem app/sources/fusion.py's own docstring names
+# as the reason _looks_empty()'s canonical copy lives there rather than in
+# router.py, rather than the other way around.
+#
+# Read-only and defensive on purpose: router.py does not own query_log's
+# schema (app/main.py's _init_log_db() does, including its own column-
+# migration logic) and has no business writing to it. The functions below
+# never INSERT/UPDATE/DELETE anything, and degrade to an empty result
+# rather than raising if the database file or table doesn't exist yet —
+# a real, reachable case for any process that imports router.py before
+# main.py's own lifespan has ever run (e.g. a standalone script, or a test
+# that constructs router.py's own objects directly without booting the
+# full FastAPI app first).
+_LOG_DB = "/app/data/query_log.db"
+
+
+def _connect_log_db_readonly() -> sqlite3.Connection:
+    """Open a read-only connection to query_log.db.
+
+    Uses SQLite's own URI ?mode=ro to enforce read-only at the connection
+    level, not just by convention in this file's own code — a real,
+    additional safety property: a bug introduced later in this module
+    that accidentally tries to write would fail loudly and immediately
+    (sqlite3.OperationalError: attempt to write a readonly database)
+    rather than silently succeeding and creating exactly the kind of
+    schema-ownership confusion this function's own module-level comment
+    explains router.py should never have in the first place.
+
+    Raises sqlite3.OperationalError if the file doesn't exist — callers
+    in this module catch this themselves (see get_recent_queries() below)
+    rather than this helper silently returning None, so a genuine,
+    unexpected connection failure (a permissions problem, a corrupted
+    file) is never confused with the normal, expected "no queries logged
+    yet" case.
+    """
+    uri = f"file:{_LOG_DB}?mode=ro"
+    con = sqlite3.connect(uri, uri=True, timeout=10)
+    return con
+
+
+def get_recent_queries(limit: int = 20) -> list[tuple[str, str]]:
+    """Return the most recent (query, timestamp) pairs from query_log.db,
+    most recent first — read-only, never touches the log's own schema or
+    write path, both of which app/main.py exclusively owns.
+
+    Returns an empty list, never raises, if the database or table doesn't
+    exist yet (a fresh install with no query ever logged) or any other
+    read error occurs — the same defensive, log-and-continue convention
+    every background-job read function elsewhere in this project already
+    follows (confirmed directly: app/snapshots.py's _get_snapshots_since(),
+    app/temporal_patterns.py's analogous reads, both catch broadly and
+    return an empty result rather than letting a caller crash over what
+    is, in the overwhelming majority of real cases, simply "nothing has
+    happened yet").
+
+    `limit` is the most recent N rows — deliberately not "since N
+    minutes/hours ago": the real consumers of this function (a future
+    context window for Ambient Intent Disambiguation, a future training
+    signal for Self-Healing Source Selection) both want a small, bounded,
+    most-recent-first window regardless of how much real wall-clock time
+    those N queries happen to span, not an unboundedly large result during
+    a quiet stretch followed by an unboundedly large one during a busy
+    stretch.
+    """
+    try:
+        con = _connect_log_db_readonly()
+        rows = con.execute(
+            "SELECT query, timestamp FROM query_log ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        con.close()
+        return [(r[0], r[1]) for r in rows]
+    except sqlite3.Error as e:
+        _LOGGER.debug("Could not read recent queries from query_log.db (likely none logged yet): %s", e)
+        return []
 
 # ---------------------------------------------------------------------------
 # Synthetic-traffic cache write suppression

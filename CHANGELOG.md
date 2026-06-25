@@ -4,6 +4,30 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.48.0]
+
+### Added — Shared Groundwork: Local-Timezone Conversion and Read-Only `query_log.db` Access
+Pre-work for two not-yet-built design docs (Predictive Pre-Fetching with Confidence Calibration, Self-Healing Source Selection Through Reinforcement, Ambient Intent Disambiguation Through Context) that each independently identified the same two real, missing pieces of shared infrastructure during their own research. Built once, here, rather than letting two or three separate features each invent their own version.
+
+**`app/timeutil.py` — UTC-to-local-time conversion.** Every database timestamp this project writes (`query_log.db`, `snapshots.db`, `adversarial_testing.db`, `temporal_patterns.db`) is hardcoded UTC. Meanwhile, `_hours_since()` (`app/router.py`, resolving "this morning"/"while at work") already has a real, working, *separate* notion of local time, sourced entirely from the container's own `TZ` environment variable, with no connection to anything in `app/config.py`. Any feature needing to bucket a stored UTC timestamp by local hour-of-day or day-of-week was about to either invent a third, independent mechanism, or — far worse — silently bucket by raw UTC hour-of-day, which is only correct for a deployment physically in the UTC zone. For this project's own real reference deployment (Kingman, AZ — `America/Phoenix`, UTC-7, no DST), that mistake would have silently shifted every time-of-day bucket by exactly 7 hours, forever, with no error anywhere.
+
+New setting: `LOCAL_TIMEZONE`, defaulting to read the same `TZ` environment variable `_hours_since()` already implicitly depends on — a deployment that's already correctly set `TZ` per the README gets this conversion capability for free, at zero new configuration cost. An explicit `LOCAL_TIMEZONE` always overrides `TZ`, for the rare case where they should genuinely differ.
+
+Built on the standard library's `zoneinfo` (Python 3.9+, already available, no new dependency) rather than a naive fixed-offset calculation — confirmed directly via dedicated tests that DST transitions are handled correctly and automatically (`America/New_York` converts UTC noon to 7am in January, 8am in July, both correct). An invalid timezone name (a real, plausible typo) falls back to UTC with a logged warning rather than crashing, the same defensive judgment `morning_start_hour`'s own `% 24` fix already applies to a different setting; a malformed stored timestamp raises loudly rather than being silently swallowed, since every real row this project's own databases ever write is already in the correct format, and a malformed one indicates a real bug in whatever wrote it.
+
+**`router.py` gains its own independent, read-only connection to `query_log.db`.** `query_log.db`, `_LOG_DB`, and `_log_query()` all live in `app/main.py`; `router.py` had zero existing access to any of them. Two of the three pending design docs need `router.py` to read recent query history directly. The new `get_recent_queries()` connects via SQLite's own `?mode=ro` URI — a real, enforced read-only connection, not just a documented convention — confirmed directly with a dedicated test that a write attempt against it fails immediately with `sqlite3.OperationalError`, and that the read-only mode never silently creates a missing database file as a side effect of being asked to read from it. Deliberately a direct connection by file path, never an import from `app.main`, since `main.py` already imports from `router.py` — the reverse direction would be a genuine circular import, the same class of problem `app/sources/fusion.py`'s own docstring already names as the reason a different shared function lives there rather than in `router.py`.
+
+### Fixed (incidental, found during this work)
+A real test-isolation bug in this release's own first draft of `tests/test_timeutil.py`: testing `local_timezone`'s default-resolution behavior (evaluated once at class-definition time) initially used `importlib.reload(app.config)`, which creates a brand-new `Settings` class and module-level `settings` object — but every other already-imported module in this codebase (confirmed: essentially all of them) did `from app.config import settings`, binding that object reference at import time. After the reload, those modules' own `settings` name kept pointing at the stale, pre-reload object, silently breaking 8 unrelated tests in `test_uptime_kuma.py` that only failed when run after these new tests in the same process — caught directly by running the full suite, not just the new file in isolation, the same discipline this project's own README and Contributing page already call for. Fixed by loading `app/config.py` as a genuinely separate module instance via `importlib.util.spec_from_file_location()`, under a different name, never touching `sys.modules['app.config']` at all.
+
+### Changed
+- Version bumped to 3.48.0
+- README's "Timezone configuration" section updated to document `LOCAL_TIMEZONE`'s relationship to `TZ`
+
+**Total test count: 1161**
+
+---
+
 ## [3.47.3]
 
 ### Fixed — Real GitHub Actions CI Failure: Cross-Test Cache Pollution in `test_cache_persistence.py`

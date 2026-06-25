@@ -37,6 +37,12 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 | `FORECAST_WIND_THRESHOLD_MPH` | `15` | Wind speed above which the forecast text mentions wind |
 | `FORECAST_TEMP_CHANGE_THRESHOLD` | `5.0` | How large a temperature shift between [snapshots](Snapshot-Engine-and-Changes) needs to be before `changes` reports it as meaningful — a half-degree difference between two snapshots isn't worth surfacing |
 
+## Timezone conversion
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `LOCAL_TIMEZONE` | inherits `TZ`, or `UTC` if `TZ` is unset | Converts stored UTC timestamps (every database timestamp in Mnemolis is UTC internally) into real local time, for any feature bucketing activity by local hour-of-day or day-of-week. See [Timezone Conversion](Timezone-Conversion). Most deployments never need to set this directly — setting `TZ` (see [README's Timezone configuration](https://github.com/immortalbob/Mnemolis#timezone-configuration)) is enough; `LOCAL_TIMEZONE` exists only for the rare case where this conversion should use a *different* zone than `TZ` |
+
 ## Time-window phrase resolution
 
 | Variable | Default | Notes |
