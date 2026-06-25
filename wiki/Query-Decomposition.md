@@ -24,11 +24,16 @@ The combined approach exists because real compound sentences don't politely use 
                     ▼
         Pick whichever produced the MOST
         meaningful parts (ties keep the
-        first-found result)
+        first-found result — conjunctions
+        are tried longest-first, so " also "
+        (6 chars) is checked before " and "
+        (5 chars) and wins this particular tie)
                     │
                     ▼
-   ["check the weather", "are the lights on"]
+   ["check the weather and", "are the lights on"]
 ```
+
+That trailing `"and"` left stuck to the first part isn't a bug — `_filter_meaningful()` only cares whether each part has real content, not whether a part's edges are cosmetically clean, and the part still routes correctly (`detect_intent("check the weather and")` still resolves to `forecast`). It's a real, visible side effect of two adjacent conjunction words (`"and also"`) being collapsed into a single split point by the combined strategy below, with whichever single-type split happens to win the tie-break determining which side of the boundary the leftover word lands on. Worth knowing if you're ever reading raw decomposed fragments out of a log line and wondering why one has a stray conjunction at the end.
 
 ## What stops something from being split when it shouldn't be
 

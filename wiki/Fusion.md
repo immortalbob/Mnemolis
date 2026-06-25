@@ -34,16 +34,13 @@ Fusion is what happens when [Routing](Routing) decides a question genuinely need
                                               FUSION_MAX_CHARS_PER_SOURCE
                                                         │
                                                         ▼
-                                              Merge consecutive same-
-                                              source results into one
-                                              block (see "Merging
-                                              consecutive same-source
-                                              results" below)
-                                                        │
-                                                        ▼
                                               Join with "[SOURCE — LABEL]"
                                               headers and --- separators
+                                              (no same-source merge needed
+                                              here — see note below)
 ```
+
+**There's no same-source merge step inside `fusion.search()` itself, even though it might look like there should be one.** `valid` (the source list this function works from) is deduplicated by its own `seen` set before any results are even gathered, so two entries for the same source can never reach this point — there's nothing to merge. The real same-source merge — for the genuinely different case of two *separately decomposed* sub-queries both happening to resolve to the same source — lives in `router.py`'s `_merge_decomposed_parts()`, a different function entirely, covered in detail in the next section.
 
 Concurrency matters here for a real, practical reason: querying `kiwix`, `web`, and `news` one after another would mean waiting for the slowest one three separate times. Running them in a thread pool means the total wait is roughly as long as the *single slowest* source, not the sum of all of them — meaningful when `kiwix` disambiguation or `web`'s query expansion can each independently take a couple seconds on a cold cache.
 

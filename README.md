@@ -122,7 +122,7 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `FRESHRSS_API_PASSWORD` | FreshRSS API password | |
 | `FRESHRSS_MAX_ARTICLES` | Max articles to fetch | `10` |
 | `SEARXNG_URL` | SearXNG container URL | `http://searxng:8080` |
-| `SEARXNG_REQUEST_TIMEOUT_SECONDS` | How long Mnemolis itself waits for a SearXNG response — separate from SearXNG's own server-side `request_timeout`. Set this to match or exceed whatever you've configured on the SearXNG side, or the documented [SearXNG timeout fix](#searxng-request-timeout) won't fully take effect | `15` |
+| `SEARXNG_REQUEST_TIMEOUT_SECONDS` | How long Mnemolis itself waits for a SearXNG response — separate from SearXNG's own server-side `request_timeout`. Set this to match or exceed whatever you've configured on the SearXNG side, or the documented [SearXNG timeout fix](#searxng-request-timeout) won't fully take effect | `10` |
 | `WEB_NEWS_RAW_RESULT_BUDGET` | How many raw, unscored results to pull from each web search before confidence-aware scoring filters them down — the scoring pipeline's *input* budget, distinct from `WEB_NEWS_TOP_N`'s *output* cap below | `25` |
 | `QUERY_EXPANSION_MIN_WORDS` | Minimum query length (in words) for web search query expansion to trigger | `3` |
 | `KIWIX_ARTICLE_MAX_CHARS` | How many characters of a fetched Kiwix article to keep before scoring/fusion sees it — distinct from `FUSION_MAX_CHARS_PER_SOURCE`, which truncates the already-combined multi-source response | `3000` |
@@ -166,6 +166,19 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `WEB_NEWS_SCORE_THRESHOLD` | Web/news results scoring at or below this are dropped as irrelevant | `0` |
 | `WEB_NEWS_TOP_N` | Maximum web/news results kept after scoring | `10` |
 | `LOG_LEVEL` | Application log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) — `INFO` shows decomposition splits, disambiguation candidates, and article selection decisions | `INFO` |
+| `ADVERSARIAL_TEST_ENABLED` | Master on/off switch for [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing). `false` skips DB init, never registers the scheduler job, and makes `POST /adversarial/trigger` a safe no-op | `true` |
+| `ADVERSARIAL_TEST_INTERVAL_MINUTES` | How often the adversarial-testing scheduler tick fires | `60` |
+| `ADVERSARIAL_TEST_BATCH_SIZE` | Queries generated per tick — cheap to raise, since generation is pure combinatorics with no LLM calls in the hot path | `8` |
+| `ADVERSARIAL_TEST_LATENCY_OUTLIER_MULTIPLIER` | How many multiples of a recipe's own historical p95 latency counts as a real outlier | `1.5` |
+| `ADVERSARIAL_TEST_LATENCY_OUTLIER_FLOOR_MS` | A floor below which latency is never flagged regardless of the multiplier | `1000` |
+| `ADVERSARIAL_TEST_LATENCY_OUTLIER_MIN_SAMPLES` | How many historical samples a recipe needs before the latency-outlier check engages at all | `10` |
+| `TEMPORAL_PATTERN_DETECTION_ENABLED` | Master on/off switch for [Cross-Source Temporal Pattern Detection](https://github.com/immortalbob/Mnemolis/wiki/Cross-Source-Temporal-Pattern-Detection). `false` skips DB init, never registers the scheduler job, and makes `POST /temporal-patterns/trigger` a safe no-op | `true` |
+| `TEMPORAL_PATTERN_MINING_INTERVAL_HOURS` | How often the mining cycle runs — deliberately far longer than every other scheduler job, since mining over a short window is statistically meaningless given how infrequently real structured events occur | `24` |
+| `TEMPORAL_PATTERN_LAG_WINDOW_MINUTES` | The maximum lag within which event B must follow event A to count as one real occurrence of that pair | `30` |
+| `TEMPORAL_PATTERN_MIN_OCCURRENCES` | A hard floor below which a pair is never even significance-tested, regardless of what the math would say | `5` |
+| `TEMPORAL_PATTERN_SIGNIFICANCE_LEVEL` | The per-comparison significance level, before Bonferroni correction divides it by the number of pairs actually tested in a given pass | `0.05` |
+| `TEMPORAL_PATTERN_VALIDATION_WINDOW_HOURS` | How much later, non-overlapping data a candidate needs to be re-checked against before it can be promoted to `confirmed` | `24` |
+| `TEMPORAL_PATTERN_STALE_GRACE_MULTIPLIER` | Same role as `SNAPSHOT_STALE_GRACE_MULTIPLIER` — how many missed mining intervals before `/health` flags this job stale | `3` |
 
 ### FreshRSS API setup
 1. Enable API access: **Administration → Authentication → Allow API access**
@@ -200,7 +213,7 @@ outgoing:
 
 Restart SearXNG after changing this. If the error persists after the change, **verify SearXNG actually picked it up** — a correctly-edited config file doesn't help if the container was never restarted. Full story, including how this was diagnosed: **[The SearXNG Timeout Lesson](https://github.com/immortalbob/Mnemolis/wiki/The-SearXNG-Timeout-Lesson)**.
 
-**Also raise `SEARXNG_REQUEST_TIMEOUT_SECONDS` on the Mnemolis side to match or exceed whatever you set above.** Mnemolis has its own, separate client-side timeout for calling SearXNG (default `15`) — if it's shorter than SearXNG's own `max_request_timeout`, Mnemolis will cut the connection first regardless of how generously SearXNG itself is configured to wait.
+**Also raise `SEARXNG_REQUEST_TIMEOUT_SECONDS` on the Mnemolis side to match or exceed whatever you set above.** Mnemolis has its own, separate client-side timeout for calling SearXNG (default `10`) — if it's shorter than SearXNG's own `max_request_timeout`, Mnemolis will cut the connection first regardless of how generously SearXNG itself is configured to wait. The default here is itself below the `20`-second `max_request_timeout` recommended just above, so if you've applied that fix, raise this to match.
 
 ### LLM-assisted routing
 Mnemolis uses a local LLM backend in five ways:

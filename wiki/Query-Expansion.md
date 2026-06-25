@@ -16,6 +16,8 @@ The LLM's response isn't trusted blindly. Three checks run before an alternate p
 
 Any failure here means query expansion simply doesn't happen for that query — the primary search still runs and returns normally, expansion is a pure bonus, never a requirement.
 
+A successfully-generated alternate phrasing is cached in the routing cache (`altquery:{query}`), the same way other LLM-backed routing decisions are — see [Caching](Caching) — so a repeated query doesn't pay the LLM cost twice within the cache's TTL.
+
 ## How the two searches get merged
 
 ```text

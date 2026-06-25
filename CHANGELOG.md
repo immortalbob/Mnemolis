@@ -4,6 +4,34 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.48.6]
+
+### Changed — Every Wiki Diagram and Numeric Claim Verified Against Real Code
+A second documentation pass, narrower and deeper than 3.48.5's structural audit: every `text`-block diagram across all 15 wiki pages that have one, traced step by step against the actual function it claims to describe, plus a full programmatic cross-check of all 63 real config defaults against both the README and Configuration Reference. Not a re-skim — every diagram was walked against real code with real test queries, not assumed correct because it looked plausible.
+
+**Real, confirmed errors fixed:**
+
+- **`Query-Decomposition.md`** — the combined-split worked example claimed output `["check the weather", "are the lights on"]`; the real code produces `["check the weather and", "are the lights on"]` for that exact input, since `" also "` (6 chars) is tried before `" and "` (5 chars) in the real longest-first ordering and wins the tie. Diagram corrected to show the real output, with an explanation of the (harmless, routing-correct) trailing-conjunction artifact.
+- **`Fusion.md`** — the flowchart's final step claimed `fusion.search()` performs a same-source merge. It doesn't, by construction (`valid`'s own dedup set guarantees no duplicate source ever reaches that point) — confirmed directly against the function and its own comment documenting exactly this. Diagram fixed; the real merge (a genuinely different function) is now clearly distinguished.
+- **`Conditional-Query-Detection.md`** — the `forecast` interpretable-source bullet implied symmetric rain/storm keyword checking on both the condition and result sides. It's actually asymmetric (`rain`/`raining` only on the condition side; `storm`/`shower` are result-only signals) — confirmed directly with `_interpret_yes_no()`. The `uptime` bullet was also missing the real `"not up"` condition keyword. Both corrected.
+- **`Multi-Book-Fusion.md`** — the fusion-decision diagram was missing a real guard (`top_score > 0`, with its own negative-score bug history) and presented the 50%-of-top-score threshold as a fixed constant. It's `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT`, a real, configurable setting — made configurable specifically because it's the page's own documented "central decision." Diagram and prose both corrected.
+- **`The-Discourse-Framing-Investigation.md`** — the bitcoin-example diagram's intermediate search-terms claim (`"what whole bitcoin everyone obsessed"`) and specific score numbers (2 → 32) no longer reproduce against current code (`_build_search_terms()` now correctly strips `"what"` as a stop word; real current scores are different). Rewritten to state the real, current, reproducible search term and to be explicit that specific historical point values are illustrative of the mechanism, not a number to expect byte-for-byte today.
+- **`SEARXNG_REQUEST_TIMEOUT_SECONDS`** — documented as `15` in three places (`Configuration-Reference.md` once, `README.md` twice); the real default in `app/config.py` is `10`. This one mattered beyond a cosmetic number: the surrounding advice ("set this to match or exceed SearXNG's own timeout") was undermined by citing the wrong figure, and the real default is now visibly below the `20`-second target [The SearXNG Timeout Lesson](https://github.com/immortalbob/Mnemolis/wiki/The-SearXNG-Timeout-Lesson) itself recommends — both docs now say so explicitly.
+- **`README.md`** — 13 real settings (every `ADVERSARIAL_TEST_*` and `TEMPORAL_PATTERN_*` variable) were entirely absent from the config table, despite every other feature area's settings being present there with no "see wiki" deferral pattern anywhere else in the document. Added, using the same descriptions already established in Configuration Reference.
+
+**Verified clean, no changes needed:** `Routing.md`, `Kiwix-Disambiguation.md`, `LLM-Client.md`, `Snapshot-Engine-and-Changes.md`, `The-Recursion-Design-Bug.md`, `The-SearXNG-Timeout-Lesson.md`, `The-Meaningful-Content-Filter-Bugs.md`, `Open-WebUI-System-Prompt-Guide.md` (its specific 3-part decomposition claim re-verified against current code), `Cross-Source-Temporal-Pattern-Detection.md` (including the specific "reuses the original corrected_threshold, never recomputes it" design claim, confirmed directly).
+
+**Minor addition, not a correction:** `Query-Expansion.md` didn't mention that a generated alternate phrasing is itself cached in the routing cache (`altquery:{query}`) — a real, harmless gap, not an error. Added.
+
+A full programmatic check confirmed zero broken internal links and zero broken anchor fragments across the entire wiki, re-run after every edit in this pass, not just once at the end.
+
+### Changed
+- Version bumped to 3.48.6
+
+**Total test count: 1204** (no code changes this release — documentation only)
+
+---
+
 ## [3.48.5]
 
 ### Changed — Full Wiki & README Audit Against Current Code

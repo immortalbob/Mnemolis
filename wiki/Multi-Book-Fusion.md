@@ -21,27 +21,39 @@ Having two books selected doesn't automatically mean both get used. The LLM pick
    individual best candidate)
                   │
                   ▼
-   For each book: is its best score at least
-   50% of the OVERALL top score?
+   Is the OVERALL top score actually positive?
+   (a negative top score means every candidate
+   is already poor — the threshold math below
+   silently breaks down for a negative number,
+   so this is checked explicitly rather than
+   relying on it accidentally working out)
                   │
         ┌─────────┴─────────┐
         ▼ no                 ▼ yes
-   Discard — this book's   Keep — this book's
-   best result wasn't      result is genuinely
-   competitive              competitive
-                  │
-                  ▼
-   Did MORE THAN ONE book survive
-   the 50% threshold?
-                  │
-        ┌─────────┴─────────┐
-        ▼ no                 ▼ yes
-   Just use the single   Fuse — merge each
-   overall winner,       surviving book's best
-   no fusion needed       result into one response
+   Skip fusion entirely —   For each book: is its best score at least
+   use the single overall   KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT (default
+   best result as-is        50%) of the OVERALL top score?
+                                          │
+                               ┌─────────┴─────────┐
+                               ▼ no                 ▼ yes
+                          Discard — this book's   Keep — this book's
+                          best result wasn't      result is genuinely
+                          competitive              competitive
+                                          │
+                                          ▼
+                               Did MORE THAN ONE book survive
+                               the threshold?
+                                          │
+                               ┌─────────┴─────────┐
+                               ▼ no                 ▼ yes
+                          Just use the single   Fuse — merge each
+                          overall winner,       surviving book's best
+                          no fusion needed       result into one response
 ```
 
-That 50%-of-top-score threshold is the actual mechanism deciding "genuinely competitive" vs. "noise." A book whose best result scores far below the overall winner gets dropped silently — it was selected by the LLM, searched, and considered, but its content wasn't actually relevant enough to include.
+That threshold — `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT`, default 50% of the top score — is a real, configurable setting, not a fixed constant; see [Configuration Reference](Configuration-Reference) to tune it. It was previously hardcoded, made configurable specifically because it's the actual, central "should a second book be fused in, or dropped as noise" decision this page documents, and a fixed constant gave anyone wanting to tune Mnemolis's own fusion-aggressiveness no way to do so.
+
+The `top_score > 0` guard above has its own real history: a result can legitimately score negative (a list/index article nets a real penalty with zero other matches), and when the *overall best* result across every book happens to be negative, the threshold check (`score >= top_score * 0.5`) silently breaks down for a negative `top_score` — even the top result itself wouldn't pass its own bar (`-10 >= -5` is `False`). This never actually produced a wrong final answer (a genuinely good result, when one exists, always becomes `top` by construction, so this only ever fires when every candidate is already poor, and falling through to "just use the single best, still-poor result" is the correct outcome either way) — but the explicit guard makes that intent correct by construction rather than relying on the threshold math accidentally landing in the right place.
 
 ## What the merged response looks like
 

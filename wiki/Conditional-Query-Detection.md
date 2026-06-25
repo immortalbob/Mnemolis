@@ -27,8 +27,8 @@ _YES_NO_INTERPRETABLE_SOURCES = {"ha", "uptime", "forecast"}
 ```
 
 - **`ha`** — checks for "locked"/"unlocked" keywords in the condition, then in the result
-- **`uptime`** — checks "down"/"up"/"running"/"working" in the condition against "all...up" / "down" in the result
-- **`forecast`** — checks rain/storm-related language in the condition against rain/storm/clear language in the result
+- **`uptime`** — checks `"down"`/`"not up"` (the condition implying something's broken) or `"up"`/`"running"`/`"working"` (implying it should be fine) in the condition, against `"down"` or `"all"`+`"up"` together in the result
+- **`forecast`** — checks for `"rain"`/`"raining"` in the condition specifically (deliberately narrow, never a broader "bad weather" guess); if found, checks the result for `"rain"`, `"storm"`, or `"shower"` language to confirm, or `"clear"` to deny. The condition-side and result-side keyword sets are deliberately asymmetric — `"storm"`/`"shower"` are real, valid ways the *result* might describe rain happening, but a *condition* phrased as "if there's a storm" (no mention of rain) isn't matched at all, since there's no `positive_condition_keywords` or storm-specific condition check for this source. Not a bug — see the next paragraph for what's actually interpretable here and what isn't.
 
 Every other source — Kiwix, web, news — is **never** interpreted, on purpose. There's no structured signal to check against in free text, and guessing wrong would actively mislead rather than just be unhelpful. Even within the three interpretable sources, a genuinely subjective condition like *"if it's hot enough this week"* correctly returns no verdict, because there's no universal threshold for "hot enough" to check against — `_interpret_yes_no` returns `None` here, not a guess.
 

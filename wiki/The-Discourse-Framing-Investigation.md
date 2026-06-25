@@ -26,7 +26,7 @@ The actual cause: routing was fixed, but [Kiwix's search terms](Kiwix-Scoring) w
 
 ```text
    Before fix 1 (routing):
-   "what's the deal with bitcoin everyone is obsessed with"
+   "what's the deal with that whole bitcoin everyone is obsessed with"
                          │
                          ▼
               Routes to news/web only.
@@ -35,25 +35,32 @@ The actual cause: routing was fixed, but [Kiwix's search terms](Kiwix-Scoring) w
    After fix 1, before fix 2 (search terms):
                          │
                          ▼
-              Kiwix correctly included —
-              but searched with "what whole
-              bitcoin everyone obsessed"
+              Kiwix correctly included — but
+              scored against the RAW query,
+              "everyone"/"obsessed"/"whole" all
+              still counted as real signal
                          │
                          ▼
-              Scores "everyone"/"obsessed" as
-              real signal. Wins: unrelated
-              sitcom character, score 2.
+              An unrelated sitcom character
+              (sharing no real overlap with
+              "bitcoin" at all) can still beat
+              the real article on noise alone.
 
    After both fixes:
                          │
                          ▼
-              Kiwix included AND searched
-              with "what whole bitcoin"
+              Kiwix included AND searched with
+              the cleaned term "whole bitcoin" —
+              discourse words stripped from both
+              the search AND the scoring
                          │
                          ▼
-              Wins: the actual Bitcoin
-              article, score 32.
+              Wins clearly: the actual Bitcoin
+              article, real margin over any
+              unrelated noise match.
 ```
+
+(Exact search terms and scores shift slightly release to release as scoring and stop-word handling get refined — verified directly against the current code while writing this page: the real search term for this query is `"whole bitcoin"`, and the real Bitcoin article scores meaningfully higher than an unrelated result with no real topical overlap. The qualitative shape — noise-polluted before, clean after — is the durable part; treat any specific number here as illustrative of the mechanism, not a number to expect byte-for-byte in your own logs.)
 
 ## A real, deliberate single source of truth
 
@@ -63,6 +70,6 @@ That guarantee only holds because it was built this way from the start. A separa
 
 ## What the fix actually proved, end to end
 
-Verified against real production data after both fixes above shipped: *"bitcoin"* went from a nonsensical match (score 2) to the correct article (score 32). *"Black holes"* went from a horror film (score 7) to a real historical topic genuinely named "Black Hole" (Black Hole of Calcutta, score 22) — at the time, this looked like a legitimate, defensible match rather than a nonsensical one, even if not the astrophysics article one might have expected for this specific bare word. *"Galaxy"* improved but didn't fully resolve, since the word itself remains genuinely ambiguous between astronomy and pop-culture senses in the index — a separate, smaller, accepted limitation, not evidence either fix fell short.
+Verified against real production data after both fixes above shipped: *"bitcoin"* went from a nonsensical, noise-driven match to the correct article scoring clearly higher than any unrelated candidate. *"Black holes"* went from a horror film to a real historical topic genuinely named "Black Hole" (Black Hole of Calcutta) — at the time, this looked like a legitimate, defensible match rather than a nonsensical one, even if not the astrophysics article one might have expected for this specific bare word. *"Galaxy"* improved but didn't fully resolve, since the word itself remains genuinely ambiguous between astronomy and pop-culture senses in the index — a separate, smaller, accepted limitation, not evidence either fix fell short. (The exact point values behind these wins shift slightly as scoring itself gets refined release to release — re-verified directly against the current code while auditing this page, the qualitative outcome held up even though the specific numbers from the original verification no longer reproduce byte-for-byte.)
 
 **That "Black Hole of Calcutta" result did not hold up as the final word on this query.** Later real-world testing (see [Adversarial Self-Testing](Adversarial-Self-Testing#real-bug-discourse-framing-escalation-never-ran-on-the-keyword-match-path)) found the *keyword-matching* routing path — a separate path from the LLM-assisted one this page's two fixes cover — had never received the discourse-framing bias at all, and a real query containing both discourse framing and an ordinary keyword (`"everyone keeps talking about black holes, and rss"`) bypassed Kiwix entirely. Fixing that third gap, plus two further bugs in how the result actually got merged once decomposition was correctly involved, produced a different and more clearly correct winner: the real Black Hole astrophysics disambiguation article, not Calcutta. The "Calcutta" result documented above wasn't wrong given what was being tested at the time — it was a genuinely defensible match for the narrower LLM-path case this page covers — but it's no longer the actual real-world outcome for this query today, and shouldn't be read as the saga's final chapter.
