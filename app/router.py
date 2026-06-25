@@ -90,13 +90,27 @@ def get_recent_queries(limit: int = 20) -> list[tuple[str, str]]:
     happened yet").
 
     `limit` is the most recent N rows — deliberately not "since N
-    minutes/hours ago": the real consumers of this function (a future
-    context window for Ambient Intent Disambiguation, a future training
-    signal for Self-Healing Source Selection) both want a small, bounded,
-    most-recent-first window regardless of how much real wall-clock time
-    those N queries happen to span, not an unboundedly large result during
-    a quiet stretch followed by an unboundedly large one during a busy
-    stretch.
+    minutes/hours ago": Ambient Intent Disambiguation's own context
+    window wants exactly this shape (a small, bounded, most-recent-first
+    window regardless of how much real wall-clock time those N queries
+    happen to span, not an unboundedly large result during a quiet
+    stretch followed by an unboundedly large one during a busy stretch).
+
+    Found via a direct re-check while updating both consuming design
+    docs after this function shipped: this function is NOT a fit for
+    Self-Healing Source Selection's or Predictive Pre-Fetching's own
+    real needs, despite an earlier version of this docstring claiming
+    otherwise. Both of those features need a genuinely different access
+    pattern — a bounded, time-window-based bulk scan over query_log
+    (e.g. "every row from the last 6 hours," for Pre-Fetching's mining
+    step; the full historical table for Self-Healing's clustering and
+    training) returning the real outcome columns (source_used, success,
+    fallback_occurred), not just (query, timestamp) for the most recent
+    N rows regardless of when they happened. Each of those two features'
+    own design docs name this gap explicitly and call for their own,
+    separate read function when actually built — this one was correctly
+    scoped to Ambient Intent Disambiguation's real need alone, not a
+    one-size-fits-all query_log reader for every future feature.
     """
     try:
         con = _connect_log_db_readonly()
@@ -993,10 +1007,35 @@ def detect_intent(query: str) -> str | list[str]:
 
     Returns a single source name for focused queries, or a list of source names
     when the LLM determines fusion would give a better answer.
+
+    Applies the discourse-framing bias to BOTH the keyword-match result
+    and the LLM-detection result — not just the latter. Found via a
+    real, reproducible gap: _escalate_single_source_for_discourse_framing()
+    and _escalate_multi_source_for_discourse_framing() were both already
+    correctly wired into every path inside _llm_detect() (fresh and
+    cached, single- and multi-source — confirmed against The
+    Discourse-Framing Investigation's own "all four real code paths"
+    claim), but detect_intent()'s own `if source: return source` early
+    return meant ANY keyword match — even a single one, on a generic
+    word like "rss" or "feeds" — short-circuited before _llm_detect()
+    was ever reached, so discourse escalation never ran at all for that
+    query. Confirmed directly and reproducibly: "everyone keeps talking
+    about black holes, and rss" returned bare "news" with kiwix never
+    considered, the exact failure mode The Discourse-Framing
+    Investigation documents as "the longest-standing known limitation
+    in the whole project" — the original fix narrowed this bug's
+    surface area (closing the LLM-routing-only version) without closing
+    the keyword-routing version, since INTENT_MAP contains dozens of
+    short, common words/phrases ("news", "weather", "rss", "feeds",
+    "door locked") that can easily co-occur with genuine discourse
+    framing in a real, natural sentence.
     """
     source = _keyword_detect(query)
     if source:
-        return source
+        if isinstance(source, list):
+            return _escalate_multi_source_for_discourse_framing(query, source)
+        escalated = _escalate_single_source_for_discourse_framing(query, source)
+        return escalated if escalated is not None else source
     _LOGGER.info("No keyword match for '%s', asking LLM for source selection", query[:50])
     return _llm_detect(query)
 
@@ -1346,6 +1385,15 @@ def _is_proper_noun_pair_at(query: str, idx: int, conj_len: int) -> bool:
     return both_capitalized and after_name_is_short
 
 
+# Every real INTENT_MAP keyword phrase, flattened across all sources,
+# computed once at import time rather than rebuilt on every _decompose()
+# call. Used by _filter_meaningful() (inside _decompose()) to recognize
+# a real, literal keyword phrase as meaningful even when every individual
+# word in it happens to be a stop word — see that function's own
+# docstring for the real "is it up"/"are they up" gap this closes.
+_ALL_INTENT_KEYWORDS = [kw for keywords in INTENT_MAP.values() for kw in keywords]
+
+
 def _decompose(query: str) -> list[str]:
     """Split a query into independent sub-queries on conjunction words.
 
@@ -1406,7 +1454,8 @@ def _decompose(query: str) -> list[str]:
         A sub-query is meaningful if, after stripping stop words and
         filler, at least one real content word remains — OR it contains
         a recognized colloquial question phrase regardless of what
-        follows it.
+        follows it — OR it contains a real, literal INTENT_MAP keyword
+        phrase, even one made entirely of stop words.
 
         This replaced a fixed allowlist of "intent words" (door, light,
         wifi, router, etc.) that had to be hand-extended every time a new
@@ -1419,12 +1468,34 @@ def _decompose(query: str) -> list[str]:
         counts as meaningful, with no domain-specific list to maintain —
         the same logic kiwix.py already uses to decide what's left of a
         query once filler is stripped.
+
+        The INTENT_MAP check exists for a real, separate gap found via
+        production data: two genuine INTENT_MAP keyword phrases —
+        "is it up" and "are they up" (both real, documented `uptime`
+        triggers, confirmed the only two across all 113 real keyword
+        phrases in INTENT_MAP) — are made ENTIRELY of common English
+        stop words ("is", "it", "up", "are", "they"). A real multi-
+        conjunction query containing one of these as its own clause
+        (e.g. "feeds plus is it up in addition later today also door
+        locked") had that clause's content_words list come back
+        completely empty, silently dropping a real, intended intent
+        from the final decomposition — confirmed directly: this exact
+        query previously decomposed to 4 parts with "is it up" entirely
+        missing, not even folded into an adjacent part. Checked the
+        same substring-anywhere way _COLLOQUIAL_PHRASES already is,
+        for the same reason: a clause carrying leftover conjunction
+        text from wherever the split occurred (e.g. "also is it up")
+        still genuinely contains the real keyword phrase, just not at
+        position zero.
         """
         meaningful = []
         for p in parts:
             if len(p) <= 3:
                 continue
             if any(s in p.lower() for s in _COLLOQUIAL_PHRASES):
+                meaningful.append(p)
+                continue
+            if any(kw in p.lower() for kw in _ALL_INTENT_KEYWORDS):
                 meaningful.append(p)
                 continue
             # Strip trailing 's/'t contractions before stop-word matching —

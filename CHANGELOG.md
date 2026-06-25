@@ -4,6 +4,30 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.48.1]
+
+### Fixed — Two Real Bugs Found by Tracing Real Adversarial Self-Testing Production Data
+After roughly a day of real runs against MiniDock's actual stack (136 combinations tried, 9 flagged), every single flag was traced to its real root cause — not just the ones that looked interesting. Two were genuine, previously-unknown Mnemolis bugs.
+
+**Discourse-framing escalation never ran on the keyword-match path.** [The Discourse-Framing Investigation](https://github.com/immortalbob/Mnemolis/wiki/The-Discourse-Framing-Investigation) correctly fixed all four real code paths inside `_llm_detect()` — but `detect_intent()`'s own `if source: return source` short-circuited before `_llm_detect()` (and every one of its four fixed paths) was ever reached, for ANY keyword match, single or multi. A real, live flag caught this directly: `"everyone keeps talking about black holes, and rss"` resolved to bare `"news"` in 35ms, kiwix never considered — reproduced and confirmed general, not a one-keyword edge case, since `INTENT_MAP` contains dozens of short, ordinary words that can easily co-occur with genuine discourse framing in a real sentence. Fixed by applying the same, already-existing escalation helpers directly inside `detect_intent()`'s keyword-match branch.
+
+**Two real `INTENT_MAP` keywords made entirely of stop words were silently dropped during decomposition.** `"is it up"` and `"are they up"` (real, literal `uptime` keywords; confirmed the only two of all 113 real keyword phrases with this property) were discarded by `_filter_meaningful()`'s generic stop-word check, which has no awareness of `INTENT_MAP` at all — a clause consisting only of one of these phrases came back with zero real content words and vanished entirely from the decomposed result, not even folded into a neighboring clause. Fixed the same way `_COLLOQUIAL_PHRASES` already handles a structurally identical problem: a real keyword phrase now always counts as meaningful, closing the general case (any future all-stop-word keyword), not just these two by name.
+
+### Fixed — A Real False Positive in Adversarial Self-Testing's Own `part_count_mismatch` Check
+Tracing a third flag (5 intended intents, 3 headers) found a false positive, not a Mnemolis bug: decomposition and per-part routing were both correct; the 2 "missing" sources legitimately and correctly returned empty results, which `route_with_source()` deliberately drops before merging with no trace left behind. An exact-count comparison fundamentally cannot tell "legitimate empty results" apart from "real content loss" — both produce an identical signature.
+
+Loosened the check from an exact-count-with-tolerance comparison to **"fewer than half of the intended sources produced any header at all"** — loose enough to never fire on ordinary empty-result variance across this recipe's real range (3–5 intended sources), while still catching a genuine large-scale collapse with the same shape as the original proper-noun-pair bug 5 this check exists to catch. As a direct, deliberate consequence, `ADVERSARIAL_TEST_PART_COUNT_MISMATCH_TOLERANCE` has been removed entirely — there's nothing left to tune; the new threshold is a fixed, principled rule, not a per-deployment knob. This also fixes a separate, worse blind spot the old check had for free: its `n_headers > 0` guard meant a complete collapse to zero headers could never be flagged at all, regardless of intended count — the new check correctly flags that case.
+
+### Changed
+- Version bumped to 3.48.1
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) rewritten with a full account of every flag from this real production run, including the false positive and the structural (non-bug) latency finding below
+- New wiki section documenting conditional+remainder queries' sequential (not parallel) routing as a known, accepted, structural latency characteristic — deliberately not changed to a concurrency model, since the same conditional-handling code has already had two separate, carefully-reasoned bug fixes and a parallelization change would introduce real new risk for a payoff that's the less common case in the real data so far
+- `ADVERSARIAL_TEST_PART_COUNT_MISMATCH_TOLERANCE` removed from `app/config.py` and both configuration wiki pages
+
+**Total test count: 1177**
+
+---
+
 ## [3.48.0]
 
 ### Added — Shared Groundwork: Local-Timezone Conversion and Read-Only `query_log.db` Access
@@ -19,6 +43,8 @@ Built on the standard library's `zoneinfo` (Python 3.9+, already available, no n
 
 ### Fixed (incidental, found during this work)
 A real test-isolation bug in this release's own first draft of `tests/test_timeutil.py`: testing `local_timezone`'s default-resolution behavior (evaluated once at class-definition time) initially used `importlib.reload(app.config)`, which creates a brand-new `Settings` class and module-level `settings` object — but every other already-imported module in this codebase (confirmed: essentially all of them) did `from app.config import settings`, binding that object reference at import time. After the reload, those modules' own `settings` name kept pointing at the stale, pre-reload object, silently breaking 8 unrelated tests in `test_uptime_kuma.py` that only failed when run after these new tests in the same process — caught directly by running the full suite, not just the new file in isolation, the same discipline this project's own README and Contributing page already call for. Fixed by loading `app/config.py` as a genuinely separate module instance via `importlib.util.spec_from_file_location()`, under a different name, never touching `sys.modules['app.config']` at all.
+
+A second, smaller correction, found immediately after this release shipped while updating the three pending design docs (Predictive Pre-Fetching, Self-Healing Source Selection, Ambient Intent Disambiguation) that this release's groundwork affects: `get_recent_queries()`'s own docstring claimed both Self-Healing Source Selection and Ambient Intent Disambiguation "want a small, bounded, most-recent-first window" — true for the latter, not actually true for the former, which needs a time-bounded bulk scan with real outcome columns instead. Corrected in both the function's own docstring and its test class's docstring (`app/router.py`, `tests/test_router.py`) to state this precisely rather than repeat an unverified assumption about a consumer that doesn't exist yet. No behavior change — `get_recent_queries()`'s actual implementation was always correct for its real, intended use (Ambient Intent); only the docstring's claim about a second use case was wrong.
 
 ### Changed
 - Version bumped to 3.48.0

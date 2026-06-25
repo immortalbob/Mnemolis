@@ -457,9 +457,43 @@ def _check_source_mismatch(recipe_name: str, ingredients: list, source_used: str
 
 
 def _check_multi_intent_part_count(recipe_name: str, ingredients: list, result: str) -> str | None:
-    """A multi_intent_chain query with N intended intents resolved to a
-    header count significantly different from N — the same signal that
-    caught the real proper-noun-pair bug 5."""
+    """A multi_intent_chain query where FEWER THAN HALF of its intended
+    intents produced any header in the final result — the same kind of
+    signal that originally caught the real proper-noun-pair bug 5, but
+    deliberately loosened from an earlier, tighter version that
+    compared header count almost exactly against intended count.
+
+    Found via real production data on MiniDock, not theoretical: that
+    earlier version flagged "5 intended, 3 headers found" as a
+    part_count_mismatch — traced directly and confirmed this was a
+    FALSE POSITIVE, not a real bug. Decomposition produced all 5
+    correct parts, every part resolved to the correct source, and
+    route_with_source() correctly and intentionally dropped 2 of the 5
+    sub-query results because they came back genuinely empty (see its
+    own `if not _looks_empty(sub_result): parts.append(...)` —
+    deliberate, correct behavior; nobody wants an answer cluttered with
+    empty sections). By the time this check sees the final merged
+    result string, there is NO trace anywhere of how many sub-queries
+    were tried and legitimately came back empty versus how many
+    results were silently lost to a real bug — that information is
+    gone before _merge_decomposed_parts() is ever called, and this
+    check has no way to recover it without re-running every sub-query's
+    real backend call a second time, which would double real load on
+    every single test cycle just to validate the check itself.
+
+    Given that real, structural blind spot, an exact-count comparison
+    fundamentally cannot distinguish "2 of 5 random, unrelated topics
+    legitimately had nothing to report" from "2 of 5 results vanished
+    due to a bug" — both produce an identical signature. What it CAN
+    still meaningfully catch: the original bug 5 itself was a global
+    veto that collapsed an entire multi-intent query down to a single
+    un-split string — n_headers of 0 or 1 against 4+ intended sources,
+    not a partial 2-of-5 gap. "Fewer than half survived" is loose
+    enough to never fire on ordinary empty-result variance across this
+    recipe's real range (3-5 intended sources), while still catching a
+    genuine large-scale collapse with the same shape as the original
+    bug this check exists to guard against.
+    """
     if recipe_name != "multi_intent_chain":
         return None
     intended_sources = [ing for ing in ingredients if ing in router.INTENT_MAP]
@@ -468,9 +502,12 @@ def _check_multi_intent_part_count(recipe_name: str, ingredients: list, result: 
     # A single-source result legitimately has zero headers (no attribution
     # needed when nothing was merged) — only flag a REAL discrepancy once
     # more than one source was actually expected to appear.
-    tolerance = settings.adversarial_test_part_count_mismatch_tolerance
-    if n_intended >= 2 and n_headers > 0 and abs(n_headers - n_intended) >= tolerance:
-        return f"part_count_mismatch: intended {n_intended} intents, found {n_headers} headers"
+    if n_intended >= 2 and n_headers < (n_intended / 2):
+        return (
+            f"part_count_mismatch: only {n_headers} of {n_intended} intended "
+            f"intents produced a header (less than half) — possible large-scale "
+            f"content loss, not just ordinary empty-result variance"
+        )
     return None
 
 

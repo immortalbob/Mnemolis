@@ -298,16 +298,6 @@ class Settings(BaseSettings):
     # enough real history exists feel premature.
     adversarial_test_latency_outlier_min_samples: int = 10
 
-    # How far a multi_intent_chain query's intended-intent count and its
-    # result's actual [SOURCE — LABEL] header count can diverge before
-    # it's flagged as a real part-count mismatch rather than ordinary
-    # fusion/fallback variance (e.g. a clean single-source answer
-    # legitimately needs no header at all). Lower this for stricter
-    # decomposition-accuracy alerting; raise it if normal fusion/fallback
-    # behavior on your own deployment trips this more than genuinely
-    # warranted.
-    adversarial_test_part_count_mismatch_tolerance: int = 2
-
     # -------------------------------------------------------------------
     # Cross-Source Temporal Pattern Detection — speculative pattern-mining
     # over structured event history. See the design doc and wiki page for

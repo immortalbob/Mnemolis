@@ -838,6 +838,92 @@ class TestDecompose:
         assert result == "Kiwix result."
 
 
+class TestDecomposeStopWordOnlyKeywordPhrases:
+    """Regression tests for a real, reproducible bug found via live
+    Adversarial Self-Testing production data on MiniDock: two real,
+    literal INTENT_MAP "uptime" keyword phrases — "is it up" and "are
+    they up" — are made ENTIRELY of common English stop words ("is",
+    "it", "up", "are", "they"). _filter_meaningful()'s generic
+    stop-word-stripping check had no awareness of INTENT_MAP at all, so
+    a clause consisting only of one of these phrases came back with
+    zero content_words and was silently discarded from the final
+    decomposed result — not folded into an adjacent part, not logged,
+    simply gone.
+
+    Confirmed directly that these are the ONLY two of all 113 real
+    INTENT_MAP keyword phrases vulnerable to this — this isn't a
+    narrow, two-keyword-only patch but closes the actual, general gap
+    (any real keyword phrase made entirely of stop words) for however
+    many such phrases exist now or are added later.
+    """
+
+    def setup_method(self):
+        from app.router import _decompose
+        self.decompose = _decompose
+
+    def test_real_world_regression_case_from_production_data(self):
+        """The exact query from the real, live MiniDock flag that
+        found this bug. Previously decomposed to 4 parts with
+        "is it up" entirely missing; must now decompose to 5."""
+        parts = self.decompose(
+            "feeds plus is it up in addition later today also door locked as well as google"
+        )
+        assert "is it up" in parts
+        assert len(parts) == 5
+
+    def test_is_it_up_alone_with_one_other_clause(self):
+        parts = self.decompose("feeds plus is it up in addition later today")
+        assert parts == ["feeds", "is it up", "later today"]
+
+    def test_is_it_up_as_sole_query_not_split_at_all(self):
+        """A single-clause query with no real conjunction should still
+        just return itself, unaffected by this fix."""
+        assert self.decompose("is it up") == ["is it up"]
+
+    def test_are_they_up_also_recognized(self):
+        """The second of the two real vulnerable phrases — confirms
+        the fix isn't narrowly specific to "is it up" alone."""
+        parts = self.decompose("are they up plus weather")
+        assert "are they up" in parts
+        assert len(parts) == 2
+
+    def test_is_it_up_resolves_to_uptime_after_decomposition(self):
+        """Confirms the fix has a real, end-to-end effect — not just
+        that the clause survives decomposition, but that it correctly
+        resolves to the right source afterward."""
+        from app.router import detect_intent
+        parts = self.decompose("feeds plus is it up in addition later today")
+        intents = {p: detect_intent(p) for p in parts}
+        assert intents["is it up"] == "uptime"
+
+    def test_only_two_real_keyword_phrases_are_stop_word_only(self):
+        """Documents and locks in the actual scope of the real gap this
+        fix closes — confirms exactly which two phrases (out of all
+        113 real INTENT_MAP keywords) are vulnerable, so a future
+        change to INTENT_MAP that introduces a THIRD all-stop-word
+        phrase is still automatically covered by the general fix, not
+        silently missed the way the original bug was."""
+        from app.router import INTENT_MAP
+        from app.sources import kiwix
+        import re as re_module
+
+        vulnerable = []
+        for source, keywords in INTENT_MAP.items():
+            for kw in keywords:
+                words = [re_module.sub(r"['']\w*$", "", w) for w in kw.lower().split()]
+                content_words = [w for w in words if w not in kiwix._STOP_WORDS and len(w) > 1]
+                if not content_words:
+                    vulnerable.append(kw)
+        assert set(vulnerable) == {"is it up", "are they up"}
+
+    def test_unrelated_decomposition_behavior_unaffected(self):
+        """Sanity check: ordinary decomposition of queries with no
+        stop-word-only keyword phrase involved must be completely
+        unaffected by this fix."""
+        parts = self.decompose("what is the weather and are my services up")
+        assert len(parts) == 2
+
+
 class TestDetectIntent:
     """Tests for detect_intent — full routing with LLM fallback disabled."""
 
@@ -1078,6 +1164,108 @@ class TestMergeDecomposedPartsSharedWithFusion:
         assert "Indoor sensors result." in result
         assert "Door locks result." in result
         assert result.count("[HA") == 1  # one header, not two
+
+
+class TestDiscourseFramingKeywordPathEscalation:
+    """Tests for detect_intent()'s own discourse-framing escalation —
+    distinct from TestDiscourseFramingRoutingBias above, which only
+    covers _llm_detect()'s four internal paths.
+
+    Found via real production data, not development-time testing: a
+    live Adversarial Self-Testing flag on MiniDock caught
+    "everyone keeps talking about black holes, and rss" resolving to
+    bare "news", kiwix never considered. Traced to a real, reproducible
+    gap — _keyword_detect() matching "rss" (a real, ordinary
+    INTENT_MAP "news" keyword) caused detect_intent()'s own
+    `if source: return source` to short-circuit BEFORE _llm_detect()
+    (and therefore both escalation helpers, which only live inside it)
+    ever ran. This reproduced for every INTENT_MAP keyword tried, not
+    just "rss" — INTENT_MAP contains dozens of short, common
+    words/phrases ("news", "weather", "feeds", "door locked") that can
+    easily co-occur with genuine discourse framing in a real sentence,
+    so this wasn't a narrow one-keyword edge case but a structural gap
+    in detect_intent() itself, sitting upstream of all four of
+    _llm_detect()'s already-correctly-fixed paths.
+
+    The Discourse-Framing Investigation wiki page's claim of fixing
+    "all four real code paths" was accurate for the LLM-detection
+    paths it actually meant, but the keyword-match short-circuit was
+    never one of the four — these tests close that specific, separate
+    gap directly at the one place it actually lives.
+    """
+
+    def test_real_world_regression_case_from_production_data(self):
+        """The exact query and exact result from the real, live
+        MiniDock flag that found this bug — not a constructed
+        hypothetical."""
+        from app.router import detect_intent
+        result = detect_intent("everyone keeps talking about black holes, and rss")
+        assert isinstance(result, list)
+        assert "news" in result
+        assert "kiwix" in result
+
+    def test_single_keyword_match_gets_kiwix_escalated(self):
+        from app.router import detect_intent
+        result = detect_intent("everyone keeps talking about quantum computing, also whats the weather")
+        assert isinstance(result, list)
+        assert "forecast" in result
+        assert "kiwix" in result
+
+    def test_multi_keyword_match_gets_kiwix_escalated(self):
+        """A query matching MULTIPLE keywords (already escalating to a
+        list via _keyword_detect() itself, with no LLM call at all)
+        must still get kiwix added — confirms the fix isn't narrowly
+        scoped to the single-match case only."""
+        from app.router import detect_intent
+        result = detect_intent("everyone is talking about that volcano in Iceland, and any new headlines")
+        assert isinstance(result, list)
+        assert "news" in result
+        assert "changes" in result
+        assert "kiwix" in result
+
+    def test_keyword_match_without_discourse_framing_is_unaffected(self):
+        """The core regression-safety check: an ordinary keyword query
+        with no discourse framing at all must NOT get kiwix added —
+        confirms the fix doesn't over-trigger on every keyword match."""
+        from app.router import detect_intent
+        assert detect_intent("whats the news today") == "news"
+        result = detect_intent("check the news and weather")
+        assert set(result) == {"forecast", "news"}
+        assert "kiwix" not in result
+
+    def test_escalation_helper_correctly_wired_for_already_kiwix_case(self):
+        """kiwix is never itself a keyword-matchable INTENT_MAP source,
+        so detect_intent()'s keyword path can't literally reach this
+        case through real keyword matching — but the wiring this fix
+        added (`escalated if escalated is not None else source`) must
+        still behave correctly if it ever were reached, since
+        _escalate_single_source_for_discourse_framing() already
+        returns None specifically for a kiwix source (no escalation
+        needed). Calls the real helper directly to confirm that
+        contract, then confirms detect_intent()'s own fallback
+        expression handles a None return correctly without duplicating
+        or losing the source."""
+        from app.router import _escalate_single_source_for_discourse_framing, INTENT_MAP
+        assert "kiwix" not in INTENT_MAP  # confirms the real reason this can't occur via keyword match
+        assert _escalate_single_source_for_discourse_framing(
+            "everyone keeps talking about quantum computing", "kiwix"
+        ) is None
+        # detect_intent()'s fix: `escalated if escalated is not None else source`
+        source = "kiwix"
+        escalated = _escalate_single_source_for_discourse_framing("everyone keeps talking about X", source)
+        result = escalated if escalated is not None else source
+        assert result == "kiwix"  # falls back to the plain source, not None or a list
+
+    def test_no_keyword_match_still_falls_through_to_llm_detect(self):
+        """Confirms the fix didn't accidentally change the no-keyword-
+        match path — it should still fall through to _llm_detect()
+        exactly as before, untouched by this fix."""
+        from app.router import detect_intent
+        from unittest.mock import patch
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="web"):
+            result = detect_intent("tell me about the history of ancient rome")
+        assert result == "web"
 
 
 class TestDiscourseFramingEscalationHelpers:
@@ -2393,10 +2581,17 @@ class TestRecursiveConditionalDetection:
 
 class TestGetRecentQueries:
     """Tests for get_recent_queries() and _connect_log_db_readonly() — the
-    read-only query_log.db access added as shared groundwork for two
-    not-yet-built design docs (Self-Healing Source Selection, Ambient
-    Intent Disambiguation), both of which need router.py to read recent
-    rows from a database app/main.py exclusively owns and writes to.
+    read-only query_log.db access added as groundwork while researching
+    Self-Healing Source Selection and Ambient Intent Disambiguation, both
+    of which need router.py to read from a database app/main.py
+    exclusively owns and writes to.
+
+    This specific shape (most-recent-N rows, just query+timestamp) is a
+    genuine, direct fit for Ambient Intent Disambiguation's own context
+    window. It is NOT a fit for Self-Healing Source Selection's or
+    Predictive Pre-Fetching's real needs — both want a time-bounded bulk
+    scan with real outcome columns, not a fixed-count recent window — see
+    this function's own docstring for the full, corrected account.
     """
 
     def _build_real_query_log_db(self, path, rows):

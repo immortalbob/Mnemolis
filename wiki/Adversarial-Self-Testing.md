@@ -83,15 +83,45 @@ Two real things worth noting, neither of which got flagged (correctly — no his
 - *"whats the deal with the Beatles and the Rolling Stones plus Mercury and Venus, in addition since last time"* — two proper-noun pairs in one query, resolved to `fusion` in 11.9 seconds, by far the slowest of the eight. A real, legitimately slow case the recipe was built to surface; worth watching once more history accumulates.
 - Two `conditional_with_remainder` queries differing 2028ms vs. 276ms — almost certainly a cache hit/miss difference on the sub-query, not a real anomaly. Exactly the kind of normal variance `ADVERSARIAL_TEST_LATENCY_OUTLIER_FLOOR_MS` exists to absorb.
 
+## Real bugs this feature found in Mnemolis itself, after running for real
+
+This is the actual point of the feature, not a footnote: after running for roughly a day against MiniDock's real stack (136 real combinations tried, 9 flagged), tracing every single flag — not just the ones that looked interesting — turned up two genuine, previously-unknown bugs in Mnemolis's actual routing/decomposition logic, one genuine false positive in this feature's own detector, and one real, structural (not buggy) latency characteristic worth documenting rather than chasing.
+
+### Real bug: discourse-framing escalation never ran on the keyword-match path
+
+[The Discourse-Framing Investigation](The-Discourse-Framing-Investigation) documents fixing "all four real code paths" inside `_llm_detect()` — fresh and cached, single- and multi-source. All four genuinely were fixed. What none of those four cover: `detect_intent()`'s own `if source: return source` early-returns the instant `_keyword_detect()` matches **any** real `INTENT_MAP` keyword — even a single, common, generic one like `"rss"` or `"news"` — short-circuiting before `_llm_detect()` (and therefore every one of its four correctly-fixed escalation paths) is ever reached.
+
+A real, live flag caught this directly: `"everyone keeps talking about black holes, and rss"` resolved to bare `"news"` in 35ms — far too fast to have touched the LLM at all, confirming pure keyword-match resolution. Reproduced and generalized immediately: every natural discourse-framed sentence tried that happened to mention any ordinary `INTENT_MAP` word (`"news"`, `"weather"`, `"rss"`, `"feeds"`, `"door locked"`) hit the identical gap, for both single- and multi-keyword matches. The original fix narrowed the bug's surface area — closing the LLM-routing version — without ever closing the keyword-routing version, since `INTENT_MAP` contains dozens of short, ordinary words that can easily co-occur with genuine discourse framing in a real sentence.
+
+**Fixed** by applying the exact same, already-existing `_escalate_single_source_for_discourse_framing()` / `_escalate_multi_source_for_discourse_framing()` helpers directly inside `detect_intent()`'s keyword-match branch — no new escalation logic, just reusing what `_llm_detect()` already had, at the one call site that was missing it.
+
+### Real bug: two real `INTENT_MAP` keywords made entirely of stop words were silently dropped during decomposition
+
+A second flagged row — `"feeds plus is it up in addition later today also door locked as well as google"` — was meant to test 5 independent intents but only resolved to 3 visible sections. Traced directly: `_decompose()` only produced **4** parts, not 5, with `"is it up"` (the literal, real `uptime` keyword phrase) missing entirely — not folded into a neighboring clause, just gone.
+
+Root cause: `_filter_meaningful()`'s stop-word-stripping check has no awareness of `INTENT_MAP` at all. `"is it up"` and `"are they up"` — confirmed the *only* two of all 113 real keyword phrases across every source — are made entirely of common English stop words (`"is"`, `"it"`, `"up"`, `"are"`, `"they"`). A clause consisting only of one of these phrases came back with zero `content_words`, and was discarded as not meaningful.
+
+**Fixed** the same way this function already handles a structurally identical problem for `_COLLOQUIAL_PHRASES` — checking the clause against the real, flattened `INTENT_MAP` keyword list (`_ALL_INTENT_KEYWORDS`, computed once at import time) before falling through to generic stop-word stripping. A real keyword phrase now always counts as meaningful, even if every individual word in it happens to be a stop word — closing the general case, not just these two phrases by name, so a future `INTENT_MAP` addition with the same property is automatically covered too.
+
+## A real false positive this feature's own detector had, fixed
+
+Tracing a *third* flagged row — `"what's offline as well as while i've been at work in addition this weekend plus news and security status"`, 5 intended intents, only 3 headers — turned out to be a false positive, not a Mnemolis bug. Decomposition produced all 5 correct parts; every part resolved to the correct source. The 2 "missing" sources legitimately and correctly returned empty results, and `route_with_source()` deliberately drops an empty sub-query result before merging — `if not _looks_empty(sub_result): parts.append(...)` — exactly the right behavior; nobody wants an answer cluttered with empty sections.
+
+The real problem: by the time `_check_multi_intent_part_count` sees the final merged string, there's no trace anywhere of which sub-queries were tried and legitimately came back empty versus which results were silently lost to a bug — that information is gone before merging ever happens, and recovering it would mean re-running every real backend call a second time just to validate the check, doubling real load on every test cycle.
+
+**Fixed** by loosening the check from an exact-count comparison to **"fewer than half of the intended sources produced any header at all."** The original proper-noun-pair bug 5 this check exists to catch was a *global veto* — collapsing an entire multi-intent query down to a single, un-split result (0 or 1 headers against 4+ intended sources) — not a partial 2-of-5 gap. "Less than half" is loose enough to never fire on ordinary empty-result variance across this recipe's real range (3–5 intended sources), while still catching a genuine large-scale collapse with the same shape as the original bug. As a direct consequence, the now-removed `ADVERSARIAL_TEST_PART_COUNT_MISMATCH_TOLERANCE` setting no longer exists — there's nothing left to tune; the new threshold is a fixed, principled rule derived from the original bug's actual signature, not a per-deployment knob.
+
+(This also corrected an unrelated, separate defect in the *old* check that the new logic improves on for free: the old version's `n_headers > 0` guard meant a complete collapse to **zero** headers could never be flagged at all, for any number of intended sources — a worse blind spot than the false positive this same fix closes, since a total collapse is exactly bug 5's real signature. The new check correctly flags 0 headers for 2+ intended sources.)
+
+## A real, structural latency characteristic — not a bug, documented rather than fixed
+
+Three of the real latency-outlier flags, plus one near-timeout `unexpected_empty` flag, all traced to the same mechanical cause: `route_with_source()` handles a `conditional_with_remainder` query's condition and remainder as **two separate, sequential, blocking calls** — `sub_condition_result, sub_source = route_with_source(sub_condition, "auto")`, then, afterward, `remainder_result, remainder_source = route_with_source(sub_remainder, "auto")`. If either half hits a slow LLM call or a slow fusion fan-out, the total wall-clock time is additive, not the max of the two — a real, consistent, and entirely explainable latency cost of how conditional queries are structured, not a defect.
+
+This is deliberately **not** being fixed as a concurrency change. Making the two calls run in parallel would touch the same conditional-handling code that's already had two separate, carefully-reasoned bug fixes (see [The Recursion Design Bug](The-Recursion-Design-Bug)), and would introduce real new risk — concurrent cache writes from two threads, `ContextVar` propagation across the parallel calls — for a payoff that only matters when both halves happen to be slow at the same time, which the real data so far shows is the less common case, not the typical one. Recorded here as a known, understood, accepted latency characteristic specific to this one recipe — worth knowing when reading a `conditional_with_remainder` latency flag, not worth the risk of touching working, already-hardened routing code to shave off an occasional few extra seconds.
+
 ## One known limitation worth tracking, not yet tuned
 
-Running a real cycle against this dev sandbox (no reachable Kiwix/SearXNG/Ollama backends) surfaced one genuine rough edge in the checks themselves:
-
-- **Source mismatch on the conditional path** — a conditional query's *condition* text gets routed through LLM-based source selection, which can validly land on a source that doesn't literally appear as an `INTENT_MAP` keyword in the query. The check doesn't yet distinguish "the LLM made a different valid call" from "the LLM made a wrong call" — right now it flags both the same way.
-
-This is not a defect in the generated queries or in Mnemolis's real routing — it's `_check_source_mismatch` itself needing another pass once run against live traffic with a real LLM backend reachable. Recorded here rather than silently tuned away against a sandbox that can't exercise the real decision.
-
-*(An earlier version of this page also listed a "part-count mismatch under fallback" limitation, claiming a header-less fallback result "always reads as 1 header." That was wrong — traced directly against `_check_multi_intent_part_count`'s actual regex, a header-less string produces 0 matches, not 1, and the check's own `n_headers > 0` guard already excludes that case correctly. There's no real limitation here; the claim has been removed rather than corrected to a different wrong one.)*
+- **Source mismatch on the conditional path** — a conditional query's *condition* text gets routed through LLM-based source selection, which can validly land on a source that doesn't literally appear as an `INTENT_MAP` keyword in the query. The check doesn't yet distinguish "the LLM made a different valid call" from "the LLM made a wrong call" — right now it flags both the same way. Not yet a confirmed real false-positive rate against live traffic (unlike the part-count issue above, which was directly traced and confirmed) — recorded here as a standing, plausible concern worth watching, not yet acted on.
 
 ## Configuration
 
@@ -103,7 +133,6 @@ This is not a defect in the generated queries or in Mnemolis's real routing — 
 | `ADVERSARIAL_TEST_LATENCY_OUTLIER_MULTIPLIER` | `1.5` | How many multiples of a recipe's own historical p95 counts as a real latency outlier |
 | `ADVERSARIAL_TEST_LATENCY_OUTLIER_FLOOR_MS` | `1000` | A floor below which latency is never flagged regardless of the multiplier — protects fast, cache-hit-driven queries from getting flagged just for being a multiple of an even-faster sample |
 | `ADVERSARIAL_TEST_LATENCY_OUTLIER_MIN_SAMPLES` | `10` | How many historical samples a recipe needs before the latency-outlier check engages at all |
-| `ADVERSARIAL_TEST_PART_COUNT_MISMATCH_TOLERANCE` | `2` | How far a `multi_intent_chain` query's intended-intent count and its result's actual header count can diverge before it's flagged |
 
 `/health` reports `adversarial_testing` alongside `snapshot_jobs`, using the same staleness-grace-multiplier convention (`SNAPSHOT_STALE_GRACE_MULTIPLIER`, default 3x) the snapshot engine already uses. When disabled, it reports `{"status": "disabled"}` directly rather than eventually reading as `"stale"` — a deliberate off-switch shouldn't look like a job that silently stopped running.
 

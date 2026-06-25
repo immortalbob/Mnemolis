@@ -238,7 +238,11 @@ class TestAnomalyDetection:
         key among them) should never trigger this check."""
         assert _check_source_mismatch("no_intent_fallthrough", ["molybdenum"], "kiwix") is None
 
-    def test_check_multi_intent_part_count_flags_real_mismatch(self):
+    def test_check_multi_intent_part_count_flags_large_scale_collapse(self):
+        """1 header for 4 intended intents — less than half survived,
+        the same shape as the original proper-noun-pair bug 5 (a global
+        veto collapsing a whole multi-intent query to a single
+        un-split result)."""
         result = "[KIWIX — TOPIC] some content"  # 1 header for 4 intended intents
         reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news", "uptime"], result)
         assert reason is not None
@@ -248,26 +252,46 @@ class TestAnomalyDetection:
         reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news"], result)
         assert reason is None
 
-    def test_check_multi_intent_part_count_never_flags_header_less_fallback(self):
-        """Regression test for a real wiki inaccuracy a reviewer caught:
-        the wiki previously claimed a header-less fallback result
-        "always reads as 1 header" and listed that as a known
-        limitation. Traced directly: _HEADER_PATTERN finds ZERO matches
-        in a plain, header-less fallback string, not one — and the
-        n_headers > 0 guard below already excludes this case correctly.
-        There was never a real limitation here; this test locks in the
-        correct behavior so the wiki and code can't drift apart on this
-        point again."""
-        result = "No results found."  # genuinely zero headers, not one
-        reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news", "uptime"], result)
+    def test_check_multi_intent_part_count_does_not_flag_legitimate_partial_empty_results(self):
+        """The real false positive found on live MiniDock production
+        data: 5 intended intents, 3 headers (2 sources legitimately
+        and correctly returned empty results — route_with_source()
+        deliberately drops empty sub-query results before
+        _merge_decomposed_parts() ever runs, with no trace left behind
+        of which ones were dropped or why). The OLD version of this
+        check (an exact-count comparison with a small fixed tolerance)
+        flagged this as a part_count_mismatch — confirmed via direct
+        tracing that this was a false positive, not a real bug:
+        decomposition produced all 5 correct parts, every part
+        resolved to the correct source, and the 2 "missing" sources
+        legitimately had nothing to report. 3 of 5 is more than half,
+        so the new, deliberately looser threshold correctly does not
+        flag this."""
+        result = "[KIWIX — A] x\n[WEB — B] y\n[NEWS — C] z"  # 3 headers for 5 intended
+        reason = _check_multi_intent_part_count(
+            "multi_intent_chain", ["forecast", "ha", "news", "uptime", "changes"], result
+        )
         assert reason is None
 
+    def test_check_multi_intent_part_count_flags_total_collapse_even_with_zero_headers(self):
+        """A completely header-less result for 4 intended intents must
+        STILL be flagged under the new logic — confirms the removal of
+        the old version's `n_headers > 0` guard was a deliberate
+        correction, not an oversight. The OLD check could never flag a
+        total collapse to zero headers at all, regardless of how many
+        sources were intended — a worse blind spot than the false
+        positive this same fix also closes, since a complete collapse
+        is exactly the original bug 5 signature this check exists to
+        catch."""
+        result = "No results found."  # genuinely zero headers
+        reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news", "uptime"], result)
+        assert reason is not None
+        assert "0 of 4" in reason
+
     def test_check_multi_intent_part_count_flags_genuine_partial_fallback(self):
-        """The real, narrower case that DOES legitimately deserve a flag:
-        one source resolved with a real header, the rest fell back to
-        plain header-less text — only 1 of 4 intended sources is even
-        visible in the result, which is exactly the kind of discrepancy
-        a human should look at."""
+        """A real, severe content-loss case: only 1 of 4 intended
+        sources is even visible in the result — less than half
+        survived, correctly flagged."""
         result = "[KIWIX — TOPIC] some real content\nplain web fallback text, no header here"
         reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news", "uptime"], result)
         assert reason is not None
@@ -276,6 +300,24 @@ class TestAnomalyDetection:
         result = "[KIWIX — TOPIC] some content"
         reason = _check_multi_intent_part_count("no_intent_fallthrough", ["forecast", "ha", "news", "uptime"], result)
         assert reason is None
+
+    def test_check_multi_intent_part_count_exactly_half_is_not_flagged(self):
+        """Boundary case: exactly half (2 of 4) is NOT 'fewer than
+        half', so this should NOT flag — confirms the boundary itself
+        is handled the intended way (strict less-than, not
+        less-than-or-equal)."""
+        result = "[KIWIX — A] x\n[WEB — B] y"  # 2 headers for 4 intended
+        reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news", "uptime"], result)
+        assert reason is None
+
+    def test_check_multi_intent_part_count_just_under_half_is_flagged(self):
+        """Boundary case just past the line: 2 of 5 (40%, under half)
+        should flag."""
+        result = "[KIWIX — A] x\n[WEB — B] y"  # 2 headers for 5 intended
+        reason = _check_multi_intent_part_count(
+            "multi_intent_chain", ["forecast", "ha", "news", "uptime", "changes"], result
+        )
+        assert reason is not None
 
     def test_check_discourse_framing_dropped_kiwix_flags_real_drop(self):
         reason = _check_discourse_framing_dropped_kiwix(
@@ -370,16 +412,21 @@ class TestAnomalyDetection:
             reason = _check_latency_outlier("multi_intent_chain", 220)
             assert reason is not None
 
-    def test_check_part_count_mismatch_respects_configured_tolerance(self):
-        """A tighter tolerance must flag a 1-header-off mismatch the
-        default tolerance of 2 wouldn't have caught."""
-        result = "[KIWIX — A] x\n[WEB — B] y"  # 2 headers for 3 intents — diff of 1
-        with patch("app.adversarial_testing.settings.adversarial_test_part_count_mismatch_tolerance", 1):
-            reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news"], result)
-            assert reason is not None
-        # Same inputs, default tolerance of 2 — should NOT flag a diff of only 1.
-        reason_default = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news"], result)
-        assert reason_default is None
+    def test_check_part_count_mismatch_no_longer_uses_a_configurable_tolerance(self):
+        """ADVERSARIAL_TEST_PART_COUNT_MISMATCH_TOLERANCE was removed
+        entirely as part of fixing the real false-positive this check
+        had — an exact-count-with-small-tolerance comparison could
+        never be made to work correctly, since route_with_source()
+        leaves no trace of which sub-queries legitimately returned
+        empty versus which results were actually lost to a bug. The
+        new "fewer than half survived" rule is a fixed, principled
+        threshold derived from the original bug 5's actual signature
+        (a total collapse), not something meant to be tunable per
+        deployment. Confirms the setting is genuinely gone, not just
+        unused, so a future change can't silently resurrect a
+        dead/ignored config knob."""
+        from app.config import settings
+        assert not hasattr(settings, "adversarial_test_part_count_mismatch_tolerance")
 
 
 class TestFullCycle:
