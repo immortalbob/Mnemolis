@@ -4,6 +4,26 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.48.3]
+
+### Fixed — Duplicate Section in Merged Fusion Results, Found Verifying the 3.48.2 Fix
+Re-running the exact query from 3.48.2's fix to confirm it against MiniDock's real stack — and it worked, the real Black Hole article correctly led the kiwix section — surfaced a third, separate bug in the actual merged answer: a redundant second `[NEWS — ...]` section appeared near the end, duplicating real headlines already shown earlier (`[KIWIX, NEWS, WEB, NEWS]` instead of the correct `[KIWIX, NEWS, WEB]`).
+
+Root cause: once decomposition correctly splits a query into two independent clauses, one clause's own LLM-judged source selection can land on internal fusion (multiple sources sharing one already-headered, nested blob), while a different, separately-decomposed clause resolves to a bare source that happens to be one of the sources already inside that blob. `_merge_same_source()` — which already correctly merges two bare same-source tuples — only ever compares the OUTER tuple label (`"fusion"` vs `"news"`, genuinely different), so it has no way to see a section nested inside the fusion blob duplicates the second, separate tuple. Confirmed real and pre-existing, not a regression from 3.48.1/3.48.2's fixes — already reachable via any query shape where one clause's ordinary LLM judgment happens to overlap with a different clause's source; this recipe's shape just made it reliably reachable instead of needing a rarer coincidence.
+
+Fixed with a second, separate post-processing pass, `_dedupe_nested_fusion_sections()`, run on the final assembled text after the existing tuple-level merge. Splits on the exact, real header strings `fusion._format_header()` produces (`re.escape()`'d, not a generic bracket pattern — confirmed safe against real content containing bracket-like or dash-like text), merges duplicate sections' content while preserving first-occurrence position, and is a true no-op for the overwhelming majority of results that never contain a duplicate at all.
+
+### Added (Tests)
+- `TestDedupeNestedFusionSections` (8 tests) in `test_router.py` — the real production scenario, non-adjacent duplicates, 3+ duplicate headers, and a direct check that real content containing literal `[NEWS]` brackets or `---` dashes is never falsely treated as a section boundary
+
+### Changed
+- Version bumped to 3.48.3
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) extended with this third finding, documented as part of the same investigation as 3.48.2's fixes
+
+**Total test count: 1197**
+
+---
+
 ## [3.48.2]
 
 ### Fixed — A Real Answer-Quality Bug a Manual Verification Check Surfaced, Not Adversarial Self-Testing Itself

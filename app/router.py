@@ -1804,6 +1804,33 @@ def _merge_decomposed_parts(parts: list[tuple[str, str]]) -> tuple[str, str]:
     since "fusion" isn't a real source with its own entry in
     _HEADER_LABELS, just self-headered content passing through. Only
     genuinely single-source results get wrapped here.
+
+    A second, separate merge pass — _dedupe_nested_fusion_sections()
+    below — runs after assembly to catch a real bug _merge_same_source()
+    above structurally cannot see: when ONE decomposed sub-query
+    resolves to internal fusion (e.g. the discourse-framing escalation
+    picking ["kiwix", "news"] for one clause) and a DIFFERENT,
+    separately-decomposed sub-query resolves to bare "news" on its own,
+    parts here looks like [("fusion", "<already-headered kiwix+news
+    blob>"), ("news", "<separate news result>")] — two genuinely
+    different outer labels, so _merge_same_source()'s consecutive-
+    same-source check (which only compares the OUTER label) correctly
+    has no reason to merge them, even though the real, nested [NEWS —
+    ...] section already inside the fusion blob and the second,
+    separate news result are the exact same source duplicated. Found
+    via a real, live result on MiniDock: "everyone keeps talking about
+    black holes, and rss" — the discourse-framing-escalated clause
+    pulled in kiwix+news+web together, and the separately-decomposed
+    "rss" clause resolved to its own, second, redundant news section —
+    producing [KIWIX, NEWS, WEB, NEWS] in the final answer instead of
+    [KIWIX, NEWS, WEB]. This is a real, pre-existing gap in how nested
+    fusion results interact with the outer merge — not something the
+    discourse-framing/decomposition fixes earlier this release
+    introduced; it was already reachable via any other query shape
+    where one decomposed clause's own LLM-judged fusion happens to
+    share a source with a different, separately-decomposed clause —
+    this query shape just made it reliably, easily reachable instead
+    of needing a rarer LLM-judgment coincidence to trigger.
     """
     merged = fusion._merge_same_source(parts)
 
@@ -1819,7 +1846,77 @@ def _merge_decomposed_parts(parts: list[tuple[str, str]]) -> tuple[str, str]:
     # report the single source used
     distinct_sources = {s for s, _ in merged}
     overall_source = "fusion" if len(distinct_sources) > 1 else next(iter(distinct_sources))
-    return "\n\n---\n\n".join(sections), overall_source
+    final_text = "\n\n---\n\n".join(sections)
+    final_text = _dedupe_nested_fusion_sections(final_text)
+    return final_text, overall_source
+
+
+def _dedupe_nested_fusion_sections(text: str) -> str:
+    """Merge duplicate [SOURCE — LABEL] sections that ended up adjacent
+    or non-adjacent in a final, already-assembled result string — the
+    fix for the real nested-fusion duplication bug documented in
+    _merge_decomposed_parts()'s own docstring above.
+
+    Operates on the fully-formatted text using the exact, real header
+    strings fusion._format_header() can produce (re.escape()'d, not a
+    generic bracket-matching pattern) — safe against any real content
+    that happens to contain bracket-like text, since a match requires
+    the literal, exact header string, not just a bracket shape. Only
+    ever called on text this module itself just assembled, never on
+    arbitrary external input.
+
+    A true no-op (returns the input completely unchanged) for the
+    overwhelming majority of results, which never contain a duplicate
+    section at all — only does any work when the exact same header
+    genuinely appears more than once.
+    """
+    known_headers = [fusion._format_header(src) for src in fusion._HEADER_LABELS]
+    pattern = re.compile(
+        "(" + "|".join(re.escape(h) for h in known_headers) + ")"
+    )
+
+    matches = list(pattern.finditer(text))
+    if len(matches) <= 1:
+        return text  # nothing to dedupe — the common case
+
+    # Split into (header, content) pairs by header position. Each
+    # captured content slice can have a leftover "---" section
+    # separator dangling at its start or end (the original text's own
+    # separator between what WAS two adjacent sections, before this
+    # split — splitting only on the header itself, not the separator,
+    # leaves it attached to whichever side of the header it originally
+    # sat on). Stripped here so a later merge doesn't visually
+    # duplicate the outer "\n\n---\n\n" join with a leftover inner one.
+    _SEPARATOR_EDGE = re.compile(r"^\s*---\s*|\s*---\s*$")
+    pieces = []
+    preamble = text[: matches[0].start()]
+    for i, m in enumerate(matches):
+        header = m.group(0)
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        content = text[start:end]
+        content = _SEPARATOR_EDGE.sub("", content)
+        pieces.append((header, content))
+
+    if len({h for h, _ in pieces}) == len(pieces):
+        return text  # every header is already unique — nothing to merge
+
+    # Merge content for duplicate headers, preserving first-occurrence
+    # order — the same "first seen wins position" convention
+    # fusion._merge_same_source() already uses.
+    seen_order = []
+    merged_content = {}
+    for header, content in pieces:
+        if header not in merged_content:
+            seen_order.append(header)
+            merged_content[header] = content.strip("\n")
+        else:
+            merged_content[header] = merged_content[header].rstrip() + "\n\n" + content.strip("\n").lstrip()
+
+    rebuilt = preamble + ("\n\n---\n\n".join(
+        f"{header}\n{merged_content[header]}" for header in seen_order
+    ))
+    return rebuilt
 
 
 def route_with_source(query: str, source: str = "auto", fusion_sources: list[str] | None = None) -> tuple[str, str]:

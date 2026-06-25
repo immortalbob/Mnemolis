@@ -1267,6 +1267,168 @@ class TestMergeDecomposedPartsSharedWithFusion:
         assert result.count("[HA") == 1  # one header, not two
 
 
+class TestDedupeNestedFusionSections:
+    """Regression tests for a real, live duplicate-section bug found
+    via manual verification of a search result on MiniDock, not by any
+    automated check — the result was technically correct by every
+    Adversarial Self-Testing check (a real [KIWIX —...] and [NEWS —...]
+    section both present), but the actual answer had a real defect: a
+    second, redundant [NEWS — ...] section appeared near the end,
+    duplicating real content already shown earlier.
+
+    Root cause: when one decomposed sub-query resolves to internal
+    fusion (carrying its own already-headered, nested sections) and a
+    DIFFERENT, separately-decomposed sub-query resolves to a bare
+    single source that happens to be one of the sources already inside
+    that nested fusion blob, _merge_same_source()'s consecutive-
+    same-source check only ever compares the OUTER tuple label
+    ("fusion" vs "news") — it has no way to see that a section nested
+    INSIDE the fusion blob duplicates the second, separate tuple.
+    Confirmed this is a real, pre-existing gap, not something the
+    discourse-framing/decomposition fixes earlier this release
+    introduced — it was already reachable via any other query shape
+    where one decomposed clause's own LLM-judged fusion happens to
+    share a source with a different clause; this query shape (a
+    discourse-framing escalation alongside an unrelated trailing
+    keyword) just made it reliably, easily reachable instead of
+    needing a rarer LLM-judgment coincidence to trigger.
+
+    Fixed with a second, separate post-processing pass —
+    _dedupe_nested_fusion_sections() — that operates on the final,
+    fully-assembled text using the exact, real header strings
+    fusion._format_header() can produce (re.escape()'d, not a generic
+    bracket-matching pattern), safe against real content that happens
+    to contain bracket-like text.
+    """
+
+    def setup_method(self):
+        from app.router import _dedupe_nested_fusion_sections, _merge_decomposed_parts
+        self.dedupe = _dedupe_nested_fusion_sections
+        self.merge = _merge_decomposed_parts
+
+    def test_real_world_regression_case_from_production_data(self):
+        """Reconstructs the exact real scenario from the live MiniDock
+        result that found this bug: one decomposed clause resolving to
+        internal fusion (kiwix+news+web already nested/headered), a
+        second, separate clause resolving to bare news."""
+        nested_fusion_blob = (
+            "[KIWIX — ENCYCLOPEDIC KNOWLEDGE — UNRELATED TO OTHER SECTIONS BELOW]\n"
+            "Black hole article content.\n\n---\n\n"
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\n"
+            "First news block.\n\n---\n\n"
+            "[WEB — LIVE WEB SEARCH RESULTS]\n"
+            "Web search content."
+        )
+        result, source = self.merge([
+            ("fusion", nested_fusion_blob),
+            ("news", "RSS feed news block."),
+        ])
+        assert result.count("[NEWS —") == 1
+        assert result.count("[KIWIX —") == 1
+        assert result.count("[WEB —") == 1
+        # Both real news contents must survive, just merged into one section.
+        assert "First news block." in result
+        assert "RSS feed news block." in result
+        assert source == "fusion"
+
+    def test_no_duplicate_sections_is_a_true_noop(self):
+        """The overwhelming common case — no duplicate at all — must
+        be a byte-for-byte no-op."""
+        text = (
+            "[FORECAST — WEATHER FORECAST FOR YOUR CONFIGURED HOME LOCATION]\n"
+            "Sunny today.\n\n---\n\n"
+            "[HA — YOUR HOME ASSISTANT ENTITY STATES]\n"
+            "All doors locked."
+        )
+        assert self.dedupe(text) == text
+
+    def test_header_less_text_is_a_true_noop(self):
+        """Single-source, header-less plain text (the common case for
+        a non-decomposed query) must be a true no-op."""
+        text = "Just a plain single-source answer with no headers at all."
+        assert self.dedupe(text) == text
+
+    def test_empty_string_is_a_true_noop(self):
+        assert self.dedupe("") == ""
+
+    def test_non_adjacent_duplicate_sections_are_merged(self):
+        """Duplicate sections separated by a third, different section
+        in between must still be found and merged, not just adjacent
+        ones — confirms this isn't limited to the consecutive case
+        _merge_same_source() already handles."""
+        text = (
+            "[KIWIX — ENCYCLOPEDIC KNOWLEDGE — UNRELATED TO OTHER SECTIONS BELOW]\n"
+            "Kiwix content.\n\n---\n\n"
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\n"
+            "First news block.\n\n---\n\n"
+            "[WEB — LIVE WEB SEARCH RESULTS]\n"
+            "Web content.\n\n---\n\n"
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\n"
+            "Second news block."
+        )
+        result = self.dedupe(text)
+        assert result.count("[NEWS —") == 1
+        assert "First news block." in result
+        assert "Second news block." in result
+        # Merged news section keeps its FIRST-occurrence position,
+        # the same convention _merge_same_source() already uses.
+        assert result.index("[NEWS —") < result.index("[WEB —")
+
+    def test_duplicate_content_does_not_leave_dangling_separators(self):
+        """Confirms the fix doesn't leave a visually confusing leftover
+        '---' artifact at the boundary between merged content blocks —
+        the original per-section '---' separator that used to sit
+        between two now-merged sections must not survive inside the
+        merged section's own body."""
+        nested_fusion_blob = (
+            "[KIWIX — ENCYCLOPEDIC KNOWLEDGE — UNRELATED TO OTHER SECTIONS BELOW]\n"
+            "Kiwix content.\n\n---\n\n"
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\n"
+            "First news block."
+        )
+        result, _ = self.merge([
+            ("fusion", nested_fusion_blob),
+            ("news", "Second news block."),
+        ])
+        # The merged NEWS section's body must join the two news blocks
+        # with a clean blank line, never a literal "---" in between —
+        # that would be visually indistinguishable from a real section
+        # boundary.
+        news_section_start = result.index("[NEWS —")
+        news_section_body = result[news_section_start:]
+        assert "---" not in news_section_body
+
+    def test_three_or_more_duplicate_headers_all_merge_into_one(self):
+        """Confirms the fix generalizes beyond exactly two duplicates —
+        three separate occurrences of the same header must all merge
+        into a single section, not just pairwise."""
+        text = (
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\nFirst.\n\n---\n\n"
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\nSecond.\n\n---\n\n"
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\nThird."
+        )
+        result = self.dedupe(text)
+        assert result.count("[NEWS —") == 1
+        assert "First." in result
+        assert "Second." in result
+        assert "Third." in result
+
+    def test_content_containing_literal_dashes_is_not_falsely_matched_as_a_header(self):
+        """Confirms the exact-header-string requirement protects real
+        content that happens to contain bracket-like or dash-like
+        text from being misinterpreted as a section boundary."""
+        text = (
+            "[KIWIX — ENCYCLOPEDIC KNOWLEDGE — UNRELATED TO OTHER SECTIONS BELOW]\n"
+            "An article that mentions [NEWS] in brackets and has --- dashes in its own body, "
+            "neither of which is a real, exact header string.\n\n---\n\n"
+            "[WEB — LIVE WEB SEARCH RESULTS]\n"
+            "Web content."
+        )
+        result = self.dedupe(text)
+        assert result == text  # true no-op — neither fake marker is a real header
+        assert "[NEWS]" in result  # the real content survived untouched
+
+
 class TestDiscourseFramingKeywordPathEscalation:
     """Tests for detect_intent()'s own discourse-framing escalation —
     distinct from TestDiscourseFramingRoutingBias above, which only

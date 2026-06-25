@@ -123,7 +123,18 @@ def _merge_same_source(parts: list[tuple[str, str]]) -> list[tuple[str, str]]:
     (it calls fusion.search() for internal multi-source dispatch), so
     this is the safe import direction; fusion.py never imports from
     router.py, avoiding a circular import the reverse direction would
-    create."""
+    create.
+
+    Only ever compares the OUTER tuple label — if one part's source is
+    the literal string "fusion" (an already-headered, nested multi-
+    source blob) and a separate part's source is a bare label that
+    happens to ALSO be one of the sources nested inside that blob, this
+    function has no way to see the duplication, since it can't look
+    inside an opaque "fusion"-labeled string. router.py's
+    _merge_decomposed_parts() runs a second, separate pass —
+    _dedupe_nested_fusion_sections() — after this one specifically to
+    catch that case, operating on the final assembled text rather than
+    on these tuples. Found via a real, live duplicate-section bug."""
     if not parts:
         return parts
     merged = []
