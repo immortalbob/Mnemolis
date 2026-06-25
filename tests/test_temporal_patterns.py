@@ -154,6 +154,32 @@ class TestExtractHaEvents:
         assert len(events) == 1
         assert events[0]["event_type"] == "binary_sensor.back_door:opened"
 
+    def test_window_event_type_uses_opened_closed_label(self):
+        """Regression test for a real gap found via review, with a
+        real bug found in the first attempted fix: extract_ha_events()'s
+        event-type construction had a two-way if/else (lock/door vs.
+        everything else, assumed to mean battery_low) that silently
+        mislabeled every new kind added to _iter_ha_entity_changes() —
+        a real window event was first reported as ":battery_low" rather
+        than ":opened" before this was caught."""
+        old = self._snapshot([self._entity("binary_sensor.kitchen_window", "off", "Kitchen Window", "window")])
+        new = self._snapshot([self._entity("binary_sensor.kitchen_window", "on", "Kitchen Window", "window")])
+        events = self.extract(old, new)
+        assert len(events) == 1
+        assert events[0]["event_type"] == "binary_sensor.kitchen_window:opened"
+
+    def test_motion_event_type_uses_motion_detected_label(self):
+        """The same regression as the window test above, for motion
+        specifically — the design doc's own headline example ("does a
+        front-door lock event reliably precede a motion event") depends
+        entirely on this producing a real, distinct, correctly-labeled
+        event type, not a mislabeled ":battery_low"."""
+        old = self._snapshot([self._entity("binary_sensor.hallway_motion", "off", "Hallway Motion", "motion")])
+        new = self._snapshot([self._entity("binary_sensor.hallway_motion", "on", "Hallway Motion", "motion")])
+        events = self.extract(old, new)
+        assert len(events) == 1
+        assert events[0]["event_type"] == "binary_sensor.hallway_motion:motion_detected"
+
     def test_battery_event_type_is_distinct_from_state_value(self):
         """battery_low events use a fixed ':battery_low' suffix rather
         than encoding the literal percentage — the percentage varies
@@ -353,46 +379,60 @@ class TestMiningCycleStatisticalValidity:
         extracted events) finds zero candidates, demonstrating that
         Bonferroni correction is doing real, load-bearing work and
         not just present as inert code.
-        """
+
+        Found via review: an earlier version of this test ran exactly
+        once, against a single fixed seed, while the changelog
+        describing this release claimed "30 independent random seeds...
+        zero false-positive candidates in every single trial" — a claim
+        that was true when manually re-verified outside the test suite,
+        but not actually backed by anything repeatable in the committed
+        code. Rewritten as a genuine 30-seed loop so this claim is true
+        of what's actually shipped and re-checked on every test run,
+        not just true of a one-off manual check that left no permanent
+        trace."""
         from app.temporal_patterns import (
             init_temporal_patterns_db, run_temporal_pattern_mining_cycle,
         )
         from datetime import datetime, timezone, timedelta
         from unittest.mock import patch
+        import random as random_module
 
-        temp_db = str(tmp_path / "test_temporal_patterns.db")
-        window_start = datetime.now(timezone.utc) - timedelta(hours=23)
+        for seed in range(30):
+            rng = random_module.Random(seed)
+            temp_db = str(tmp_path / f"test_temporal_patterns_seed{seed}.db")
+            window_start = datetime.now(timezone.utc) - timedelta(hours=23)
 
-        event_types = [f"type_{i}" for i in range(8)]
-        events = []
-        # Each type fires a modest, realistic number of times (per the
-        # design doc's own real-world volume estimate — tens, not
-        # thousands), at uniformly random offsets across the window,
-        # independently of every other type.
-        for et in event_types:
-            for _ in range(15):
-                offset_minutes = self.random.uniform(0, 23 * 60)
-                ts = window_start + timedelta(minutes=offset_minutes)
-                events.append((et, self._fmt(ts)))
+            event_types = [f"type_{i}" for i in range(8)]
+            events = []
+            # Each type fires a modest, realistic number of times (per
+            # the design doc's own real-world volume estimate — tens,
+            # not thousands), at uniformly random offsets across the
+            # window, independently of every other type.
+            for et in event_types:
+                for _ in range(15):
+                    offset_minutes = rng.uniform(0, 23 * 60)
+                    ts = window_start + timedelta(minutes=offset_minutes)
+                    events.append((et, self._fmt(ts)))
 
-        with patch("app.temporal_patterns.TEMPORAL_PATTERNS_DB", temp_db), \
-             patch("app.temporal_patterns.run_event_extraction_cycle", return_value=0), \
-             patch("app.config.settings.temporal_pattern_detection_enabled", True), \
-             patch("app.config.settings.temporal_pattern_mining_interval_hours", 24), \
-             patch("app.config.settings.temporal_pattern_min_occurrences", 3):
-            init_temporal_patterns_db()
-            self._seed_events(temp_db, events)
-            result = run_temporal_pattern_mining_cycle()
+            with patch("app.temporal_patterns.TEMPORAL_PATTERNS_DB", temp_db), \
+                 patch("app.temporal_patterns.run_event_extraction_cycle", return_value=0), \
+                 patch("app.config.settings.temporal_pattern_detection_enabled", True), \
+                 patch("app.config.settings.temporal_pattern_mining_interval_hours", 24), \
+                 patch("app.config.settings.temporal_pattern_min_occurrences", 3):
+                init_temporal_patterns_db()
+                self._seed_events(temp_db, events)
+                result = run_temporal_pattern_mining_cycle()
 
-        assert result["status"] == "ran"
-        # The actual, required assertion — correction must genuinely
-        # suppress spurious findings from pure noise, not merely run
-        # without crashing.
-        assert result["candidates_found"] == 0, (
-            f"Bonferroni correction failed to suppress spurious patterns in "
-            f"purely random data: found {result['candidates_found']} candidates "
-            f"across {result['comparisons_run']} comparisons"
-        )
+            assert result["status"] == "ran"
+            # The actual, required assertion — correction must
+            # genuinely suppress spurious findings from pure noise,
+            # not merely run without crashing — re-checked across
+            # every one of the 30 independent seeds, not just one.
+            assert result["candidates_found"] == 0, (
+                f"Bonferroni correction failed to suppress spurious patterns in "
+                f"purely random data (seed={seed}): found {result['candidates_found']} "
+                f"candidates across {result['comparisons_run']} comparisons"
+            )
 
     def test_genuine_reliable_pattern_is_found_as_a_candidate(self, tmp_path):
         """The complementary case — confirms the mining procedure can

@@ -361,6 +361,42 @@ class TestDiffHA:
         assert len(changes) == 1
         assert "closed" in changes[0]
 
+    def test_detects_window_opened(self):
+        """Regression test for a real gap found via review: snapshot_ha()
+        already captures window-class binary sensors, but no branch
+        here ever diffed them — a real window transition silently
+        produced zero events before this fix, both from _diff_ha()'s
+        own free-text output and from app/temporal_patterns.py's
+        extract_ha_events(), which is built directly on this same
+        comparison core."""
+        old = self._snapshot([self._entity("binary_sensor.kitchen_window", "off", "Kitchen Window", "window")])
+        new = self._snapshot([self._entity("binary_sensor.kitchen_window", "on", "Kitchen Window", "window")])
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "opened" in changes[0]
+
+    def test_detects_motion_starting(self):
+        """Regression test for the same real gap as the window test
+        above, specifically for motion — the design doc's own headline
+        example ("does a front-door lock event reliably precede a
+        motion event") was never actually testable before this fix,
+        confirmed directly: a real motion "off" -> "on" transition
+        produced an empty event list."""
+        old = self._snapshot([self._entity("binary_sensor.hallway_motion", "off", "Hallway Motion", "motion")])
+        new = self._snapshot([self._entity("binary_sensor.hallway_motion", "on", "Hallway Motion", "motion")])
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "motion detected" in changes[0]
+
+    def test_motion_stopping_produces_no_event(self):
+        """Only the "off" -> "on" detection edge is meaningful — the
+        reverse transition is the sensor settling back to its resting
+        state, not a new, independently meaningful occurrence."""
+        old = self._snapshot([self._entity("binary_sensor.hallway_motion", "on", "Hallway Motion", "motion")])
+        new = self._snapshot([self._entity("binary_sensor.hallway_motion", "off", "Hallway Motion", "motion")])
+        changes = self.diff(old, new)
+        assert changes == []
+
     def test_detects_battery_crossing_below_20(self):
         old = self._snapshot([self._entity("sensor.lock_battery", "25", "Lock Battery", "battery")])
         new = self._snapshot([self._entity("sensor.lock_battery", "15", "Lock Battery", "battery")])

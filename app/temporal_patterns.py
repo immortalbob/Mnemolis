@@ -45,7 +45,6 @@ the full reasoning on why this scope line was drawn where it was.
 import logging
 import math
 import sqlite3
-from collections import Counter
 from datetime import datetime, timezone, timedelta
 
 from app.config import settings
@@ -196,19 +195,41 @@ def extract_ha_events(old_json: str, new_json: str) -> list[dict]:
     Each returned dict has: {"event_type", "timestamp" (caller fills
     this in — a single diff pair doesn't carry its own timestamp),
     "raw_detail"}. event_type is built as "{entity_id}:{state}" for
-    lock/door events (e.g. "lock.front_door:locked",
-    "binary_sensor.back_door:opened") and "{entity_id}:battery_low" for
-    battery-crossing events — fine-grained enough to distinguish which
-    specific entity changed, which matters for finding a genuinely
-    reliable (door, motion) relationship rather than conflating every
-    door in the house into one event type.
+    lock/door/window/opening events (e.g. "lock.front_door:locked",
+    "binary_sensor.back_door:opened"), "{entity_id}:motion_detected"
+    for motion events, and "{entity_id}:battery_low" for battery-
+    crossing events — fine-grained enough to distinguish which specific
+    entity changed, which matters for finding a genuinely reliable
+    (door, motion) relationship rather than conflating every door in
+    the house into one event type.
+
+    Explicit per-kind branches rather than a two-way if/else — found
+    via direct testing after _iter_ha_entity_changes() gained motion/
+    window/opening branches: the original if/else here only
+    distinguished "lock or door" from everything else (assumed to mean
+    battery_low), so every new kind silently fell into the
+    battery_low branch and got mislabeled (a real motion event was
+    reported as ":battery_low" instead of ":motion_detected"). Listing
+    every real kind explicitly means a future new kind added to
+    _iter_ha_entity_changes() without a matching update here fails
+    loudly (KeyError on the unhandled match, surfaced as a logged
+    warning by run_event_extraction_cycle()'s own per-change try/except)
+    rather than silently mislabeling itself as whatever kind happened
+    to be the previous catch-all.
     """
     events = []
     for change in _iter_ha_entity_changes(old_json, new_json):
-        if change["kind"] in ("lock", "door"):
+        if change["kind"] in ("lock", "door", "window", "opening"):
             event_type = f"{change['entity_id']}:{change['state']}"
-        else:  # battery_low
+        elif change["kind"] == "motion":
+            event_type = f"{change['entity_id']}:motion_detected"
+        elif change["kind"] == "battery_low":
             event_type = f"{change['entity_id']}:battery_low"
+        else:
+            # A real, future kind added to _iter_ha_entity_changes()
+            # without a matching branch here — fail loudly rather than
+            # silently mislabeling, per the reasoning above.
+            raise ValueError(f"Unhandled HA change kind in extract_ha_events: {change['kind']!r}")
         events.append({"event_type": event_type, "raw_detail": change["description"]})
     return events
 
@@ -491,7 +512,6 @@ def _poisson_sf(k: int, mean: float) -> float:
     # rather than via the regularized incomplete gamma function, to
     # avoid a scipy dependency for this one call site.
     log_mean = math.log(mean)
-    cumulative_log_terms = []
     log_term = -mean  # log(P(X=0)) = -mean
     cumulative = math.exp(log_term)
     for i in range(1, k):

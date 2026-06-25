@@ -4,6 +4,34 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.47.1]
+
+### Fixed — Cross-Source Temporal Pattern Detection: Motion Events Were Never Actually Extracted
+Code review (not a reported failure) caught a real, significant gap: `snapshot_ha()` always captured motion/window/opening device-class sensors, but `_iter_ha_entity_changes()` only ever had branches for `lock`, `door`, and `battery` — meaning the feature's own headline, lead-sentence example ("does a front-door lock event reliably precede a motion event") was never actually testable. Confirmed directly: a real motion "off"→"on" transition produced an empty event list.
+
+Fixed by extending the shared comparison core with the missing branches — door logic generalized to cover `door`/`window`/`opening` together (same real binary open/closed semantics), plus a new, separate motion branch that deliberately only reports the "off"→"on" detection edge, not the reverse — the reverse transition is the sensor settling back to rest, not a new, independently meaningful occurrence.
+
+**A second, related bug was found while fixing the first one, before either ever ran against real data:** `extract_ha_events()`'s event-type labeling only ever distinguished "lock or door" from "everything else, assumed to mean battery_low" — so the newly-added motion/window/opening kinds silently fell into the battery-event branch and were mislabeled `:battery_low` instead of their own correct labels. Fixed by making every kind explicit, with a real, future-proofing change: an unhandled kind now raises rather than silently falling through to a wrong label, so a future new kind added to the shared comparison core without a matching update here fails loudly instead of mislabeling itself.
+
+### Fixed — A Real Discrepancy Between the Changelog and the Shipped Test Suite
+3.47.0's changelog described the false-positive validation as "stress-tested... 30 independent random seeds... zero candidates in every single trial" — but the actual committed test ran exactly once, with a single fixed seed. The underlying statistical claim was independently re-verified and confirmed true (30 real, independent trials, zero false positives), but nothing in the shipped code would have caught a future regression across that broader range, and the specific provenance described wasn't backed by anything repeatable. Rewritten as a genuine 30-seed loop, so the claim is true of what's actually committed and re-checked on every test run.
+
+### Fixed — Two Lint Errors
+A dead import (`collections.Counter`, never used) and a dead local variable in the hand-rolled Poisson tail-probability function (`_poisson_sf`) — cosmetic, the underlying math was independently verified correct against `scipy.stats.poisson.sf` across a real range of inputs before either fix was applied.
+
+### Added (Tests)
+- 4 new tests in `test_snapshots.py`: window-opened detection, motion-detected detection, confirmation that the reverse motion transition correctly produces no event, alongside the pre-existing door/lock/battery coverage
+- 2 new tests in `test_temporal_patterns.py`: confirming `extract_ha_events()` correctly labels window and motion events, not the `:battery_low` mislabel the first attempted fix introduced
+
+### Changed
+- Wiki's [Cross-Source Temporal Pattern Detection](https://github.com/immortalbob/Mnemolis/wiki/Cross-Source-Temporal-Pattern-Detection) updated: the event-type table now accurately includes motion/window/opening, with an honest note about the gap and fix; a third entry added to the "real bug found during development" section, explicitly noting this one was caught by review rather than development-time testing
+- `_diff_ha()`'s own docstring corrected to mention window/opening sensors and the motion detection-edge-only behavior
+- Version bumped to 3.47.1
+
+**Total test count: 1131**
+
+---
+
 ## [3.47.0]
 
 ### Added — Cross-Source Temporal Pattern Detection

@@ -423,15 +423,51 @@ def _iter_ha_entity_changes(old: str, new: str):
                 "description": f"{name} {new_e['state']}",
             }
 
-        # Door sensor state changes
-        elif dc == "door" and old_e["state"] != new_e["state"]:
+        # Door / window / opening sensor state changes — these three
+        # device classes share the same real binary semantics (closed
+        # vs open), all genuinely captured by snapshot_ha()'s own
+        # filter (see is_relevant_binary_sensor there) but, until now,
+        # never actually diffed by this function at all.
+        elif dc in ("door", "window", "opening") and old_e["state"] != new_e["state"]:
             state_label = "opened" if new_e["state"] == "on" else "closed"
             yield {
-                "kind": "door",
+                "kind": dc,
                 "entity_id": entity_id,
                 "name": name,
                 "state": state_label,
                 "description": f"{name} {state_label}",
+            }
+
+        # Motion detected — found via review: snapshot_ha() already
+        # captures motion-class binary sensors (is_relevant_binary_sensor
+        # includes "motion"), but no branch here ever diffed them,
+        # meaning a real motion transition produced zero events from
+        # either this function or app/temporal_patterns.py's
+        # extract_ha_events(), which is built directly on this same
+        # comparison core. This silently meant the wiki's own opening,
+        # headline example for the whole temporal-pattern-detection
+        # feature — "does a front-door lock event reliably precede a
+        # motion event" — was never actually testable, confirmed
+        # directly: a real "off" -> "on" motion transition produced an
+        # empty event list before this fix.
+        #
+        # Only the "off" -> "on" edge (motion just started) is reported
+        # as an event — the reverse "on" -> "off" transition is the
+        # sensor settling back to its resting state once motion stops,
+        # not a new, independently meaningful occurrence worth counting
+        # for either the free-text "what changed" summary or temporal
+        # pattern correlation. This mirrors how a door's "opened" event
+        # is the meaningful one for "did someone just walk through
+        # here," while a lock/door's own closed/locked side already has
+        # its own real, separate meaning unlike motion's "off" state,
+        # which has none on its own.
+        elif dc == "motion" and old_e["state"] == "off" and new_e["state"] == "on":
+            yield {
+                "kind": "motion",
+                "entity_id": entity_id,
+                "name": name,
+                "state": "detected",
+                "description": f"{name} motion detected",
             }
 
         # Battery crossing below configured threshold
@@ -457,9 +493,9 @@ def _diff_ha(old: str, new: str) -> list[str]:
 
     Focuses on:
     - Lock state changes (locked/unlocked)
-    - Door sensor state changes (open/closed)
+    - Door/window/opening sensor state changes (open/closed)
     - Battery level crossing below 20%
-    - New motion events
+    - New motion events (the "off" -> "on" detection edge only)
 
     Ignores lights and switches — too noisy for a "what changed" summary.
     """
