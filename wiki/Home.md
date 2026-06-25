@@ -44,6 +44,7 @@ This wiki holds the deep-dive material that doesn't belong in the [README](https
 - **[Benchmarks](Benchmarks)** — real performance data across every major release, cold cache vs. warm cache
 - **[Adding a New Source](Adding-a-New-Source)** — the four files a contributor touches, and the one optional fifth (fallback chains)
 - **[Adversarial Self-Testing](Adversarial-Self-Testing)** — the background job that generates combinatorial edge-case queries from Mnemolis's own real vocabulary and flags structural anomalies for review
+- **[Cross-Source Temporal Pattern Detection](Cross-Source-Temporal-Pattern-Detection)** — the background job that mines `ha`/`uptime` event history for statistically-corrected, out-of-sample-validated timing relationships, with correlation-not-causation framing baked into every result
 
 ## Design History — Real Bugs, Real Fixes
 

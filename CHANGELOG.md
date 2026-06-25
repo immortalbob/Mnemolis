@@ -4,6 +4,52 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.47.0]
+
+### Added — Cross-Source Temporal Pattern Detection
+A background job, on the same `apscheduler` infrastructure the snapshot engine and Adversarial Self-Testing already run on, that mines structured event history for reliable timing relationships between event types — does a front-door lock event reliably precede a motion event within some lag window, does an HA event reliably precede a service outage — and reports anything that survives a real statistical bar as a candidate, never a causal claim. This was the roadmap's "🔬 Speculative" entry; it's no longer speculative.
+
+Scope is deliberately narrow for this first version: `ha`-internal event pairs (lock/door/battery transitions against each other) and `ha`-to-coarse-`uptime` pairs only. `forecast`/`news` event extraction is explicitly out of scope — neither source's current snapshot shape supports clean event typing without new, separate groundwork.
+
+The statistical core, summarized (full reasoning, with citations, in the new wiki page):
+- **Non-overlapping occurrence counting** — once a real B has been claimed as the match for some A, that same B can never be claimed twice. A naive "every A within range of every B" count would badly overstate how often a relationship actually fires.
+- **A hard minimum-occurrence floor** (`TEMPORAL_PATTERN_MIN_OCCURRENCES`, default 5) — checked *before* any significance test runs. A pair with 2-3 raw occurrences isn't a pattern yet regardless of what the math would say.
+- **Bonferroni-corrected significance testing** — the per-comparison threshold gets divided by the total number of (A, B) pairs actually tested in a given pass, against a null-hypothesis expected count built from each event type's own real, observed base rate (not an assumed uniform one).
+- **Mandatory out-of-sample re-validation** — a `candidate` pattern is mechanically re-checked against a later, non-overlapping window of new data before it can ever be promoted to `confirmed`. A pattern that fails to replicate is marked `unconfirmed`, not deleted — a real, honest finding in its own right, the same "status changes, history doesn't disappear" philosophy already established by Adversarial Self-Testing's dismiss mechanism.
+
+Every single returned pattern — `candidate`, `confirmed`, or `unconfirmed` — carries the literal note *"This reflects observed timing correlation only and does not establish a causal relationship."* directly on the row, not just in documentation. This feature lives only in its own dedicated endpoint, never blended into `GET /changes` or a normal search response — a caveat that important is too easy to lose once folded into an ordinary conversational answer.
+
+New endpoints: `GET /temporal-patterns` (optional `?status=candidate|confirmed|unconfirmed` filter), `POST /temporal-patterns/trigger`. New `/health` field: `temporal_pattern_detection`, with one genuinely new status beyond the usual `ok`/`stale`/`never_ran`/`disabled` set — **`insufficient_data`**, reported when the job ran correctly but the real event volume in its window was below the floor needed to test even one pair. This is the honest, expected state for the first weeks of this feature's life on any real deployment, distinct from `ok` (a real result against a real amount of data, even if that result is "found nothing").
+
+New settings: `TEMPORAL_PATTERN_DETECTION_ENABLED` (default `true`, checked at both scheduler-registration time and inside the cycle function itself, mirroring `ADVERSARIAL_TEST_ENABLED`'s exact defense-in-depth precedent), `TEMPORAL_PATTERN_MINING_INTERVAL_HOURS` (default 24), `TEMPORAL_PATTERN_LAG_WINDOW_MINUTES` (default 30), `TEMPORAL_PATTERN_MIN_OCCURRENCES` (default 5), `TEMPORAL_PATTERN_SIGNIFICANCE_LEVEL` (default 0.05), `TEMPORAL_PATTERN_VALIDATION_WINDOW_HOURS` (default 24), `TEMPORAL_PATTERN_STALE_GRACE_MULTIPLIER` (default 3).
+
+New backup file: `temporal_patterns.db` (event history and mined pattern candidates) — `_BACKUP_DATA_FILES` is now six entries, not five.
+
+Event extraction for `ha` is built directly on `_iter_ha_entity_changes()` — a new shared comparison core factored out of `_diff_ha()` itself, so the new structured-event extractor and the existing free-text "what changed" diff output can never independently drift apart from each other. `_diff_ha()`'s own external behavior is completely unchanged by this refactor; every pre-existing test for it still passes against the exact same inputs/outputs.
+
+Full design rationale, the mining/validation diagrams, and the exact statistical reasoning behind every threshold: wiki's [Cross-Source Temporal Pattern Detection](https://github.com/immortalbob/Mnemolis/wiki/Cross-Source-Temporal-Pattern-Detection).
+
+### Fixed — Two Real Bugs Found During Development, Before Ever Running Against Production Data
+Both caught the same way most of this project's real bugs get caught: deliberately testing a harder, more realistic scenario than the simple case that already passed.
+
+- **Non-overlapping counting silently dropped real occurrences.** The first draft of the occurrence counter correctly prevented a single B from being double-claimed by advancing its scan position to just past whichever B got claimed — but that also silently skipped over any genuine, not-yet-evaluated A occurrences sitting between the claiming A and the B it claimed. A burst of 3 A's followed by 3 B's, all within the lag window, returned a count of 1 instead of the correct 3. Fixed by tracking which B *indices* have already been claimed in a separate set, and scanning every A exactly once regardless of what any earlier A claimed.
+- **Uptime event misclassification from a shared substring.** `_diff_uptime()`'s own recovery message ("All services restored — previously reported outage resolved") and its own pending message ("Service check pending — possible outage starting") both genuinely contain the literal substring `"outage"`. An early version of `extract_uptime_events()` checked for `"outage"` before checking the more specific `"pending"`/`"restored"` phrasing, misclassifying both as plain outages. Fixed by matching each message's own distinct, unambiguous leading phrase instead of a substring more than one real message type happens to share.
+
+Both bugs are now permanent regression tests, not just inline comments — `TestCountNonoverlappingOccurrences` includes the exact burst scenario plus eight further adversarial variants (shared-B claims, directionality, mixed in-range/out-of-range pairs), and `TestExtractUptimeEvents` locks in the corrected classification for every real message `_diff_uptime()` can produce.
+
+### Changed
+- Version bumped to 3.47.0
+- Roadmap's "🔬 Speculative" section retired — its one entry shipped and moved into "Battle Testing & Operational Maturity — complete"
+- Wiki: new [Cross-Source Temporal Pattern Detection](https://github.com/immortalbob/Mnemolis/wiki/Cross-Source-Temporal-Pattern-Detection) page; [Configuration Reference](https://github.com/immortalbob/Mnemolis/wiki/Configuration-Reference), [Health & Observability](https://github.com/immortalbob/Mnemolis/wiki/Health-and-Observability), [Backup & Restore](https://github.com/immortalbob/Mnemolis/wiki/Backup-and-Restore), and [Home](https://github.com/immortalbob/Mnemolis/wiki/Home) updated for the new feature
+- README's Project Structure listing also corrected to include `adversarial_testing.py`/`test_adversarial_testing.py`, which had drifted out of sync with the actual repo before this release, alongside the new `temporal_patterns.py`/`test_temporal_patterns.py` entries; the long-stale "1012 tests" line corrected to the real, current count
+
+### Statistical validation, not just unit tests
+Beyond ordinary unit coverage, the mining procedure was stress-tested against synthetic data specifically built to check the claim this feature's whole design rests on: a purely random, mutually-independent event stream (8 event types, realistic per-type volumes, 30 independent random seeds) produced **zero false-positive candidates** in every single trial — confirming Bonferroni correction is doing real, load-bearing work rather than just being present as inert code. A complementary synthetic test with one genuinely reliable signal planted inside a pool of unrelated noise correctly found the real pattern in **30/30** trials with no spurious extras from the noise.
+
+**Total test count: 1126**
+
+---
+
 ## [3.46.2]
 
 ### Fixed — Adversarial Self-Testing: Real Flag-Visibility Gap

@@ -47,6 +47,12 @@ from app.adversarial_testing import (
     get_flagged_combinations,
     dismiss_flagged_combination,
 )
+from app.temporal_patterns import (
+    init_temporal_patterns_db,
+    run_temporal_pattern_mining_cycle,
+    get_temporal_pattern_summary,
+    get_temporal_patterns,
+)
 from app.config import settings
 
 # Configure logging at startup — without this, the root logger defaults to
@@ -107,6 +113,7 @@ _BACKUP_DATA_FILES = [
     "/app/data/query_log.db",
     "/app/data/snapshots.db",
     "/app/data/adversarial_testing.db",
+    "/app/data/temporal_patterns.db",
 ]
 
 
@@ -225,6 +232,8 @@ async def lifespan(app: FastAPI):
         await loop.run_in_executor(None, init_snapshot_db)
         if settings.adversarial_test_enabled:
             await loop.run_in_executor(None, init_adversarial_db)
+        if settings.temporal_pattern_detection_enabled:
+            await loop.run_in_executor(None, init_temporal_patterns_db)
 
         # Start snapshot scheduler
         scheduler = BackgroundScheduler()
@@ -240,6 +249,20 @@ async def lifespan(app: FastAPI):
             )
         else:
             _LOGGER.info("Adversarial testing is disabled (ADVERSARIAL_TEST_ENABLED=false); scheduler job not registered")
+        if settings.temporal_pattern_detection_enabled:
+            # Mirrors adversarial testing's exact defense-in-depth
+            # pattern: checked here at scheduler-registration time AND
+            # again inside run_temporal_pattern_mining_cycle() itself,
+            # so a direct call (including a future manual-trigger
+            # endpoint) can never accidentally mine real event data
+            # while the feature is supposed to be off.
+            scheduler.add_job(
+                run_temporal_pattern_mining_cycle, "interval",
+                hours=settings.temporal_pattern_mining_interval_hours,
+                id="temporal_pattern_mining",
+            )
+        else:
+            _LOGGER.info("Temporal pattern detection is disabled (TEMPORAL_PATTERN_DETECTION_ENABLED=false); scheduler job not registered")
         scheduler.start()
         _LOGGER.info("Snapshot scheduler started")
 
@@ -258,7 +281,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.46.2",
+    version="3.47.0",
     lifespan=lifespan,
 )
 
@@ -409,6 +432,7 @@ def health():
         "routing_cache_max_size": settings.routing_cache_max_size,
         "snapshot_jobs": get_snapshot_job_health(),
         "adversarial_testing": get_adversarial_test_summary(),
+        "temporal_pattern_detection": get_temporal_pattern_summary(),
         "sources": sources,
     }
 
@@ -816,6 +840,73 @@ def adversarial_dismiss(fingerprint: str):
     if not success:
         raise HTTPException(status_code=404, detail="No combination found with that fingerprint")
     return {"status": "dismissed", "fingerprint": fingerprint}
+
+
+@app.get("/temporal-patterns")
+def temporal_patterns(status: Optional[str] = None, limit: int = 100):
+    """
+    Return cross-source temporal pattern detection results — reliable
+    timing relationships found between structured event types (e.g.
+    a front-door lock event reliably preceding a motion event within
+    some lag window), each with its own real, raw supporting count and
+    the corrected statistical threshold it was compared against.
+
+    Optional `status` filter: "candidate" (found, not yet re-validated
+    against later data), "confirmed" (replicated against an
+    independent, later window), or "unconfirmed" (failed to replicate
+    — kept visible, not deleted, since that's a real, honestly-reported
+    finding in its own right, not noise to clean up).
+
+    EVERY row carries a literal "note" field stating this reflects
+    observed timing correlation only and does NOT establish a causal
+    relationship — not just in documentation a person might not read.
+    This is a hard, non-negotiable requirement, not a stylistic choice:
+    real, peer-reviewed temporal pattern-mining methods show real,
+    measured false-positive rates well into the double digits even
+    with correction applied, at data volumes Mnemolis's real homelab
+    event history will likely never approach. See the design doc and
+    wiki's Cross-Source Temporal Pattern Detection page for the full
+    statistical reasoning behind every choice this feature makes.
+
+    Deliberately left unauthenticated, same as /health, /areas, and
+    /adversarial/flagged: this exposes only derived statistical
+    summaries over Mnemolis's own structured event history, never raw
+    query content, so it sits outside API_KEYS' documented scope (POST
+    /search and GET /changes only) the same principled way those
+    endpoints already do.
+
+    This feature deliberately stays in its own dedicated endpoint,
+    never blended into /changes or a real search response — a
+    correlation-not-causation caveat is too easy to lose track of once
+    folded into a normal conversational answer.
+    """
+    if not settings.temporal_pattern_detection_enabled:
+        return {"status": "disabled", "count": 0, "patterns": []}
+    patterns = get_temporal_patterns(status=status, limit=limit)
+    return {
+        "count": len(patterns),
+        "patterns": patterns,
+    }
+
+
+@app.post("/temporal-patterns/trigger")
+def trigger_temporal_pattern_mining():
+    """
+    Manually trigger one temporal pattern mining cycle immediately,
+    rather than waiting for the next scheduled tick — mirrors
+    /snapshots/trigger's and /adversarial/trigger's exact pattern for
+    the same reason: a person actively watching this feature shouldn't
+    need to wait up to TEMPORAL_PATTERN_MINING_INTERVAL_HOURS (default
+    24) just to see it run.
+
+    Returns {"status": "disabled", ...} without touching any real event
+    data if TEMPORAL_PATTERN_DETECTION_ENABLED is false —
+    run_temporal_pattern_mining_cycle() checks this itself too (defense
+    in depth), but surfacing it here directly means a person manually
+    triggering this gets an honest, immediate answer instead of a
+    misleadingly generic success response.
+    """
+    return run_temporal_pattern_mining_cycle()
 
 
 @app.get("/logs/stats")

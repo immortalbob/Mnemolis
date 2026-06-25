@@ -280,5 +280,70 @@ class Settings(BaseSettings):
     # warranted.
     adversarial_test_part_count_mismatch_tolerance: int = 2
 
+    # -------------------------------------------------------------------
+    # Cross-Source Temporal Pattern Detection — speculative pattern-mining
+    # over structured event history. See the design doc and wiki page for
+    # the full statistical reasoning; the settings below are summarized
+    # here only.
+    # -------------------------------------------------------------------
+    # Master on/off switch, following the exact precedent
+    # ADVERSARIAL_TEST_ENABLED established: checked at both
+    # scheduler-registration time and inside the cycle function itself
+    # (defense in depth), reporting {"status": "disabled"} directly in
+    # /health rather than eventually reading as stale.
+    temporal_pattern_detection_enabled: bool = True
+
+    # How often the mining cycle runs. Deliberately much longer than
+    # either the snapshot engine's or adversarial testing's intervals —
+    # mining over a short window is statistically meaningless (nothing
+    # to find yet) and wasteful to re-run constantly. Once daily is
+    # plenty given the real event volumes involved (see the design
+    # doc's section 2.1 — tens to low hundreds of genuine events per
+    # month even on the densest structured source).
+    temporal_pattern_mining_interval_hours: int = 24
+
+    # The maximum lag ("expiry time", in the frequent-episode-mining
+    # sense) within which event B must follow event A to count as one
+    # real occurrence of the (A, B) pair. Mirrors the AID/frequent-
+    # episode-mining "expiry time" concept directly — searching for "did
+    # B ever follow A, at any distance" is both statistically
+    # meaningless (something will eventually match, given enough time)
+    # and far more expensive to compute.
+    temporal_pattern_lag_window_minutes: int = 30
+
+    # A hard floor below which a pattern is never even considered,
+    # regardless of what the corrected significance test says. A
+    # pattern based on 2-3 raw occurrences shouldn't be reported no
+    # matter what the math says — the literal, honest truth is there
+    # isn't enough data yet to say anything (design doc section 2.4's
+    # "under-specified with limited data" finding).
+    temporal_pattern_min_occurrences: int = 5
+
+    # The significance level for Bonferroni-corrected hypothesis tests
+    # — the per-comparison alpha gets divided by the total number of
+    # (A, B, lag-bucket) tests run in a single mining pass before being
+    # compared against. 0.05 is the conventional default; lower this
+    # for a stricter bar (fewer, more confident candidates), raise it
+    # only with a clear understanding that this widens the
+    # already-documented false-positive risk this feature is built
+    # around minimizing.
+    temporal_pattern_significance_level: float = 0.05
+
+    # How much later (non-overlapping) data a candidate pattern needs
+    # to be re-checked against before it can be promoted to
+    # "confirmed". A separate setting from the mining interval above —
+    # so re-validation cadence isn't accidentally coupled to how often
+    # the scheduler tick happens to fire. Default: one full mining
+    # interval's worth of new data (24h), the simplest concrete
+    # definition of "a later, independent window" that doesn't require
+    # tracking anything beyond what the mining cycle already does.
+    temporal_pattern_validation_window_hours: int = 24
+
+    # Same role as SNAPSHOT_STALE_GRACE_MULTIPLIER / the adversarial
+    # testing job's own staleness convention — how many multiples of
+    # the mining interval can pass before /health flags this job
+    # "stale" rather than "ok".
+    temporal_pattern_stale_grace_multiplier: int = 3
+
 
 settings = Settings()

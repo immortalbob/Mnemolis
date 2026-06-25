@@ -21,6 +21,7 @@ Three real gaps, found through deliberate review rather than reported failures, 
 - ✅ Routing cache size bounding + visibility in `/health`
 - ✅ Background snapshot job health
 - ✅ Adversarial self-testing — see [Adversarial Self-Testing](Adversarial-Self-Testing)
+- ✅ Cross-source temporal pattern detection — see [Cross-Source Temporal Pattern Detection](Cross-Source-Temporal-Pattern-Detection)
 
 Full mechanism detail for the operational maturity work lives in [Health & Observability](Health-and-Observability) and [Caching](Caching).
 
@@ -51,13 +52,9 @@ These are real, understood boundaries — not bugs waiting for a fix, but delibe
 - **Conditional phrasing without an explicit comma** ("if the front door is unlocked tell me") is intentionally not detected — a real grammatical-parsing problem, not a pattern-matching one. See [Conditional Query Detection](Conditional-Query-Detection#why-the-pattern-is-this-narrow).
 - **A decomposed segment merging two unrelated topics** may route to a single source that doesn't serve both well — an accepted, minor side effect of the [proper-noun-pair guard's](The-Proper-Noun-Pair-Saga) content-preservation fix, not a regression.
 
-## 🔬 Speculative — no obligation to succeed
-
-These two are deliberately framed differently from everything else on this page. They're permitted to fail; "found nothing interesting" or "didn't pan out" are acceptable, informative outcomes here, not wasted effort.
-
-**Cross-Source Temporal Pattern Detection** — extend the [snapshot engine](Snapshot-Engine-and-Changes) to surface correlations *across* sources over time, not just per-source diffs. Recurring timing relationships between events (a door event consistently preceding a motion event, a particular weather shift consistently preceding a service hiccup) — closer to lightweight pattern-mining than search. Buildable on infrastructure that already exists; the actual risk is finding nothing beyond noise, which is a fine, honest result.
-
 ## Tabled, revisit in ~1 year
+
+These are still squarely in "permitted to fail, no obligation to succeed" territory — the same honest framing the now-shipped temporal pattern detection work used to carry above, before it actually landed.
 
 **Cross-modal grounding** — correlating a camera snapshot with a text answer ("did anything weird happen at the back door" pulling the actual image alongside the sensor log) would be a genuine "wow" capability, not just well-executed plumbing. Deliberately not pursued yet — the current camera setup (Ring) isn't infrastructure worth building on top of long-term; revisit once a self-controlled NVR solution exists instead.
 

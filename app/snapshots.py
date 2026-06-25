@@ -359,27 +359,34 @@ def _diff_news(old: str, new: str) -> list[str]:
     return changes
 
 
-def _diff_ha(old: str, new: str) -> list[str]:
-    """Detect meaningful entity state changes between two HA snapshots.
+def _iter_ha_entity_changes(old: str, new: str):
+    """Shared entity-level comparison core for HA snapshot diffing.
 
-    Focuses on:
-    - Lock state changes (locked/unlocked)
-    - Door sensor state changes (open/closed)
-    - Battery level crossing below 20%
-    - New motion events
+    Yields one dict per real, meaningful change found, with both a
+    human-readable description and the structured fields behind it:
+    {"kind", "entity_id", "name", "state", "description"}.
 
-    Ignores lights and switches — too noisy for a "what changed" summary.
+    This is the one real source of truth `_diff_ha()` (free-text "what
+    changed" output) and `extract_ha_events()` in app/temporal_patterns.py
+    (structured events for temporal pattern mining) both build on —
+    added specifically so the two never independently re-implement the
+    same entity comparison and silently drift apart from each other,
+    the same class of bug already found and fixed once in this
+    project's history (router.py/fusion.py's "_looks_empty" phrase
+    list). `_diff_ha()`'s own existing behavior, including its
+    malformed-entity defensive skip below, is preserved exactly here —
+    this is a pure extraction, not a behavior change.
     """
     import json
-    changes = []
+
     if old == new:
-        return changes
+        return
 
     try:
         old_entities = {e["entity_id"]: e for e in json.loads(old)}
         new_entities = {e["entity_id"]: e for e in json.loads(new)}
     except (json.JSONDecodeError, TypeError, KeyError):
-        return changes
+        return
 
     for entity_id, new_e in new_entities.items():
         old_e = old_entities.get(entity_id)
@@ -408,12 +415,24 @@ def _diff_ha(old: str, new: str) -> list[str]:
 
         # Lock state changes
         if domain == "lock" and old_e["state"] != new_e["state"]:
-            changes.append(f"{name} {new_e['state']}")
+            yield {
+                "kind": "lock",
+                "entity_id": entity_id,
+                "name": name,
+                "state": new_e["state"],
+                "description": f"{name} {new_e['state']}",
+            }
 
         # Door sensor state changes
         elif dc == "door" and old_e["state"] != new_e["state"]:
             state_label = "opened" if new_e["state"] == "on" else "closed"
-            changes.append(f"{name} {state_label}")
+            yield {
+                "kind": "door",
+                "entity_id": entity_id,
+                "name": name,
+                "state": state_label,
+                "description": f"{name} {state_label}",
+            }
 
         # Battery crossing below configured threshold
         elif dc == "battery":
@@ -422,11 +441,29 @@ def _diff_ha(old: str, new: str) -> list[str]:
                 new_val = float(new_e["state"])
                 threshold = settings.battery_low_threshold_pct
                 if old_val >= threshold and new_val < threshold:
-                    changes.append(f"{name} battery low: {new_val:.0f}%")
+                    yield {
+                        "kind": "battery_low",
+                        "entity_id": entity_id,
+                        "name": name,
+                        "state": new_val,
+                        "description": f"{name} battery low: {new_val:.0f}%",
+                    }
             except (ValueError, TypeError):
                 pass
 
-    return changes
+
+def _diff_ha(old: str, new: str) -> list[str]:
+    """Detect meaningful entity state changes between two HA snapshots.
+
+    Focuses on:
+    - Lock state changes (locked/unlocked)
+    - Door sensor state changes (open/closed)
+    - Battery level crossing below 20%
+    - New motion events
+
+    Ignores lights and switches — too noisy for a "what changed" summary.
+    """
+    return [c["description"] for c in _iter_ha_entity_changes(old, new)]
 
 
 # ---------------------------------------------------------------------------

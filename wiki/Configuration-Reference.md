@@ -105,6 +105,18 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 | `ADVERSARIAL_TEST_LATENCY_OUTLIER_MIN_SAMPLES` | `10` | How many historical samples a recipe needs before the latency-outlier check engages at all |
 | `ADVERSARIAL_TEST_PART_COUNT_MISMATCH_TOLERANCE` | `2` | How far a `multi_intent_chain` query's intended-intent count and its result's header count can diverge before it's flagged |
 
+## Cross-source temporal pattern detection
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `TEMPORAL_PATTERN_DETECTION_ENABLED` | `true` | Master on/off switch for [temporal pattern detection](Cross-Source-Temporal-Pattern-Detection). `false` skips DB init, never registers the scheduler job, and makes `POST /temporal-patterns/trigger` a safe no-op — checked both at scheduler-registration time and inside the cycle function itself |
+| `TEMPORAL_PATTERN_MINING_INTERVAL_HOURS` | `24` | How often the mining cycle runs. Deliberately far longer than every other scheduler job in this codebase — mining over a short window is statistically meaningless given how infrequently real structured events actually occur |
+| `TEMPORAL_PATTERN_LAG_WINDOW_MINUTES` | `30` | The maximum lag within which event B must follow event A to count as one real occurrence of that pair |
+| `TEMPORAL_PATTERN_MIN_OCCURRENCES` | `5` | A hard floor below which a pair is never even significance-tested, regardless of what the math would say. Raise this for a stricter bar on real homelab data volumes; lowering it below the default trades real statistical confidence for catching potential patterns sooner |
+| `TEMPORAL_PATTERN_SIGNIFICANCE_LEVEL` | `0.05` | The per-comparison significance level, before Bonferroni correction divides it by the number of pairs actually tested in a given pass |
+| `TEMPORAL_PATTERN_VALIDATION_WINDOW_HOURS` | `24` | How much later, non-overlapping data a candidate needs to be re-checked against before it can be promoted to `confirmed` |
+| `TEMPORAL_PATTERN_STALE_GRACE_MULTIPLIER` | `3` | Same role as `SNAPSHOT_STALE_GRACE_MULTIPLIER` — how many missed mining intervals before [`/health`](Cross-Source-Temporal-Pattern-Detection#health-reporting) flags this job stale |
+
 ## Security
 
 | Variable | Default | Notes |

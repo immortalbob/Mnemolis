@@ -725,7 +725,7 @@ The new source is automatically available via both REST and MCP — and immediat
 
 ## Backup & Restore
 
-All Mnemolis state — result cache, routing cache, query log, snapshot history, and adversarial self-testing history — lives in five files under `/app/data`, backed by the `mnemolis_data` Docker volume (see the volume naming note below for how Docker Compose actually names it).
+All Mnemolis state — result cache, routing cache, query log, snapshot history, adversarial self-testing history, and temporal pattern detection history — lives in six files under `/app/data`, backed by the `mnemolis_data` Docker volume (see the volume naming note below for how Docker Compose actually names it).
 
 ### Backing up
 
@@ -794,7 +794,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-1012 tests across every source module, the routing/decomposition/conditional-detection pipeline, caching, and the FastAPI/MCP endpoints — see the test file list under [Project Structure](#project-structure) below for what each file actually covers, or the [Contributing](https://github.com/immortalbob/Mnemolis/wiki/Contributing) page for what a good test for this project looks like.
+1126 tests across every source module, the routing/decomposition/conditional-detection pipeline, caching, adversarial self-testing, cross-source temporal pattern detection, and the FastAPI/MCP endpoints — see the test file list under [Project Structure](#project-structure) below for what each file actually covers, or the [Contributing](https://github.com/immortalbob/Mnemolis/wiki/Contributing) page for what a good test for this project looks like.
 
 ## Project Structure
 
@@ -832,12 +832,16 @@ Mnemolis/
 │   ├── test_mcp_server.py          # MCP tool schema and call dispatch
 │   ├── test_snapshots.py           # snapshot diff engines, net-change collapsing, background job health
 │   ├── test_snapshot_jobs.py       # scheduled snapshot job functions
+│   ├── test_adversarial_testing.py # combinatorial query generation, structural anomaly checks, flagged-combination review
+│   ├── test_temporal_patterns.py   # structured event extraction, non-overlapping occurrence counting, Bonferroni-corrected mining, out-of-sample validation
 │   ├── test_security.py            # SQL injection, path traversal, fuzz, concurrency
 │   ├── test_property.py            # Hypothesis property-based fuzz testing
 │   └── locustfile.py               # Locust load testing suite
 └── app/
     ├── main.py                     # FastAPI app + MCP mount + cache/catalog/areas endpoints + API key auth
     ├── snapshots.py                # Snapshot engine — scheduler, diff logic, change detection, background job health reporting
+    ├── adversarial_testing.py      # Adversarial self-testing — combinatorial query generation, structural anomaly detection
+    ├── temporal_patterns.py        # Cross-source temporal pattern detection — event extraction, Bonferroni-corrected mining, out-of-sample validation
     ├── mcp_server.py               # MCP server (Streamable HTTP transport)
     ├── router.py                   # Intent detection, source routing, decomposition, conditional detection, caching
     ├── llm.py                      # LLM client — Ollama native and OpenAI-compatible

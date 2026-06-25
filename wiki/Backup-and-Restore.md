@@ -1,6 +1,6 @@
 # Backup & Restore
 
-Mnemolis's entire persisted state lives in exactly five files, all under `/app/data` inside the container:
+Mnemolis's entire persisted state lives in exactly six files, all under `/app/data` inside the container:
 
 | File | What it holds |
 |------|-----------------|
@@ -9,12 +9,13 @@ Mnemolis's entire persisted state lives in exactly five files, all under `/app/d
 | `query_log.db` | The query log — every request's timestamp, source, success, latency, and fallback flag |
 | `snapshots.db` | [Snapshot history](Snapshot-Engine-and-Changes) for the background diff engine |
 | `adversarial_testing.db` | [Adversarial self-testing](Adversarial-Self-Testing) combination history — synthetic generated queries only, never real user queries |
+| `temporal_patterns.db` | [Cross-source temporal pattern detection](Cross-Source-Temporal-Pattern-Detection) event history and mined pattern candidates |
 
-`GET /backup` tars all five into a downloadable `.tar.gz`. `GET /backup/info` shows what's currently in each file (size, last-modified time) without actually creating a backup — useful for a quick "is this worth backing up right now" check.
+`GET /backup` tars all six into a downloadable `.tar.gz`. `GET /backup/info` shows what's currently in each file (size, last-modified time) without actually creating a backup — useful for a quick "is this worth backing up right now" check.
 
 ## What's deliberately *not* in the backup
 
-Kiwix ZIM files, your `docker-compose.yml`, and `searxng/settings.yml` aren't included. `/backup` only covers Mnemolis's own internal state — back up your ZIM files and compose configuration separately, as part of your normal homelab backup routine. None of these four files would be useful to restore without the rest of your actual deployment configuration intact anyway.
+Kiwix ZIM files, your `docker-compose.yml`, and `searxng/settings.yml` aren't included. `/backup` only covers Mnemolis's own internal state — back up your ZIM files and compose configuration separately, as part of your normal homelab backup routine. None of these would be useful to restore without the rest of your actual deployment configuration intact anyway.
 
 ## A real gotcha worth knowing before you need it: volume naming
 
