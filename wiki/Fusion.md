@@ -36,7 +36,9 @@ Fusion is what happens when [Routing](Routing) decides a question genuinely need
                                                         ▼
                                               Merge consecutive same-
                                               source results into one
-                                              block (see below)
+                                              block (see "Merging
+                                              consecutive same-source
+                                              results" below)
                                                         │
                                                         ▼
                                               Join with "[SOURCE — LABEL]"
@@ -52,6 +54,20 @@ If only one source actually returned something usable, fusion returns that resul
 ## Deduplication
 
 Fusion results sometimes overlap heavily — a Kiwix article and a web search result can both be substantially about the same thing. `_deduplicate()` checks sentence-level overlap between sources and drops one if 60%+ of its sentences already appear, in substance, in a longer result from another source. This keeps fusion responses from repeating the same information twice under two different headers.
+
+This is a different mechanism from the same-source item merging described next — `_deduplicate()` compares *different* sources' results against each other before merging; the same-source merge below combines results that are *already* attributed to the *same* source, after they've survived this step.
+
+## Merging consecutive same-source results
+
+When [Query Decomposition](Query-Decomposition) splits a compound query into independent clauses and routes each one separately, two different clauses can legitimately resolve to the same source — *"indoor air quality and are the doors locked"* sends both halves to `ha`. `fusion._merge_same_source()` combines any consecutive same-source results into one logical block before headers ever get added, so the final answer shows one `[HA — ...]` section, not two redundant ones back to back.
+
+This has a real, structural limitation, found and fixed across three separate, sequential bugs in the same investigation — worth understanding precisely, since the fix had to happen in three different places once it became clear one fix alone wasn't the whole picture:
+
+**It only ever compares the *outer* tuple label.** If one decomposed clause resolves to internal fusion itself (multiple sources sharing one already-headered, nested blob — e.g. the [discourse-framing bias](Routing#the-discourse-framing-bias) pulling in `kiwix` alongside whatever else a clause's own LLM judgment picked) and a *different*, separately-decomposed clause resolves to a bare source that happens to be one of the sources already inside that nested blob, `_merge_same_source()` has no way to see the overlap — `"fusion"` and `"news"` are genuinely different outer labels to it, even though a `[NEWS — ...]` section is sitting on both sides. **Fixed** with a second, separate pass, `_dedupe_nested_fusion_sections()`, that runs on the final, fully-assembled result text — after this function's own tuple-level merge, not instead of it — splitting on the exact, real header strings `_format_header()` can produce and merging any header that appears more than once.
+
+**Even after that fix, the actual *content* under a correctly-merged single header could still repeat.** Two independent calls to the same backend — one nested inside an internal-fusion clause, one a separately-decomposed clause's own bare resolution — can both legitimately return overlapping items (a real FreshRSS "general query, return everything" case is what surfaced this), and neither `_merge_same_source()`'s plain string concatenation nor the section-level fix above has any awareness of what's actually *inside* either blob. **Fixed** with `fusion._dedupe_items_across_blobs()`, which removes any item from the second blob whose leading `**Title**` line exactly matches one already in the first — but only at the one point where the boundary between the two original results is still completely unambiguous, *before* they're joined into one string. A first attempt deduping *after* the join failed a real test: once two blobs are glued together with a blank line, that boundary is no longer reliably distinguishable from an ordinary paragraph break inside either blob's own content, and a later split can silently merge two genuinely separate items into one.
+
+All three fixes were found by tracing a single real, live query end to end on actual production data — not by inspection or a synthetic test case — and each one only became visible once the *previous* fix in the chain was already verified working. The complete narrative, with the actual MiniDock output at each stage, is in [Adversarial Self-Testing](Adversarial-Self-Testing#real-bugs-this-feature-found-in-mnemolis-itself-after-running-for-real).
 
 ## The `[FUSION — FUSION]` bug, and why it kept coming back
 

@@ -34,28 +34,31 @@ Routing is the decision layer that sits between "what you typed" and "which [Sou
                                       (2+ matches = fusion)        1 source, or 2-3 for
                                                 │                  fusion if complex
                                                 │                          │
-                                                │                  Discourse-framing
-                                                │                  phrase detected?
+                                                └────────────┬─────────────┘
+                                                             ▼
+                                                  Discourse-framing
+                                                  phrase detected?
+                                                             │
+                                                ┌────────────┴────────────┐
+                                                ▼ yes                     ▼ no
+                                      Add kiwix if                 Use whatever was
+                                      not already chosen,          already chosen,
+                                      escalate to fusion           keyword or LLM
                                                 │                          │
-                                                │                ┌─────────┴─────────┐
-                                                │                ▼ yes                ▼ no
-                                                │          Add kiwix if          Use LLM's
-                                                │          not already chosen,   choice as-is
-                                                │          escalate to fusion         │
-                                                └────────────────┬───────────────────┘
-                                                                 ▼
-                                                      Query the chosen source(s)
-                                                                 │
-                                                                 ▼
-                                                    Result looks like "no results"?
-                                                    (kiwix/news only — see below)
-                                                                 │
-                                                       ┌─────────┴─────────┐
-                                                       ▼ yes                ▼ no
-                                                 Fall back to web      Return result,
-                                                 Report source_used    source_used =
-                                                 = "web", log              what was
-                                                 fallback_occurred         actually used
+                                                └────────────┬─────────────┘
+                                                             ▼
+                                                  Query the chosen source(s)
+                                                             │
+                                                             ▼
+                                                  Result looks like "no results"?
+                                                  (kiwix/news only — see below)
+                                                             │
+                                                ┌────────────┴────────────┐
+                                                ▼ yes                     ▼ no
+                                      Fall back to web              Return result,
+                                      Report source_used             source_used =
+                                      = "web", log                   what was
+                                      fallback_occurred              actually used
 ```
 
 ## Two ways a source gets chosen
@@ -70,7 +73,11 @@ Every LLM routing decision is cached for an hour (`ROUTING_CACHE_TTL`) — a que
 
 This exists because of a real, repeatedly-reproduced bug: queries phrased as current public discourse — *"what's the deal with that whole mercury retrograde thing everyone keeps talking about"* — kept routing past `kiwix` straight to `news`/`web`, even when the underlying topic was genuinely encyclopedic. The cause: `news` and `web`'s own descriptions ("current events," "recent information") matched this kind of phrasing almost word-for-word, while `kiwix`'s description gave the LLM no reason to think it covers evergreen topics that happen to be phrased as current chatter.
 
-Rather than trying to nudge the LLM's judgment by rewording `kiwix`'s description — an indirect, hard-to-verify lever — this is detected explicitly with a small set of literal phrase matches (`"everyone keeps talking about"`, `"everyone's obsessed with"`, and a few variants). If one of these phrases is present and `kiwix` wasn't already part of the chosen source(s), `kiwix` gets added and the result escalates to fusion. The full investigation, including a second bug found after the routing fix alone turned out not to be enough, is in [The Discourse-Framing Investigation](The-Discourse-Framing-Investigation).
+Rather than trying to nudge the LLM's judgment by rewording `kiwix`'s description — an indirect, hard-to-verify lever — this is detected explicitly with a small set of literal phrase matches (`"everyone keeps talking about"`, `"everyone's obsessed with"`, and a few variants). If one of these phrases is present and `kiwix` wasn't already part of the chosen source(s), `kiwix` gets added and the result escalates to fusion.
+
+**This check applies to BOTH paths above, not just LLM selection** — a real, separate gap from the keyword-matching path specifically, found later than the original fix and worth calling out explicitly here since it's easy to assume (the diagram above used to imply it) that discourse-framing only mattered when the LLM got involved. It doesn't: `"everyone keeps talking about black holes, and rss"` matches the keyword `"rss"` directly (→ `news`), with the LLM never even consulted — and the bias still needs to fire there too, or a perfectly ordinary keyword match silently defeats the entire point of detecting discourse framing in the first place. `INTENT_MAP` contains dozens of short, common words (`"news"`, `"weather"`, `"rss"`, `"feeds"`, `"door locked"`) that can easily co-occur with genuine discourse framing in a real sentence, so this isn't a rare edge case — it's the majority of real discourse-framed queries that happen to also mention any everyday word.
+
+The full investigation, including a second bug found after the routing fix alone turned out not to be enough, and a third bug found later still in the keyword-matching path specifically, is in [The Discourse-Framing Investigation](The-Discourse-Framing-Investigation).
 
 ## Fallback — when a source comes back empty
 

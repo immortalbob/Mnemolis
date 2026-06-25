@@ -11,7 +11,11 @@ As of a later fix, Mnemolis distinguishes a genuine timeout from other connectio
 
 ## A routing decision looks wrong — Kiwix is being skipped for something encyclopedic
 
-If the query is phrased like current discourse ("what's the deal with X everyone's talking about/obsessed with"), this is a known, specifically-handled pattern — see [The Discourse-Framing Investigation](The-Discourse-Framing-Investigation). If you're still seeing Kiwix skipped for phrasing that doesn't match that pattern, check [Routing](Routing) for the actual keyword-match and LLM-selection logic; the LLM genuinely can make a different call than expected for a query that's just inherently ambiguous about which source applies.
+If the query is phrased like current discourse ("what's the deal with X everyone's talking about/obsessed with"), this is a known, specifically-handled pattern — see [The Discourse-Framing Investigation](The-Discourse-Framing-Investigation) and [Adversarial Self-Testing](Adversarial-Self-Testing#real-bug-discourse-framing-escalation-never-ran-on-the-keyword-match-path) for the full history, including a real gap found in the keyword-matching path specifically, not just the LLM-assisted one. If you're still seeing Kiwix skipped for phrasing that doesn't match that pattern, check [Routing](Routing) for the actual keyword-match and LLM-selection logic; the LLM genuinely can make a different call than expected for a query that's just inherently ambiguous about which source applies.
+
+## LLM-assisted routing or disambiguation seems to silently stop working — no errors, just generic keyword-only behavior
+
+Check `/health`'s `sources.llm` field first to confirm the backend is actually reachable at all. If it reports healthy but routing decisions still look like plain keyword matching even for queries that should need the LLM, and you're running a "thinking" model (Qwen3 and similar reasoning-tuned families) via an OpenAI-compatible endpoint (`LLM_API_TYPE=openai` — `llama-server`, LM Studio, etc.), this was a real, serious bug: thinking models on this specific path used to return completely empty responses for every single completion, since their actual answer sits in a separate `reasoning_content` field that nothing read. Fixed now — see [LLM Client](LLM-Client#a-real-serious-bug-thinking-models-silently-returned-nothing-at-all) for the full mechanism and why it only affected the OpenAI-compatible path, not Ollama's native API.
 
 ## Kiwix found the wrong article for a single ambiguous word
 

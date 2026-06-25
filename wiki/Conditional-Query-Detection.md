@@ -68,6 +68,12 @@ The first version of this re-check recursed on the *original* `"if X, Y"` string
 
 This is fixed by checking the extracted consequence for a trailing conjunction and, if found, splitting off the remainder and searching it independently, merging it back into the final response with its own source attribution. The same fix surfaced a second, smaller bug — the exact `[FUSION — FUSION]` double-header issue described in [Fusion](Fusion) — at a new call site that hadn't existed when that bug was first found and fixed elsewhere.
 
+## A real, structural latency cost of handling the condition and remainder separately
+
+The condition and the remainder are each routed with their own full, independent call — search the condition, get a verdict, *then* search the remainder, merge the two. This is sequential, not concurrent: if either half hits a slow LLM call or a slow fusion fan-out, the total wait is additive, not the longer of the two. A condition that takes 2 seconds to resolve and a remainder that takes 6 adds up to roughly 8 seconds total, not 6.
+
+This was found via real, live latency data, not a synthetic benchmark — several real `conditional_with_remainder`-shaped queries logged by [Adversarial Self-Testing](Adversarial-Self-Testing#a-real-structural-latency-characteristic-not-a-bug-documented-rather-than-fixed) showed latency meaningfully above what either half would cost alone. It's deliberately **not** being changed to run concurrently: that would mean touching the same conditional-handling code that's already had two separate, carefully-reasoned bug fixes (the recursion depth-counter bug above, and the greedy-consequence-regex bug just above this section) — a real, working area of the codebase with a documented history of subtle bugs whenever it's modified. The risk of a new concurrency bug (shared cache writes from two threads resolving at once, for one) outweighs shaving a few seconds off a query shape that, in practice, isn't the common case. Recorded here as a known, accepted, structural cost of the current design — not a defect waiting to be fixed.
+
 ## What it looks like end to end
 
 ```text

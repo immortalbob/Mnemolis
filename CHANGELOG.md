@@ -4,6 +4,41 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.48.5]
+
+### Changed — Full Wiki & README Audit Against Current Code
+A systematic pass, not a skim: every real config setting, every endpoint, and every scheduled job cross-checked against what the wiki actually documents, followed by a full re-read of the last 15+ versions of this changelog (3.36.0 through 3.48.4) to catch anything a quick page-by-page check would miss. Settings, endpoints, and most fix-specific documentation updates from that window held up correctly — the project's habit of updating docs alongside fixes mostly worked. Six pages had real, confirmed drift; two real gaps had no dedicated page at all.
+
+**`Routing.md`** — the decision-flow diagram and "discourse-framing bias" section described the bias as applying only to LLM-assisted source selection. As of 3.48.1, it also applies to the keyword-matching path, and a perfectly ordinary keyword match (`"rss"`, `"news"`, dozens of other common `INTENT_MAP` words) can otherwise silently defeat the entire point of detecting discourse framing. Diagram and prose corrected.
+
+**`Query-Decomposition.md`** — "meaningful-content filtering" was described as purely stop-word-based, missing both the real-keyword check added in 3.48.1 and the ordering fix added in 3.48.2 that makes it actually work. Corrected, with a link to the new dedicated bug-history page below.
+
+**`Fusion.md`** — promised a "(see below)" section on same-source merging that didn't exist, and had zero mention of three real, sequential bugs found this same investigation (`_dedupe_nested_fusion_sections()`, `_dedupe_items_across_blobs()`, and `_merge_same_source()`'s actual structural limitation). Added a full new section.
+
+**`The-Discourse-Framing-Investigation.md`** — stated as its confident closing summary that "Black Hole of Calcutta" was the accepted, final outcome for a real query. Directly contradicted by later, more thoroughly verified evidence: the real fix makes the actual astrophysics article win. Corrected, with honest acknowledgment that the saga had two more real chapters after this page's original ending, not the two it looked like at the time.
+
+**`Conditional-Query-Detection.md`** — no mention anywhere of the sequential (not parallel) condition+remainder routing and its real, additive latency cost, previously documented only inside Adversarial Self-Testing's own narrative where someone reading the actual mechanism page would never find it. Added.
+
+**`README.md`** — one stale number: "1161 tests" corrected to the real, current 1204. Notable that there's a *prior* changelog entry documenting this exact line being corrected once before for the same reason — a real, recurring maintenance gap worth naming rather than just quietly fixing again.
+
+### Added — Two New Wiki Pages for Real Gaps With No Dedicated Page
+
+**[The Meaningful-Content-Filter Bugs](https://github.com/immortalbob/Mnemolis/wiki/The-Meaningful-Content-Filter-Bugs)** — the `"is it up"`/`"are they up"` stop-word-only-keyword bug and the `"rss"` length-gate-ordering bug, previously documented only inside Adversarial Self-Testing's narrative. Structurally distinct from [The Proper-Noun-Pair Saga](https://github.com/immortalbob/Mnemolis/wiki/The-Proper-Noun-Pair-Saga) (a different decomposition sub-mechanism), so it didn't belong folded into that page — it gets its own, the same way that saga did.
+
+**[LLM Client](https://github.com/immortalbob/Mnemolis/wiki/LLM-Client)** — there was no dedicated page for `llm.py` at all, despite a real, serious historical bug (3.36.0: every single completion on the OpenAI-compatible path would silently return `None` for any thinking model) being mentioned in exactly one line of the Roadmap's terse summary list and nowhere else. Covers the dual-backend design, the fail-safe contract every caller depends on, and the thinking-model bug in full. A matching `Troubleshooting.md` entry added too, since this is exactly the shape of problem someone would hit on a real deployment and search for by symptom.
+
+### Changed — Home.md Redesigned
+Rewritten introduction: a longer, genuinely user-facing description of what Mnemolis actually does and why someone would want it, not just a one-line summary — real example queries, the actual list of backends, the local-first/no-subscription framing, REST+MCP accessibility. "Core Concepts" reordered to better match the real order a query actually flows through (`Sources` → `Routing` → `LLM Client` → decomposition/conditional/fusion). `MCP Server` and `Troubleshooting` moved from Core Concepts/Getting Started into Operations, where "how do I connect to this" and "something's broken" both more naturally belong. Both new pages added in their respective sections.
+
+Every internal wiki link and anchor fragment — not just the ones touched this pass — verified programmatically against GitHub's real slugification rules: zero broken links, zero broken anchors, zero orphaned pages across the entire wiki.
+
+### Changed
+- Version bumped to 3.48.5
+
+**Total test count: 1204** (no code changes this release — documentation only)
+
+---
+
 ## [3.48.4]
 
 ### Fixed — Duplicate Content Inside a Correctly-Deduplicated Section, Found Verifying 3.48.3's Fix
