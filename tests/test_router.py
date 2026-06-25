@@ -1331,6 +1331,48 @@ class TestDedupeNestedFusionSections:
         assert "RSS feed news block." in result
         assert source == "fusion"
 
+    def test_real_world_regression_case_with_overlapping_headlines(self):
+        """A second, separate real bug found verifying the fix above
+        against MiniDock's actual stack: the section-level fix above
+        correctly produced exactly ONE [NEWS — ...] header, but the
+        single section's own body still contained the same several
+        headlines twice — because the nested fusion blob's news
+        section and the second, separately-decomposed clause's bare
+        news result both genuinely came from two independent calls to
+        the same backend (a real FreshRSS "general query, return
+        everything" case), with no content-level dedup anywhere.
+        Reconstructs that exact shape: overlapping AND non-overlapping
+        headlines between the two real news results."""
+        nested_fusion_blob = (
+            "[KIWIX — ENCYCLOPEDIC KNOWLEDGE — UNRELATED TO OTHER SECTIONS BELOW]\n"
+            "Black hole article content.\n\n---\n\n"
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\n"
+            "**Headline A** (NYT)\nContent A\n\n---\n\n"
+            "**Headline B** (NYT)\nContent B\n\n---\n\n"
+            "**Headline C** (NYT)\nContent C\n\n---\n\n"
+            "[WEB — LIVE WEB SEARCH RESULTS]\n"
+            "Web search content."
+        )
+        bare_news_result = (
+            "**Headline A** (NYT)\nContent A\n\n---\n\n"
+            "**Headline B** (NYT)\nContent B\n\n---\n\n"
+            "**Headline D** (NYT)\nContent D"
+        )
+        result, source = self.merge([
+            ("fusion", nested_fusion_blob),
+            ("news", bare_news_result),
+        ])
+        assert result.count("[NEWS —") == 1
+        # Every distinct headline appears exactly once.
+        for headline in ["Headline A", "Headline B", "Headline C", "Headline D"]:
+            assert result.count(headline) == 1
+        # The merged news section's items are joined with the real
+        # item separator, not a bare double-newline that would make
+        # the boundary between the two original results visually
+        # indistinguishable from an ordinary paragraph break.
+        news_section = result[result.index("[NEWS —"):result.index("[WEB —")]
+        assert "Content C\n\n---\n\n**Headline D**" in news_section
+
     def test_no_duplicate_sections_is_a_true_noop(self):
         """The overwhelming common case — no duplicate at all — must
         be a byte-for-byte no-op."""

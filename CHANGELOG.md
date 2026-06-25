@@ -4,6 +4,27 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.48.4]
+
+### Fixed — Duplicate Content Inside a Correctly-Deduplicated Section, Found Verifying 3.48.3's Fix
+Re-running the exact query from 3.48.3's fix against MiniDock's real stack confirmed that fix worked exactly as designed — a single, correct `[NEWS — ...]` header, not two — but surfaced a fourth, separate bug: the same several headlines still appeared twice inside that one, structurally-correct section's own body.
+
+Root cause: `_dedupe_nested_fusion_sections()` (3.48.3) fixed the structural duplication, but the actual content join — both in `fusion._merge_same_source()` and in `_dedupe_nested_fusion_sections()`'s own header-merge branch — was a plain string concatenation with zero content-level awareness. Two genuinely independent calls to `news.search()` (one nested inside an internal-fusion sub-query, one a separately-decomposed clause's own bare resolution) both legitimately returned overlapping recent headlines, since FreshRSS's own `_is_general_query()` path returns "everything, no filtering" for a broad query — and nothing anywhere deduplicated across the two calls.
+
+A first attempt deduped items *after* the join, by re-splitting the already-merged text on its own item separator — confirmed broken via a failing test: once two blobs are joined with a bare `"\n\n"`, the real boundary between them is no longer reliably distinguishable from an ordinary paragraph break within either blob's own content, so a later split can silently merge two items into one and miss a real duplicate. Fixed properly by moving the dedup *before* the join instead: a new `fusion._dedupe_items_across_blobs()` helper runs at the one point where the boundary between the two original results is still completely unambiguous, removing any item from the second blob whose leading `**Title**` line exactly matches one already in the first (exact match only, never fuzzy). Both join sites now also use the real `"---"` item separator (not a bare double-newline) when joining genuinely multi-item content, so the merged result's own visual structure stays as clean as the dedup logic needs it to be.
+
+### Added (Tests)
+- `TestDedupeItemsAcrossBlobs` (6 tests) in `test_fusion.py` — the real overlapping-headlines scenario, complete overlap, non-multi-item no-op, and confirmation `_merge_same_source()` itself now uses the correct separator for multi-item content while leaving plain content's existing behavior untouched
+- `test_real_world_regression_case_with_overlapping_headlines` added to `TestDedupeNestedFusionSections` in `test_router.py` — the full real-world shape end-to-end, confirming every distinct headline appears exactly once with clean item separators
+
+### Changed
+- Version bumped to 3.48.4
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) extended with this fourth finding, documented as part of the same investigation as 3.48.1–3.48.3's fixes
+
+**Total test count: 1204**
+
+---
+
 ## [3.48.3]
 
 ### Fixed — Duplicate Section in Merged Fusion Results, Found Verifying the 3.48.2 Fix

@@ -1903,7 +1903,20 @@ def _dedupe_nested_fusion_sections(text: str) -> str:
 
     # Merge content for duplicate headers, preserving first-occurrence
     # order — the same "first seen wins position" convention
-    # fusion._merge_same_source() already uses.
+    # fusion._merge_same_source() already uses. Dedupes items BETWEEN
+    # the two blobs being merged here via fusion._dedupe_items_across_
+    # blobs() before joining them — at this exact point, deliberately,
+    # while the boundary between the two original results is still
+    # completely unambiguous. Tried deduping AFTER the join first
+    # (operating on already-merged text); confirmed broken via a
+    # failing test — by the time two blobs are joined with a bare
+    # "\n\n", the real boundary between them is no longer reliably
+    # distinguishable from an ordinary paragraph break within either
+    # blob's own content, so a later content-level split can silently
+    # merge what should have been two separate items into one and miss
+    # a real, earlier duplicate. Fixed by moving the dedup here
+    # instead — the same fix applied to fusion._merge_same_source()'s
+    # own join, for the same real reason.
     seen_order = []
     merged_content = {}
     for header, content in pieces:
@@ -1911,12 +1924,15 @@ def _dedupe_nested_fusion_sections(text: str) -> str:
             seen_order.append(header)
             merged_content[header] = content.strip("\n")
         else:
-            merged_content[header] = merged_content[header].rstrip() + "\n\n" + content.strip("\n").lstrip()
+            existing, new, is_multi_item = fusion._dedupe_items_across_blobs(merged_content[header], content.strip("\n"))
+            separator = "\n\n---\n\n" if is_multi_item else "\n\n"
+            merged_content[header] = existing.rstrip() + separator + new.lstrip()
 
     rebuilt = preamble + ("\n\n---\n\n".join(
         f"{header}\n{merged_content[header]}" for header in seen_order
     ))
     return rebuilt
+
 
 
 def route_with_source(query: str, source: str = "auto", fusion_sources: list[str] | None = None) -> tuple[str, str]:

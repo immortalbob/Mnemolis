@@ -134,19 +134,86 @@ def _merge_same_source(parts: list[tuple[str, str]]) -> list[tuple[str, str]]:
     _merge_decomposed_parts() runs a second, separate pass —
     _dedupe_nested_fusion_sections() — after this one specifically to
     catch that case, operating on the final assembled text rather than
-    on these tuples. Found via a real, live duplicate-section bug."""
+    on these tuples. Found via a real, live duplicate-section bug.
+
+    Deduplicates individual items BETWEEN the two blobs being merged
+    here, via _dedupe_items_across_blobs() below, before joining them —
+    done at THIS exact point deliberately, while the boundary between
+    "result from call 1" and "result from call 2" is still completely
+    unambiguous (two distinct strings, not yet concatenated). A second,
+    real bug found verifying the first nested-fusion-section fix: two
+    independent calls to the same backend (e.g. one nested inside an
+    internal-fusion sub-query, one a separately-decomposed clause's own
+    bare resolution) can return overlapping items — confirmed via a
+    real FreshRSS "general query, return everything" case where the
+    same recent headlines legitimately came back from two separate,
+    redundant calls. Deduping AFTER the plain "\\n\\n" join below would
+    require re-finding that same boundary inside already-merged text,
+    where it's no longer reliably distinguishable from an ordinary
+    paragraph break within one blob's own content — tried first,
+    confirmed broken via a failing test, fixed by moving the dedup
+    earlier instead."""
     if not parts:
         return parts
     merged = []
     current_source, current_result = parts[0]
     for source, result in parts[1:]:
         if source == current_source:
-            current_result = current_result.rstrip() + "\n\n" + result.lstrip()
+            current_result, result, is_multi_item = _dedupe_items_across_blobs(current_result, result)
+            separator = "\n\n---\n\n" if is_multi_item else "\n\n"
+            current_result = current_result.rstrip() + separator + result.lstrip()
         else:
             merged.append((current_source, current_result))
             current_source, current_result = source, result
     merged.append((current_source, current_result))
     return merged
+
+
+def _dedupe_items_across_blobs(first: str, second: str) -> tuple[str, str, bool]:
+    """Remove items from `second` that already appear in `first`,
+    before the two get joined by _merge_same_source() above.
+
+    Splits each blob on the real, established "\\n\\n---\\n\\n" item
+    separator every multi-item source (freshrss.py's news, searxng.py's
+    web) already uses for its own individual result blocks. Dedup key
+    is each item's first line — the "**Title** (Source)" or "**Title**"
+    line every one of these sources leads with — exact match only,
+    never a fuzzy/similarity comparison, so this can only ever remove a
+    genuinely identical leading line, not something that merely looks
+    similar.
+
+    A true no-op (returns both inputs completely unchanged) for any
+    blob with no real overlap — the overwhelming common case — and for
+    any content that isn't built from this "**Title**"-leading,
+    "---"-separated item convention at all (e.g. a single-item plain-
+    text result, or Home Assistant's differently-shaped bulleted-list
+    content), since those simply won't split into multiple items with
+    a shared leading line to begin with.
+
+    Returns (first, second, is_multi_item) — the third value tells the
+    caller whether either blob looked like real multi-item list
+    content, so the caller can join the two with the real "\\n\\n---\\n\\n"
+    item separator instead of a bare "\\n\\n" that would otherwise leave
+    the boundary between the two original blobs visually indistinguishable
+    from an ordinary paragraph break within either one's own content —
+    confirmed via a real failing test this exact ambiguity is what
+    silently broke a first version of this fix's own dedup logic
+    downstream.
+    """
+    first_items = first.split("\n\n---\n\n")
+    second_items = second.split("\n\n---\n\n")
+    is_multi_item = len(first_items) > 1 or len(second_items) > 1
+    if not is_multi_item:
+        return first, second, False  # neither blob looks like a multi-item list — nothing to dedupe
+
+    seen_titles = {item.strip().split("\n", 1)[0].strip() for item in first_items if item.strip()}
+    deduped_second_items = [
+        item for item in second_items
+        if item.strip().split("\n", 1)[0].strip() not in seen_titles
+    ]
+    if len(deduped_second_items) == len(second_items):
+        return first, second, True  # multi-item, but nothing was actually a duplicate
+    return first, "\n\n---\n\n".join(deduped_second_items), True
 
 
 _HEADER_LABELS = {

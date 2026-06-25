@@ -496,6 +496,115 @@ class TestFusionMergeSameSource:
         assert self.merge(parts) == parts
 
 
+class TestDedupeItemsAcrossBlobs:
+    """Regression tests for a real, live duplicate-CONTENT bug found
+    while verifying the fix for the duplicate-SECTION bug in
+    router.py's _dedupe_nested_fusion_sections(). That fix correctly
+    produced exactly ONE [NEWS — ...] header on a real MiniDock result
+    — working as designed — but the single section's own body still
+    contained the same several headlines twice, because two
+    independent calls to news.search() (one nested inside an internal-
+    fusion sub-query, one a separately-decomposed clause's own bare
+    resolution) both legitimately returned overlapping items (a real
+    FreshRSS "general query, return everything" case), and nothing
+    anywhere deduplicated ACROSS the two calls.
+
+    _merge_same_source()'s own join (a bare string concatenation) has
+    no content-level awareness at all — fixed by deduping items
+    BETWEEN the two blobs being merged, at the exact point where the
+    boundary between "result from call 1" and "result from call 2" is
+    still completely unambiguous (two distinct strings, not yet
+    joined) — tried deduping AFTER the join first; confirmed broken via
+    a failing test, since the real boundary becomes indistinguishable
+    from an ordinary paragraph break once joined with a bare "\\n\\n".
+    """
+
+    def setup_method(self):
+        from app.sources.fusion import _dedupe_items_across_blobs
+        self.dedupe = _dedupe_items_across_blobs
+
+    def test_real_world_regression_case_overlapping_headlines(self):
+        """The exact real shape from the live MiniDock result: two
+        item lists sharing some headlines but not all."""
+        first = (
+            "**Headline A** (NYT)\nContent A\n\n---\n\n"
+            "**Headline B** (NYT)\nContent B\n\n---\n\n"
+            "**Headline C** (NYT)\nContent C"
+        )
+        second = (
+            "**Headline A** (NYT)\nContent A\n\n---\n\n"
+            "**Headline B** (NYT)\nContent B\n\n---\n\n"
+            "**Headline D** (NYT)\nContent D"
+        )
+        deduped_first, deduped_second, is_multi_item = self.dedupe(first, second)
+        assert is_multi_item is True
+        assert deduped_first == first  # first blob is never modified
+        assert "Headline A" not in deduped_second
+        assert "Headline B" not in deduped_second
+        assert "Headline D" in deduped_second  # the one genuinely new item survives
+
+    def test_no_overlap_is_a_true_noop(self):
+        first = "**Headline A**\nContent A\n\n---\n\n**Headline B**\nContent B"
+        second = "**Headline C**\nContent C\n\n---\n\n**Headline D**\nContent D"
+        deduped_first, deduped_second, is_multi_item = self.dedupe(first, second)
+        assert deduped_first == first
+        assert deduped_second == second
+        assert is_multi_item is True
+
+    def test_neither_blob_multi_item_is_a_true_noop(self):
+        """Plain, single-item content (e.g. Home Assistant's
+        differently-shaped output, or any simple non-list result) must
+        be a true no-op — confirms this fix doesn't change behavior
+        for content that was never built from the "---"-separated item
+        convention to begin with."""
+        first = "All doors locked."
+        second = "All doors locked."  # even an exact duplicate of plain text
+        deduped_first, deduped_second, is_multi_item = self.dedupe(first, second)
+        assert deduped_first == first
+        assert deduped_second == second
+        assert is_multi_item is False
+
+    def test_complete_overlap_empties_second_blob(self):
+        """If every item in the second blob already exists in the
+        first, the second blob's deduped result should be empty —
+        confirms the dedup can remove ALL items, not just some."""
+        first = "**Headline A**\nContent A\n\n---\n\n**Headline B**\nContent B"
+        second = "**Headline A**\nContent A\n\n---\n\n**Headline B**\nContent B"
+        deduped_first, deduped_second, is_multi_item = self.dedupe(first, second)
+        assert deduped_second == ""
+
+    def test_merge_same_source_uses_real_separator_for_multi_item_content(self):
+        """End-to-end: _merge_same_source() itself must join two
+        multi-item blobs with the real "---" item separator, not a
+        bare "\\n\\n" that would make the boundary between the two
+        original results indistinguishable from an ordinary paragraph
+        break."""
+        from app.sources.fusion import _merge_same_source
+        parts = [
+            ("news", "**Headline A**\nContent A\n\n---\n\n**Headline B**\nContent B"),
+            ("news", "**Headline A**\nContent A\n\n---\n\n**Headline C**\nContent C"),
+        ]
+        merged = _merge_same_source(parts)
+        assert len(merged) == 1
+        result = merged[0][1]
+        assert result.count("Headline A") == 1
+        assert "Headline B" in result
+        assert "Headline C" in result
+        # The real item separator must appear between the merged
+        # items, not a bare double-newline.
+        assert "Content B\n\n---\n\n**Headline C**" in result
+
+    def test_merge_same_source_still_uses_plain_join_for_non_multi_item_content(self):
+        """Confirms plain, non-list content (the pre-existing,
+        already-tested test_same_source_merged scenario above) still
+        uses the original bare "\\n\\n" join, unaffected by this fix."""
+        from app.sources.fusion import _merge_same_source
+        parts = [("ha", "Indoor sensors result."), ("ha", "Door locks result.")]
+        merged = _merge_same_source(parts)
+        assert merged[0][1] == "Indoor sensors result.\n\nDoor locks result."
+        assert "---" not in merged[0][1]
+
+
 class TestLooksEmpty:
     """Tests for _looks_empty result validation."""
 
