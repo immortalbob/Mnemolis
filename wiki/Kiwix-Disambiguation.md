@@ -42,7 +42,7 @@ That fourth condition is checked against the *final, cleaned* search term — no
 
 ## What happens once it triggers
 
-The LLM is asked for 2–3 candidate search phrases that might find the article actually meant — not a single best guess, several real options. Every candidate is then genuinely searched against Kiwix (not just trusted), and every result from every candidate gets pooled together and deduplicated by URL before scoring picks the actual winner. See [Kiwix Scoring](Kiwix-Scoring) for exactly how that final decision is made.
+The LLM is asked for 2–3 candidate search phrases that might find the article actually meant — not a single best guess, several real options. Every candidate is then genuinely searched against Kiwix (not just trusted, via the same [search mechanism](Kiwix-Catalog-and-Article-Fetching#searching-a-book) every other Kiwix query uses), and every result from every candidate gets pooled together and deduplicated by URL before scoring picks the actual winner. See [Kiwix Scoring](Kiwix-Scoring) for exactly how that final decision is made.
 
 Candidate generation is itself cached in the routing cache (`disambig_candidates:{search_terms}`), so a repeated ambiguous query doesn't pay the LLM cost twice — the expensive part (asking the LLM what the candidates even are) happens once per unique ambiguous term, ever (within the cache's TTL), while the actual disambiguation search-and-score still runs fresh.
 

@@ -79,9 +79,9 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `KIWIX_SEARCH_LIMIT` | `15` | Results requested per book per search — higher values give [scoring](Kiwix-Scoring) more candidates to find the right answer among when common terms collide with brand-name results |
+| `KIWIX_SEARCH_LIMIT` | `15` | Results requested per [book search](Kiwix-Catalog-and-Article-Fetching#searching-a-book) — higher values give [scoring](Kiwix-Scoring) more candidates to find the right answer among when common terms collide with brand-name results |
 | `KIWIX_MAX_BOOKS` | `2` | Max books the LLM can select for one query — raise this to allow broader [multi-book fusion](Multi-Book-Fusion), at the cost of more searches per query |
-| `KIWIX_ARTICLE_MAX_CHARS` | `3000` | How many characters of a fetched article's body to keep before scoring/fusion ever sees it — distinct from `FUSION_MAX_CHARS_PER_SOURCE`, which truncates the already-combined multi-source response, not an individual Kiwix article on its own |
+| `KIWIX_ARTICLE_MAX_CHARS` | `3000` | How many characters of a [fetched article's](Kiwix-Catalog-and-Article-Fetching#fetching-the-actual-article) body to keep before scoring/fusion ever sees it — distinct from `FUSION_MAX_CHARS_PER_SOURCE`, which truncates the already-combined multi-source response, not an individual Kiwix article on its own |
 | `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT` | `0.5` | The actual, central decision threshold for [multi-book fusion](Multi-Book-Fusion): a second book's best result must score at least this fraction of the leading book's top score to be included. Lower for more aggressive fusion, raise for more conservative |
 
 ## Web & news scoring

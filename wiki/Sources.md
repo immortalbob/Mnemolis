@@ -23,7 +23,7 @@ Two more values exist but aren't really sources in their own right:
 
 Backed by a Kiwix server holding whatever ZIM files you've loaded — typically full Wikipedia plus a set of Stack Exchange communities relevant to homelab/technical work (Unix, Raspberry Pi, electronics, etc.), iFixit repair guides, FreeCodeCamp, and DevDocs reference material.
 
-This is the most architecturally complex source by far — it has its own LLM-assisted book selection, multi-candidate disambiguation for ambiguous bare words, and multi-book fusion when a question genuinely spans more than one ZIM. See [Kiwix Disambiguation](Kiwix-Disambiguation), [Kiwix Scoring](Kiwix-Scoring), and [Multi-Book Fusion](Multi-Book-Fusion) for the full mechanics.
+This is the most architecturally complex source by far — it dynamically discovers what books exist from your actual Kiwix catalog, has its own LLM-assisted book selection, multi-candidate disambiguation for ambiguous bare words, and multi-book fusion when a question genuinely spans more than one ZIM. See [Kiwix Catalog & Article Fetching](Kiwix-Catalog-and-Article-Fetching), [Kiwix Disambiguation](Kiwix-Disambiguation), [Kiwix Scoring](Kiwix-Scoring), and [Multi-Book Fusion](Multi-Book-Fusion) for the full mechanics.
 
 **Falls back to `web`** if it returns nothing usable — see [Routing](Routing) for exactly what counts as "nothing usable."
 

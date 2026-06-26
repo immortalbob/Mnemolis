@@ -32,8 +32,11 @@ The actual path a query takes, roughly in the order it's useful to read them:
 - **[Caching](Caching)** — the result cache and routing cache: what's cached, for how long, and how size is bounded
 - **[Timezone Conversion](Timezone-Conversion)** — converting stored UTC timestamps into real local time, and why this needed its own dedicated piece rather than reusing `_hours_since()`'s existing logic
 
+One real cross-cutting dependency worth knowing about up front: the discourse-framing phrase list and the stop-word set used in Routing's bias and Query Decomposition's content filtering are both defined once, in `kiwix.py`, not duplicated locally — see [The Discourse-Framing Investigation](The-Discourse-Framing-Investigation#a-real-deliberate-single-source-of-truth) for why. The rest of `kiwix.py` — disambiguation, scoring, multi-book fusion, catalog discovery — is genuinely Kiwix-internal and covered in its own Deep Dive section below.
+
 ## Kiwix Deep Dive
 
+- **[Kiwix Catalog & Article Fetching](Kiwix-Catalog-and-Article-Fetching)** — how Mnemolis discovers what books exist, searches one, and turns a winning result into actual article text
 - **[Kiwix Disambiguation](Kiwix-Disambiguation)** — the multi-candidate search-and-score approach that replaced trusting a single LLM guess, and why
 - **[Kiwix Scoring](Kiwix-Scoring)** — the exact point values behind article selection, spelled out in full
 - **[Multi-Book Fusion](Multi-Book-Fusion)** — when and why Mnemolis merges results from more than one Kiwix book instead of picking just one

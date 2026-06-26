@@ -235,7 +235,7 @@ Query decomposition and conditional detection (see [Query Decomposition](#query-
 - `ollama` — Ollama native API (default)
 - `openai` — OpenAI-compatible API (llama-server, LM Studio, etc.)
 
-The book list is built dynamically from your Kiwix catalog at startup. To force a refresh after adding ZIMs:
+The book list is built dynamically from your Kiwix catalog at startup — see [Kiwix Catalog & Article Fetching](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Catalog-and-Article-Fetching) for the actual discovery mechanism. To force a refresh after adding ZIMs:
 
 ```bash
 curl -X POST http://your-host:8888/catalog/refresh
@@ -606,7 +606,7 @@ Detection is deliberately narrow — only a leading `"if X, Y"` / `"should X, Y"
   article           fusion response
 ```
 
-This is the layer that fixed the "galaxy returns Samsung phones, battery returns military fortifications" problem — rather than trusting one LLM guess about which search term will work, Mnemolis tries several candidates and verifies against real Kiwix results, scored the same way regardless of which term found them. Full mechanics and exact scoring weights: **[Kiwix Disambiguation](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Disambiguation)** and **[Kiwix Scoring](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Scoring)**.
+This is the layer that fixed the "galaxy returns Samsung phones, battery returns military fortifications" problem — rather than trusting one LLM guess about which search term will work, Mnemolis tries several candidates and verifies against real Kiwix results, scored the same way regardless of which term found them. Full mechanics and exact scoring weights: **[Kiwix Catalog & Article Fetching](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Catalog-and-Article-Fetching)**, **[Kiwix Disambiguation](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Disambiguation)**, and **[Kiwix Scoring](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Scoring)**.
 
 ## REST API
 

@@ -1,6 +1,6 @@
 # Kiwix Scoring
 
-Every candidate result Kiwix returns — whether from a single search or pooled across several [disambiguation](Kiwix-Disambiguation) candidates and, when relevant, several books — gets run through the same scoring function before one is picked as the actual answer. This page documents the exact point values, because "scored against the query" without the real numbers isn't actually verifiable by anyone reading it.
+Every candidate result Kiwix returns — whether from a [single search](Kiwix-Catalog-and-Article-Fetching#searching-a-book) or pooled across several [disambiguation](Kiwix-Disambiguation) candidates and, when relevant, several books — gets run through the same scoring function before one is picked as the actual answer. This page documents the exact point values, because "scored against the query" without the real numbers isn't actually verifiable by anyone reading it.
 
 ## The full scoring breakdown
 
