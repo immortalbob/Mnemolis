@@ -14,7 +14,7 @@ A single, honest list of what Mnemolis doesn't do well, written for someone deci
 
 ## Transport & Upstream Dependencies
 
-**A real, currently-open upstream race condition exists in the MCP transport layer.** Independent of anything Mnemolis's own code does, there's an open issue in the underlying MCP SDK describing a scenario where the Streamable HTTP session manager can report "shutting down" immediately after a request starts, before a response is fully streamed — potentially causing an empty or truncated response under certain timing conditions. This is not something Mnemolis can currently fix on its own side; it's documented directly in `mcp_server.py` as a known risk to watch for, and worth checking that upstream issue before assuming a truncated MCP response is a Mnemolis-specific bug. See [MCP Server](MCP-Server#a-real-currently-open-ecosystem-bug-found-during-the-migration).
+**A real, currently-open upstream race condition exists in the MCP transport layer.** Independent of anything Mnemolis's own code does, there's an open issue in the underlying MCP SDK describing a scenario where the Streamable HTTP session manager can report "shutting down" immediately after a request starts, before a response is fully streamed — potentially causing an empty or truncated response under certain timing conditions. This is not something Mnemolis can currently fix on its own side; it's documented directly in `mcp_server.py` as a known risk to watch for, and worth checking that upstream issue before assuming a truncated MCP response is a Mnemolis-specific bug. See [The MCP Transport Migration](The-MCP-Transport-Migration#the-complete-correct-fix).
 
 ## What's deliberately *not* on this list
 

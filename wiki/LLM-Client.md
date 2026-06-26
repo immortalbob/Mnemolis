@@ -34,15 +34,15 @@ Everything above `llm.py` calls one function, `complete(prompt, max_tokens, temp
 
 `complete()`'s own `try/except` wraps the entire backend call — a connection refused, a timeout, a malformed response, an HTTP error status, all collapse to the same `None` return rather than an exception propagating up into routing logic that was never written to handle one. This is why a dark LLM backend (Ollama down, network partition, container not yet started) degrades Mnemolis's *intelligence*, not its *availability* — every real caller has a deterministic fallback for exactly this case, covered in [Routing](Routing#two-ways-a-source-gets-chosen) and [Kiwix Disambiguation](Kiwix-Disambiguation).
 
-## A real, serious bug: thinking models silently returned nothing at all
+## How thinking models are handled on both backends
 
-Both backends need to handle one real, common failure mode in modern local models: a "thinking" model (Qwen3 and similar reasoning-tuned families) often puts its actual answer in a separate field from the one a naive client would read, especially when prompted not to think out loud but does anyway.
+Both backends need to handle one real, common case in modern local models: a "thinking" model (Qwen3 and similar reasoning-tuned families) often puts its actual answer in a separate field from the one a naive client would read, especially when prompted not to think out loud but does anyway.
 
-**Ollama's native API** already had a real, working fallback for this from early in the project's life: if the `response` field comes back empty, fall through to the `thinking` field, take its last non-empty line, and use that as the real answer.
+**Ollama's native API** — if the `response` field comes back empty, fall through to the `thinking` field, take its last non-empty line, and use that as the real answer.
 
-**The OpenAI-compatible path had no equivalent at all** — confirmed as a genuine, serious gap, not a theoretical one. `llama.cpp`'s own server documentation confirms its default `reasoning_format` ("deepseek" style) puts a thinking model's real output in `message.reasoning_content`, leaving `message.content` empty — and this is also the convention most other OpenAI-compatible servers follow. Without a matching fallback, **every single completion on this path would silently return `None`** for a thinking model — not a contrived edge case, but the literal default behavior for the specific kind of model this project's own setup documentation describes running on this exact backend (`llama-server` with a Qwen3-Coder model).
+**The OpenAI-compatible path** — if `message.content` is empty, fall through to `message.reasoning_content` (or the `reasoning` field variant some servers use instead), take its last non-empty line, and use that. `llama.cpp`'s own server documentation confirms its default `reasoning_format` ("deepseek" style) puts a thinking model's real output in `message.reasoning_content`, leaving `message.content` empty — and this is also the convention most other OpenAI-compatible servers follow.
 
-**Fixed** by mirroring the same fallback shape already proven on the Ollama side: if `message.content` is empty, fall through to `message.reasoning_content` (or the `reasoning` field variant some servers use instead), take its last non-empty line, and use that. Both fallbacks exist for the identical underlying reason — a thinking model's real answer needs to be found somewhere even when the field a naive client expects it in is empty — implemented twice because the two backends genuinely shape that fallback data differently, not because the logic was duplicated carelessly.
+Both fallbacks exist for the identical underlying reason — a thinking model's real answer needs to be found somewhere even when the field a naive client expects it in is empty — implemented twice because the two backends genuinely shape that fallback data differently, not because the logic was duplicated carelessly.
 
 ## Why "last non-empty line," specifically
 
@@ -51,3 +51,9 @@ Both fallbacks take the *last* non-empty line of the thinking/reasoning text, no
 ## What happens when nothing is configured at all
 
 `is_configured()` returns `False` whenever `LLM_URL` or `LLM_MODEL` is blank — the default, out-of-the-box state. This isn't a degraded or error mode; it's a fully supported way to run Mnemolis, just with less of its routing intelligence available. [Routing](Routing) falls back to keyword-only matching, [Kiwix Disambiguation](Kiwix-Disambiguation) and [Query Expansion](Query-Expansion) never trigger, and book selection falls back to a fixed "search Wikipedia first" rule — see [Configuration Reference](Configuration-Reference) for the complete list of what depends on this setting being present.
+
+---
+
+## Development Notes
+
+- **The OpenAI-compatible path used to have no thinking-model fallback at all**, while Ollama's native path already did. This meant every single completion would silently return `None` for a thinking model on this backend — not a contrived edge case, but the literal default behavior for the specific setup (`llama-server` with a Qwen3-Coder model) this project's own setup documentation describes running. Fixed by mirroring the same fallback shape already proven on the Ollama side.

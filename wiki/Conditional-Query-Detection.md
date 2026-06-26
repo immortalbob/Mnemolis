@@ -26,7 +26,7 @@ Once a condition is extracted, the real question is whether Mnemolis can say any
 _YES_NO_INTERPRETABLE_SOURCES = {"ha", "uptime", "forecast"}
 ```
 
-- **`ha`** — checks for "locked"/"unlocked" keywords in the condition, then in the result
+- **`ha`** — checks for "locked"/"unlocked" keywords in the condition, then in the result. The result-side check specifically looks for "unlocked" before "locked," in that fixed order, regardless of which state the condition asserted — "locked" is a literal substring of "unlocked," so checking for it first would incorrectly match an "unlocked" result as if it said "locked."
 - **`uptime`** — checks `"down"`/`"not up"` (the condition implying something's broken) or `"up"`/`"running"`/`"working"` (implying it should be fine) in the condition, against `"down"` or `"all"`+`"up"` together in the result
 - **`forecast`** — checks for `"rain"`/`"raining"` in the condition specifically (deliberately narrow, never a broader "bad weather" guess); if found, checks the result for `"rain"`, `"storm"`, or `"shower"` language to confirm, or `"clear"` to deny. The condition-side and result-side keyword sets are deliberately asymmetric — `"storm"`/`"shower"` are real, valid ways the *result* might describe rain happening, but a *condition* phrased as "if there's a storm" (no mention of rain) isn't matched at all, since there's no `positive_condition_keywords` or storm-specific condition check for this source. Not a bug — see the next paragraph for what's actually interpretable here and what isn't.
 
@@ -56,31 +56,17 @@ Every other source — Kiwix, web, news — is **never** interpreted, on purpose
 
 Wrong is worse than uncertain. That's the entire design principle behind this feature, and it's the reason the interpretable-sources set is a short, explicit allowlist rather than something that tries to generalize.
 
-## Recursion, and the bug that taught us how to do it right
+## Re-applying to decomposed sub-queries
 
-A query can be conditional *without starting with "if"* — *"what is the weather and if the back door is unlocked, let me know"* doesn't match the leading pattern at all, but [Query Decomposition](Query-Decomposition) will still split it into two sub-queries, and the second one (*"if the back door is unlocked, let me know"*) absolutely is conditional. Conditional detection is re-applied to every decomposed sub-query for exactly this reason.
+A query can be conditional *without starting with "if"* — *"what is the weather and if the back door is unlocked, let me know"* doesn't match the leading pattern at all, but [Query Decomposition](Query-Decomposition) will still split it into two sub-queries, and the second one (*"if the back door is unlocked, let me know"*) absolutely is conditional. Conditional detection is re-applied to every decomposed sub-query for exactly this reason, self-limiting by construction rather than needing an explicit recursion-depth counter — see [The Recursion Design Bug](The-Recursion-Design-Bug) for the simpler design this replaced and the real bug that motivated the change.
 
-The first version of this re-check recursed on the *original* `"if X, Y"` string, with a manual depth counter meant to prevent runaway recursion. That counter introduced a real bug: it incremented *before* the conditional was actually consumed, which meant the recursive call's own necessary re-detection of the very same conditional got blocked by the counter that was supposed to be protecting against infinite recursion that was never actually possible in the first place. The fix — and the much simpler design that replaced the depth counter entirely — is told in full in [The Recursion Design Bug](The-Recursion-Design-Bug).
+## The remainder after a conditional's consequence
 
-## When a real second question follows the conditional
+*"if any services are down, let me know, and also what's the weather"* has a genuine second intent hiding after the conditional's consequence. The extracted consequence is checked for a trailing conjunction and, if found, the remainder is split off and searched independently, merging it back into the final response with its own source attribution.
 
-*"if any services are down, let me know, and also what's the weather"* has a genuine second intent hiding after the conditional's consequence. An early version of the consequence-extraction regex was greedy and captured everything to the end of the string — *"let me know, and also what's the weather"* — silently swallowing the weather question into plain descriptive text that never got searched at all.
+## The condition and remainder are resolved concurrently
 
-This is fixed by checking the extracted consequence for a trailing conjunction and, if found, splitting off the remainder and searching it independently, merging it back into the final response with its own source attribution. The same fix surfaced a second, smaller bug — the exact `[FUSION — FUSION]` double-header issue described in [Fusion](Fusion) — at a new call site that hadn't existed when that bug was first found and fixed elsewhere.
-
-## A real, structural latency cost of handling the condition and remainder separately — now fixed
-
-The condition and the remainder used to each get routed with their own full, independent call — search the condition, get a verdict, *then* search the remainder, merge the two. This was sequential, not concurrent: if either half hit a slow LLM call or a slow fusion fan-out, the total wait was additive, not the longer of the two. A condition that took 2 seconds to resolve and a remainder that took 6 added up to roughly 8 seconds total, not 6.
-
-This was found via real, live latency data, not a synthetic benchmark — several real `conditional_with_remainder`-shaped queries logged by [Adversarial Self-Testing](Adversarial-Self-Testing#a-real-structural-latency-characteristic-found-initially-accepted-then-actually-fixed) showed latency meaningfully above what either half would cost alone.
-
-An earlier version of this page recorded this as deliberately *not* being fixed, reasoning that the same conditional-handling code's real bug history (the recursion depth-counter bug above, and the greedy-consequence-regex bug just above this section) made any change here too risky. **Re-examined directly, that reasoning conflated two different things.** Both real bugs live in `detect_conditional()`'s parsing logic and `_interpret_binary_state()`'s keyword matching — neither has anything to do with the *order* the two `route_with_source()` calls inside `_resolve_conditional()` execute in, and re-deriving the actual data dependencies confirmed those two calls don't depend on each other any more than [Query Expansion](Query-Expansion#the-real-latency-cost-when-expansion-fires-and-the-fix)'s two SearXNG fetches did — a structurally similar case that had already been found feasible and fixed by the time this one was re-examined.
-
-The real, original blocker turned out to be concrete and fixable, not a vague "this area is fragile" caution: a genuine, pre-existing file-write race in how both caches persisted to disk, found and fixed as part of researching the `web` case (see [Caching](Caching) for the full mechanism). That fix removed the actual reason this page's earlier caution had any teeth.
-
-**Fixed the same way, with the same verification discipline** — and worth being explicit that the discipline mattered, not just the idea: the `web` case's own fix shipped first with a real regression (`ThreadPoolExecutor` not propagating `contextvars.ContextVar` state into worker threads by default, silently breaking `suppress_cache_writes()`), caught by a real test before anyone hit it in practice. Building this fix started from that lesson rather than relearning it: each task gets its own `contextvars.copy_context()` call before submission (a single shared context can't be entered by two threads at once — confirmed the hard way while building the `web` fix), and three real checks ran before trusting any of it — a genuine timing proof of concurrency, direct confirmation `suppress_cache_writes()` correctly reaches both worker threads, and confirmation normal caching is unaffected when suppression isn't active.
-
-Only spun up at all when a remainder genuinely exists — a plain `"if X, Y"` query with no trailing conjunction (the more common real-world shape) has an empty remainder and never needed a second call in the first place; that path is completely unchanged. Verified against realistic timings matching the real flagged query's shape (a 2-second fusion fan-out condition, a 1.5-second single-source remainder): `2.0s` concurrent versus what would have been `3.5s` sequential.
+When a remainder exists, the condition and remainder are each routed with their own `route_with_source()` call, run concurrently rather than sequentially — a plain `"if X, Y"` query with no trailing conjunction (the more common real-world shape) has an empty remainder and never needed a second call in the first place, so that path is unaffected. See [The Latency Parallelization Investigation](The-Latency-Parallelization-Investigation#the-conditionalremainder-case-was-initially-wrongly-left-alone) for why this wasn't always concurrent, and the real regression a structurally similar earlier fix avoided repeating.
 
 ## What it looks like end to end
 
@@ -111,3 +97,12 @@ Back Door: locked"
 ```
 
 The real underlying result is always preserved in the response, regardless of the verdict — framing adds context, it never replaces or hides the actual data.
+
+---
+
+## Development Notes
+
+- **The first version of sub-query re-detection used a manual recursion-depth counter** that introduced a real bug: it incremented before the conditional was actually consumed, blocking the recursive call's own necessary re-detection of the same conditional. See [The Recursion Design Bug](The-Recursion-Design-Bug) for the much simpler design that replaced it.
+- **An early version of the consequence-extraction regex was greedy** and captured everything to the end of the string, silently swallowing a genuine second question into plain descriptive text that never got searched. The same fix that addressed this surfaced the `[FUSION — FUSION]` double-header bug at a new call site — see [The Fusion Merge Bugs](The-Fusion-Merge-Bugs#the-fusion-fusion-bug-and-why-it-kept-coming-back).
+- **The condition and remainder used to be resolved sequentially**, not concurrently — a real, measured latency cost that was initially left as an accepted risk, then re-examined and fixed once the original reasoning for leaving it alone turned out not to hold up. See [The Latency Parallelization Investigation](The-Latency-Parallelization-Investigation#the-conditionalremainder-case-was-initially-wrongly-left-alone) for the full story.
+- **A refactor that unified `ha`/`uptime`/`forecast`'s interpretation logic into one shared helper almost reintroduced the "locked"/"unlocked" substring trap.** The original, separate implementations correctly checked for "unlocked" first regardless of context; a first attempt at generalizing the logic instead checked whichever keyword matched the condition's own polarity first, which got the "condition says locked, result says unlocked" case backwards. Caught by deliberately constructing and testing that exact scenario before trusting the generalization — the existing test suite had never actually covered this specific case at all, despite the original code's correct check order existing specifically to guard against it.

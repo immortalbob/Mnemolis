@@ -47,7 +47,7 @@ If you're seeing `"Error reaching SearXNG: connection failed"`, check [The SearX
 
 ## `uptime` — Service Monitoring
 
-Connects to Uptime Kuma over its Socket.IO interface and reports a simple summary: either "all N services are up" or a list of what's currently down, pending, in maintenance, or — a real, distinct category — has no heartbeat data at all yet (a brand-new monitor, or one whose check interval hasn't fired since Uptime Kuma's own restart). That last category was once silently misreported as "in maintenance," a specific, false claim about a deliberately-configured state the monitor was never actually in; found via a deliberate complexity-investigation pass and fixed by giving it its own honest label rather than reusing an existing one.
+Connects to Uptime Kuma over its Socket.IO interface and reports a simple summary: either "all N services are up" or a list of what's currently down, pending, in maintenance, or — a real, distinct category — has no heartbeat data at all yet (a brand-new monitor, or one whose check interval hasn't fired since Uptime Kuma's own restart).
 
 This is one of three sources with a genuinely binary, structured signal (up/down) — which matters specifically for [Conditional Query Detection](Conditional-Query-Detection)'s yes/no verdicts.
 
@@ -66,7 +66,7 @@ Full setup details (generating a long-lived access token, the exact config vars)
 
 `ha`'s lock/unlock and door open/closed states are the other two structured, binary signals conditional detection can give a confident yes/no verdict against.
 
-**If "is the front door locked" or similar specific entity questions ever returned "no matching entities found" even though the entity clearly existed, that's fixed now** — see [Home Assistant Integration](Home-Assistant-Integration#if-a-specific-entity-question-ever-came-back-empty) for what happened and what to check if anything still looks wrong.
+**If "is the front door locked" or similar specific entity questions ever returned "no matching entities found" even though the entity clearly existed, that's fixed now** — see [Home Assistant Integration](Home-Assistant-Integration#development-notes) for what happened and what to check if anything still looks wrong.
 
 ## `changes` — What's Different Since X
 
@@ -79,3 +79,10 @@ Time-window phrases ("this morning," "while I was at work") resolve to a specifi
 ## How a query reaches one of these
 
 None of this matters until something decides *which* source(s) a given query should go to. That decision — keyword matching, LLM-assisted selection, and a few real, hard-won exceptions — is covered in full in [Routing](Routing).
+
+---
+
+## Development Notes
+
+- **`uptime`'s "no heartbeat data" case used to be silently misreported as "in maintenance"** — a specific, false claim about a deliberately-configured state the monitor was never actually in. Found via a deliberate complexity-investigation pass and fixed by giving it its own honest label.
+- **Nearly every natural phrasing of a general news request used to be misclassified as a specific-topic query.** The check for "is this a headline-style request, or does it have an actual topic" only recognized formal grammatical filler as stop words, never the common request verbs people actually use out loud — a direct test against 9 realistic phrasings (`"tell me the news"`, `"give me the headlines"`, `"show me my feeds"`, and others) found all 9 failing, each one scored against literal words like "tell" or "give" instead of cleanly returning the unfiltered feed. Fixed by expanding the stop-word set to include common request verbs and modifiers.

@@ -63,6 +63,11 @@ These pages exist because the lessons are genuinely worth keeping, not just beca
 - **[The Discourse-Framing Investigation](The-Discourse-Framing-Investigation)** — why "everyone's obsessed with X" queries routed past Kiwix, and why the real fix needed four separate, sequential discoveries, not the two it looked like at first
 - **[The SearXNG Timeout Lesson](The-SearXNG-Timeout-Lesson)** — a correctly-edited config file that silently didn't take effect, and how `/health` caught it
 - **[The Recursion Design Bug](The-Recursion-Design-Bug)** — how an over-cautious depth counter in conditional detection blocked its own necessary logic, and the simpler design that replaced it
+- **[The Fusion Merge Bugs](The-Fusion-Merge-Bugs)** — three sequential bugs in same-source result merging, plus the `[FUSION — FUSION]` double-header bug and a mixed-speed timeout crash
+- **[The MCP Transport Migration](The-MCP-Transport-Migration)** — a real external community audit that turned into a full transport migration, the upstream session-manager bug found before it shipped, and two more bugs a real client found the moment it actually tried to connect
+- **[The Caching Concurrency Investigation](The-Caching-Concurrency-Investigation)** — synthetic test traffic silently polluting real caches, and a separate file-write race underneath both caches, found while researching whether to parallelize query expansion
+- **[The Latency Parallelization Investigation](The-Latency-Parallelization-Investigation)** — the single most cross-page-scattered story in the project's history: two structurally similar latency problems, one fixed first, one initially (and wrongly) left alone, and a real regression caught only by going back and checking that reasoning
+- **[The Adversarial Testing Production Bugs](The-Adversarial-Testing-Production-Bugs)** — everything Adversarial Self-Testing has actually found in Mnemolis itself: a four-bug fusion-merge chain, a false positive with a regex bug underneath it, a real backend timeout, and one investigation that ended without a root cause
 
 ## Reference
 

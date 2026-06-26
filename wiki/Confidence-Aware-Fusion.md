@@ -14,7 +14,7 @@
 
 This is the same normalized-content-overlap idea [Kiwix Scoring](Kiwix-Scoring) uses, for the same reason: a raw keyword-hit count would systematically favor longer text, regardless of whether that text is actually more relevant.
 
-**Single-letter and single-digit keywords now count.** A query about "R" the programming language, or "C," used to lose that one distinguishing word entirely during keyword extraction — meaning a genuinely relevant result about the right language could score *lower* than an unrelated result about a different one, since the only words left to compare were generic ones both shared ("programming," "tutorial"). Fixed; a result actually about the topic you asked for should now correctly outrank one that isn't, even when the topic itself is a single character.
+Single-letter and single-digit keywords count toward this scoring as long as they're genuinely alphanumeric — a query about "R" the programming language, or "C," keeps that one distinguishing word during keyword extraction, so a result actually about the topic asked for correctly outranks one that isn't, even when the topic itself is a single character. A bare punctuation character on its own still doesn't count.
 
 ## The generic-result penalty
 
@@ -22,7 +22,7 @@ A surprising amount of real search noise isn't *wrong*, it's just *not actually 
 
 - **Title is a known generic label** — things that read like a site name rather than article content
 - **Content reads like a site description** — matches a small set of known boilerplate phrasing patterns
-- **The URL is a bare domain root with suspiciously short content** — no path beyond a trailing slash *and a query string stripped first* (a tracking parameter like `?utm_source=twitter` on an otherwise bare homepage used to defeat this check entirely, treating the homepage as if it had a real article path), and under 40 characters of actual text. A real article almost always has a path (`/article/some-slug`) and more than a sentence fragment of content; a landing page often has neither.
+- **The URL is a bare domain root with suspiciously short content** — no path beyond a trailing slash, with any query string stripped before that check runs (so a tracking parameter like `?utm_source=twitter` on an otherwise bare homepage doesn't make it look like it has a real article path), and under 40 characters of actual text. A real article almost always has a path (`/article/some-slug`) and more than a sentence fragment of content; a landing page often has neither.
 
 Any one of these triggers a flat −20 penalty, generally enough to push a generic result below anything genuinely on-topic without needing three separate penalty tiers.
 
@@ -50,3 +50,10 @@ Two URLs that are really the same page — `https://www.example.com/page/` and `
 ## Where this fits into the bigger picture
 
 This scoring runs *before* a result is even eligible to participate in [Fusion](Fusion)'s cross-source merge — a `news` or `web` result still has to clear this bar before fusion's own deduplication and truncation logic ever sees it. For `web` specifically, scoring also has to account for results coming from two different searches at once — see [Query Expansion](Query-Expansion) for why, and how the same scoring function handles a doubled result pool without favoring one search's results over the other's just because of which one ran first.
+
+---
+
+## Development Notes
+
+- **Single-letter and single-digit keywords used to be dropped entirely during keyword extraction.** A query about "R" the programming language, or "C," lost the one word that actually distinguished it from an unrelated result, since both sides were then only being compared on generic shared words — for a real query like "tutorial for the c programming language," a correct "C Programming Language" result could score *lower* than an unrelated "JavaScript Programming Language" one. Fixed by keeping a single character when it's genuinely alphanumeric, rather than simply allowing any single character through — a bare punctuation mark (a stray hyphen in "C++ vs C#", say) still doesn't count as a keyword on its own.
+- **A tracking query string used to defeat the generic-homepage detection.** `?utm_source=twitter` on an otherwise bare homepage made the URL look like it had a real article path, letting an obvious landing page slip past the −20 generic-result penalty. Fixed by stripping the query string before the path check runs.

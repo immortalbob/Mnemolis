@@ -35,7 +35,7 @@ These are homelab numbers, not a controlled cloud benchmark — they'll vary wit
 
 ## Running your own
 
-Before a genuine cold-cache run, clear both caches explicitly — found via a real run that produced an artificially clean result instead of real cold numbers without this step:
+Before a genuine cold-cache run, clear both caches explicitly — skipping this step produces an artificially clean result instead of real cold numbers:
 
 ```bash
 curl -X POST http://192.168.1.50:8888/cache/clear

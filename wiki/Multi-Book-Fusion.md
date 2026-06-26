@@ -6,7 +6,7 @@ Kiwix usually holds several distinct ZIM books — Wikipedia, a handful of Stack
 
 Book selection happens once, up front, before any searching: the LLM is asked to rank the available books for the query and return up to `KIWIX_MAX_BOOKS` (default **2**) of them. Most of the time this naturally collapses to one book, since most questions really do belong cleanly to one source. When it returns two, both get searched — and that's the actual trigger for fusion ever being considered at all. A single selected book never reaches the fusion-decision step, because there's nothing to fuse.
 
-**The same query now reliably picks the same book(s) every time, even across container restarts.** When the LLM's response doesn't exactly match a real book name and falls back to fuzzy substring matching, the candidate books used to be checked in an order that wasn't actually guaranteed to stay the same between runs — meaning a genuinely ambiguous LLM response (e.g. a truncated name matching both a "maxi" and a "nopic" variant of the same Wikipedia dump) could resolve to a different one of the two after a restart, for no visible reason. Fixed by checking candidates in a fixed, sorted order.
+**The same query reliably picks the same book(s) every time, even across container restarts.** When the LLM's response doesn't exactly match a real book name, fuzzy substring matching checks candidate books in a fixed, sorted order — so a genuinely ambiguous LLM response (e.g. a truncated name matching both a "maxi" and a "nopic" variant of the same Wikipedia dump) always resolves to the same one of the two, regardless of restart timing.
 
 ## Deciding whether to actually fuse, or just pick the winner
 
@@ -51,9 +51,9 @@ Having two books selected doesn't automatically mean both get used. The LLM pick
                           no fusion needed       result into one response
 ```
 
-That threshold — `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT`, default 50% of the top score — is a real, configurable setting, not a fixed constant; see [Configuration Reference](Configuration-Reference) to tune it. It was previously hardcoded, made configurable specifically because it's the actual, central "should a second book be fused in, or dropped as noise" decision this page documents, and a fixed constant gave anyone wanting to tune Mnemolis's own fusion-aggressiveness no way to do so.
+That threshold — `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT`, default 50% of the top score — is a real, configurable setting, not a fixed constant; see [Configuration Reference](Configuration-Reference) to tune it. It's the actual, central "should a second book be fused in, or dropped as noise" decision this page documents, so it's exposed rather than hardcoded.
 
-The `top_score > 0` guard above has its own real history: a result can legitimately score negative (a list/index article nets a real penalty with zero other matches), and when the *overall best* result across every book happens to be negative, the threshold check (`score >= top_score * 0.5`) silently breaks down for a negative `top_score` — even the top result itself wouldn't pass its own bar (`-10 >= -5` is `False`). This never actually produced a wrong final answer (a genuinely good result, when one exists, always becomes `top` by construction, so this only ever fires when every candidate is already poor, and falling through to "just use the single best, still-poor result" is the correct outcome either way) — but the explicit guard makes that intent correct by construction rather than relying on the threshold math accidentally landing in the right place.
+The `top_score > 0` guard above exists because a result can legitimately score negative (a list/index article nets a real penalty with zero other matches), and the threshold check (`score >= top_score * 0.5`) would otherwise behave inconsistently for a negative `top_score` — even the top result itself wouldn't pass its own bar (`-10 >= -5` is `False`). Checking explicitly makes the intent correct by construction: when every candidate is already poor, fall through to "just use the single best, still-poor result," rather than relying on the threshold math accidentally landing in the right place.
 
 ## What the merged response looks like
 
@@ -62,3 +62,10 @@ Each surviving book's best result gets its full article fetched, truncated the s
 ## How this differs from cross-source fusion
 
 This is a real, deliberate parallel to [Fusion](Fusion)'s own merge logic — truncated sections, attribution headers, sorted by relevance, graceful single-survivor fallback — but it's a genuinely separate code path, living inside `kiwix.py` rather than `fusion.py`. The reason: cross-source fusion merges results from entirely different *backends* (Kiwix, web, news), each already a finished, independent answer. Multi-book fusion merges results from within the *same* backend, before [Kiwix Scoring](Kiwix-Scoring) has even finished picking a final answer — it's a Kiwix-internal decision about which of its own books' results deserve to survive, not a decision about which external sources to combine.
+
+---
+
+## Development Notes
+
+- **Book selection used to be non-deterministic across restarts** when the LLM's response fell back to fuzzy substring matching — the candidate-checking order wasn't guaranteed stable, so a genuinely ambiguous response could resolve differently after a restart for no visible reason. Fixed by checking candidates in a fixed, sorted order.
+- **The fusion threshold used to be hardcoded** rather than exposed as `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT` — made configurable since it's the central decision this page documents.

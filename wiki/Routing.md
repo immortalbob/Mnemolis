@@ -67,7 +67,7 @@ Routing is the decision layer that sits between "what you typed" and "which [Sou
 
 **LLM-assisted selection** only runs when no keyword matched at all. The LLM is shown the query plus a one-line description of every source, and asked to return either one source name, or 2–3 comma-separated names if the question seems complex enough to benefit from combining sources. This is also where [Kiwix Disambiguation](Kiwix-Disambiguation)'s alternate phrasings and book selection happen, and where [Query Expansion](Query-Expansion) kicks in for `web`.
 
-Every LLM routing decision is cached for an hour (`ROUTING_CACHE_TTL`) — a query's source assignment is stable in practice, so paying the LLM cost twice for the same question is wasted work. See [Caching](Caching) for how that cache is bounded.
+Every LLM routing decision is cached for an hour (`ROUTING_CACHE_TTL_SECONDS`) — a query's source assignment is stable in practice, so paying the LLM cost twice for the same question is wasted work. See [Caching](Caching) for how that cache is bounded.
 
 ## The discourse-framing bias
 
@@ -75,17 +75,13 @@ This exists because of a real, repeatedly-reproduced bug: queries phrased as cur
 
 Rather than trying to nudge the LLM's judgment by rewording `kiwix`'s description — an indirect, hard-to-verify lever — this is detected explicitly with a small set of literal phrase matches (`"everyone keeps talking about"`, `"everyone's obsessed with"`, and a few variants). If one of these phrases is present and `kiwix` wasn't already part of the chosen source(s), `kiwix` gets added and the result escalates to fusion.
 
-**This check applies to BOTH paths above, not just LLM selection** — a real, separate gap from the keyword-matching path specifically, found later than the original fix and worth calling out explicitly here since it's easy to assume (the diagram above used to imply it) that discourse-framing only mattered when the LLM got involved. It doesn't: `"everyone keeps talking about black holes, and rss"` matches the keyword `"rss"` directly (→ `news`), with the LLM never even consulted — and the bias still needs to fire there too, or a perfectly ordinary keyword match silently defeats the entire point of detecting discourse framing in the first place. `INTENT_MAP` contains dozens of short, common words (`"news"`, `"weather"`, `"rss"`, `"feeds"`, `"door locked"`) that can easily co-occur with genuine discourse framing in a real sentence, so this isn't a rare edge case — it's the majority of real discourse-framed queries that happen to also mention any everyday word.
+**This check applies to both paths above, not just LLM selection.** `"everyone keeps talking about black holes, and rss"` matches the keyword `"rss"` directly (→ `news`), with the LLM never even consulted — and the bias still fires there too, adding `kiwix` and escalating to fusion the same way it would on the LLM path. `INTENT_MAP` contains dozens of short, common words (`"news"`, `"weather"`, `"rss"`, `"feeds"`, `"door locked"`) that can easily co-occur with genuine discourse framing in a real sentence, so this matters for the majority of real discourse-framed queries, not just an edge case.
 
-The full investigation, including a second bug found after the routing fix alone turned out not to be enough, and a third bug found later still in the keyword-matching path specifically, is in [The Discourse-Framing Investigation](The-Discourse-Framing-Investigation).
+The full investigation behind this feature, including the original LLM-path fix and a real gap later found in the keyword-matching path specifically, is in [The Discourse-Framing Investigation](The-Discourse-Framing-Investigation).
 
 ## Fallback — when a source comes back empty
 
-Two sources have a configured fallback target: `kiwix` and `news` both fall back to `web` if their own result looks empty. "Looks empty" is a literal phrase match against a known list — `"no results found"`, `"not configured"`, `"could not connect"`, and several others — not a judgment call or a confidence score. If `kiwix`'s response contains one of those phrases, `web` gets queried instead, transparently, and `source_used` in the response correctly reports `"web"` — never the originally-intended source that actually failed.
-
-**If a source you forgot to configure ever returned its own raw error message instead of automatically falling back to `web`, that's fixed now.** `router.py` and `fusion.py` used to carry separate copies of the "looks empty" phrase list that had quietly drifted apart — confirmed directly: with FreshRSS unconfigured, a "give me the news" query returned the literal string *"FreshRSS is not configured. Set FRESHRSS_URL and FRESHRSS_USER"* as the actual result, with `source_used: "news"`, because the routing module's own copy had never been taught to recognize "not configured" as a failure worth falling back from. Both now share one canonical list, living in `fusion.py`.
-
-This matters because it used to *not* work that way: an earlier version of `source_used` reported the originally *intended* source regardless of whether a fallback happened, meaning a query that silently fell back from `kiwix` to `web` claimed `source_used: "kiwix"` while the real content came from somewhere else entirely. Fixed properly, and now also fully observable — see [Health & Observability](Health-and-Observability) for how `fallback_occurred` gets tracked and surfaced in `/logs/stats`.
+Two sources have a configured fallback target: `kiwix` and `news` both fall back to `web` if their own result looks empty. "Looks empty" is a literal phrase match against a known list — `"no results found"`, `"not configured"`, `"could not connect"`, and several others — not a judgment call or a confidence score. Both `router.py` and `fusion.py` share one canonical version of this list, living in `fusion.py`. If `kiwix`'s response contains one of those phrases, `web` gets queried instead, transparently, and `source_used` in the response correctly reports `"web"` — never the originally-intended source that actually failed. The fallback itself is fully observable — see [Health & Observability](Health-and-Observability) for how `fallback_occurred` gets tracked and surfaced in `/logs/stats`.
 
 ## Where this connects to everything else
 
@@ -94,3 +90,10 @@ Routing decides *which* source(s) answer a query, but it's not the only layer th
 - [Query Decomposition](Query-Decomposition) runs first for any compound question, splitting it into independent sub-queries that each get routed separately
 - [Conditional Query Detection](Conditional-Query-Detection) runs before decomposition for leading `"if X, Y"` phrasing, and is re-applied to each decomposed sub-query too
 - [Fusion](Fusion) is what actually happens when routing decides more than one source is needed
+
+---
+
+## Development Notes
+
+- **The discourse-framing bias originally only fired on the LLM-selection path.** A real, separate gap meant a keyword match (even an ordinary one like `"rss"`) could silently bypass the bias entirely, defeating its purpose for the majority of real discourse-framed queries that happen to also mention an everyday `INTENT_MAP` word. See [The Discourse-Framing Investigation](The-Discourse-Framing-Investigation) for the full multi-bug history.
+- **A source you forgot to configure used to return its own raw error message instead of falling back to `web`.** `router.py` and `fusion.py` carried separate copies of the "looks empty" phrase list that had quietly drifted apart — confirmed directly with an unconfigured FreshRSS returning its literal `"FreshRSS is not configured..."` error as the actual result, with `source_used: "news"`. Fixed by sharing one canonical list. Separately, `source_used` itself used to report the originally-*intended* source even when a fallback happened, which made the bug above harder to see in the first place — fixed at the same time.

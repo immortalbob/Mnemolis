@@ -25,7 +25,7 @@ A fixed, small, enumerable type per entity — not "any string difference betwee
 | `ha` | `{entity_id}:{state}` for locks/doors/windows/opening sensors, `{entity_id}:motion_detected` for motion (the "off" → "on" detection edge only — the reverse transition is the sensor settling back to rest, not a new occurrence), `{entity_id}:battery_low` for battery crossings | `lock.front_door:unlocked`, `binary_sensor.back_door:opened`, `binary_sensor.hallway_motion:motion_detected`, `sensor.lock_battery:battery_low` |
 | `uptime` | A coarse, source-level signal — no per-monitor detail yet | `uptime:outage`, `uptime:recovery`, `uptime:pending` |
 
-**Motion support specifically was a real, found-and-fixed gap, not part of the original shipped version.** `snapshot_ha()` had always captured motion/window/opening sensor data, but the comparison logic that actually turns raw snapshots into events never had a branch for any of them — meaning the door→motion example at the top of this page, the literal reason this feature exists, was never actually testable at first. Found via review, not a bug report; fixed by extending the shared comparison core with the missing branches, the same one-source-of-truth function described below.
+Motion, window, and door/opening sensor states are all tracked here alongside locks and battery — the door→motion example at the top of this page, the literal reason this feature exists, is fully testable today (see "A real bug found during development" below for why that wasn't true in the version that first shipped).
 
 Battery events use a fixed `:battery_low` suffix rather than the literal percentage on purpose — encoding the real number would make every low-battery event for the same sensor register as a *different*, never-repeating event type, since the percentage is different every time, which would make pattern mining against it meaningless.
 
@@ -123,7 +123,7 @@ A pattern found once isn't validated — it's just been described. Every `candid
                                       in its own right)
 ```
 
-A pattern that fails to replicate is recorded as `unconfirmed`, not silently discarded — the same "status changes, history doesn't disappear" philosophy [Adversarial Self-Testing](Adversarial-Self-Testing#a-bug-this-feature-found-in-itself-before-it-ever-ran-in-production)'s `dismiss` mechanism already established. A genuinely informative "this looked real once but didn't hold up" is worth keeping visible, not cleaning away.
+A pattern that fails to replicate is recorded as `unconfirmed`, not silently discarded — the same "status changes, history doesn't disappear" philosophy [Adversarial Self-Testing](Adversarial-Self-Testing#what-gets-flagged)'s `dismiss` mechanism already established. A genuinely informative "this looked real once but didn't hold up" is worth keeping visible, not cleaning away.
 
 ## What gets surfaced, and where
 

@@ -29,7 +29,7 @@ Full mechanism detail for the operational maturity work lives in [Health & Obser
 
 A deliberate, full read of every file in `app/`, top to bottom — specifically ignoring complexity scores and looking at the kind of small, simple-looking code that score-driven review naturally skips. Found and fixed real bugs in nearly every file touched, several of them significant:
 
-- ✅ `home_assistant.py` — a severe word-boundary bug ("is the front door locked" silently returning no results) and four related fixes
+- ✅ `home_assistant.py` — a severe word-boundary bug ("is the front door locked" silently returning no results), an area-filtered query silently skipping real exclusion-keyword filtering, a three-bug chain around `binary_sensor`-style motion entity support, and a small grammar fix
 - ✅ `kiwix.py` — non-deterministic book selection, broken table-of-contents stripping, a single-character search-term bug, and an unbounded retry loop with a real multi-minute worst case
 - ✅ `fusion.py` — a real crash on `FUSION_MAX_SOURCES=0`
 - ✅ `snapshots.py` — uptime history only covering 9.6 real hours instead of a full week

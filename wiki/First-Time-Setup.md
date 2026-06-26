@@ -56,9 +56,15 @@ Docker Compose automatically prefixes named volumes and, in some setups, network
 
 1. **At least one Kiwix ZIM file** — without this, `kiwix` (the most architecturally complete source) has nothing to search. See the README's Kiwix ZIM files section for where to get them.
 2. **An LLM backend** (Ollama or an OpenAI-compatible endpoint) — without this, [Routing](Routing) falls back to keyword-only matching and Kiwix falls back to a fixed "search Wikipedia first" behavior, losing [disambiguation](Kiwix-Disambiguation), [query expansion](Query-Expansion), and the LLM-assisted parts of routing entirely. Mnemolis still works without one, just with meaningfully less of its actual intelligence available.
-3. **Your home coordinates** for `forecast` — a one-time config value, no ongoing service required. Worth setting deliberately rather than skipping: leaving it blank now correctly reports `forecast` as not configured (the same graceful degradation every other optional source gets), but it didn't always — it used to silently default to a real, valid ocean coordinate and return genuine-looking weather for the wrong place on Earth instead of telling you anything was missing.
+3. **Your home coordinates** for `forecast` — a one-time config value, no ongoing service required. Worth setting deliberately rather than skipping: leaving it blank now correctly reports `forecast` as not configured, the same graceful degradation every other optional source gets.
 4. **Whatever subset of FreshRSS, SearXNG, Uptime Kuma, and Home Assistant you actually use** — each is independently optional; Mnemolis degrades gracefully and simply reports that source as unreachable in `/health` if it's not configured or not running, rather than failing entirely.
 
 ## Where to go from here
 
 [Configuration Reference](Configuration-Reference) for every environment variable and what it actually controls. [Home Assistant Integration](Home-Assistant-Integration) specifically if HA is part of your setup, since it has its own token-generation step and a distinct category of queries it answers. [Troubleshooting](Troubleshooting) if something isn't behaving the way this page or the README led you to expect.
+
+---
+
+## Development Notes
+
+- **An unconfigured `forecast` used to silently return weather for the wrong place on Earth.** `FORECAST_LATITUDE`/`FORECAST_LONGITUDE` both default to `0.0` — a real, valid ocean coordinate, not an obviously-invalid sentinel — so an early version's blank-check missed it and returned genuine-looking weather for that location instead of reporting the source as unconfigured. Fixed; leaving these blank now correctly reports `forecast` as not configured, the same as every other optional source.

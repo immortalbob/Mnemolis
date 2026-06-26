@@ -72,8 +72,10 @@ Each entry in `top_queries` reports the source that answered it **most recently*
 
 ## `/logs` — the raw query log
 
-`GET /logs?limit=N` returns recent entries directly: timestamp, query, source requested, source used, cached flag, success, latency in milliseconds, and `fallback_occurred`. `limit` is clamped to a sane range (1-1000) — SQLite treats a negative `LIMIT` as "no limit at all," so `?limit=-1` used to return the entire query log rather than the bounded, recent-entries view this endpoint is meant to provide. Useful for spot-checking a specific recent query's behavior without waiting for it to show up in aggregate stats.
+`GET /logs?limit=N` returns recent entries directly: timestamp, query, source requested, source used, cached flag, success, latency in milliseconds, and `fallback_occurred`. `limit` is clamped to a sane range (1-1000) — SQLite treats a negative `LIMIT` as "no limit at all," so this bound exists specifically to keep `?limit=-1` from returning the entire query log. Useful for spot-checking a specific recent query's behavior without waiting for it to show up in aggregate stats.
 
-## A real example of this paying off immediately
+---
 
-Within minutes of `/health` first reporting `snapshot_jobs` and the cache fields, it also caught something unrelated and already real: a SearXNG `request_timeout` setting that had genuinely been edited correctly in the config file, but never took effect because the container running SearXNG had never actually been restarted since the edit. `/health` reported `web: error, Read timed out (read timeout=3)` — the literal old value, live, immediately — rather than that mismatch surfacing only the next time someone happened to notice degraded search results and traced it back by hand.
+## Development Notes
+
+- **Within minutes of `/health` first reporting `snapshot_jobs` and the cache fields, it caught something unrelated and already real**: a SearXNG `request_timeout` setting that had genuinely been edited correctly in the config file, but never took effect because the container running SearXNG had never actually been restarted since the edit. `/health` reported `web: error, Read timed out (read timeout=3)` — the literal old value, live, immediately. See [The SearXNG Timeout Lesson](The-SearXNG-Timeout-Lesson) for the full story.

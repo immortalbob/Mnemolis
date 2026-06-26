@@ -15,7 +15,7 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 | `SEARXNG_REQUEST_TIMEOUT_SECONDS` | `10` | Mnemolis's own client-side wait time for a SearXNG response — separate from SearXNG's own server-side `request_timeout` setting (see [The SearXNG Timeout Lesson](The-SearXNG-Timeout-Lesson)). Set this to match or exceed whatever SearXNG is itself configured to wait, or the documented timeout fix on the SearXNG side won't fully take effect — Mnemolis would still cut the connection first. Notably, the default here (`10`) is itself below the `20`-second `max_request_timeout` that lesson's own fix recommends configuring on the SearXNG side — if you've applied that fix, raise this setting to match, or you'll have moved the timeout bottleneck from SearXNG to Mnemolis instead of actually fixing it |
 | `UPTIME_KUMA_URL` | _(blank)_ | Leaving this blank disables the `uptime` source entirely, rather than erroring — `/health` will simply not report a status for it |
 | `UPTIME_KUMA_USERNAME` / `UPTIME_KUMA_PASSWORD` | _(blank)_ | |
-| `UPTIME_KUMA_TIMEOUT_SECONDS` | `10` | How long the Uptime Kuma client waits before giving up — previously a bare, hardcoded `timeout=30` with no way to tune it. Found via a real, live flag: a genuine 30-second timeout on a same-LAN service correctly triggered Mnemolis's empty-result fallback, but 30s is a long wait for something that should respond in well under a second. Lower for faster fallback to other sources on a genuinely unreachable instance |
+| `UPTIME_KUMA_TIMEOUT_SECONDS` | `10` | How long the Uptime Kuma client waits before giving up. Lower for faster fallback to other sources on a genuinely unreachable instance |
 | `HA_URL` | _(blank)_ | Same graceful-disable behavior as `UPTIME_KUMA_URL` |
 | `HA_TOKEN` | _(blank)_ | See [Home Assistant Integration](Home-Assistant-Integration) for how to generate this |
 
@@ -55,7 +55,7 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `FUSION_MAX_SOURCES` | `4` | Hard cap on how many sources one [fusion](Fusion) query can touch. Setting this to `0` doesn't disable fusion — it correctly returns "no valid sources specified" rather than the raw crash it used to produce |
+| `FUSION_MAX_SOURCES` | `4` | Hard cap on how many sources one [fusion](Fusion) query can touch. Setting this to `0` correctly returns "no valid sources specified" rather than crashing |
 | `FUSION_MAX_CHARS_PER_SOURCE` | `1500` | Per-source truncation before merging |
 | `FUSION_TIMEOUT_SECONDS` | `15` | How long any single source gets before fusion moves on without it |
 
@@ -133,8 +133,16 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `LOG_LEVEL` | `INFO` | `INFO` is what actually shows the interesting decisions — decomposition splits, disambiguation candidates, article selection. This wasn't always true: application logging was silently disabled project-wide for a real stretch of this project's history (the root logger defaulted to `WARNING` with no handler configured), meaning every `_LOGGER.info()` call across the entire codebase was being swallowed before anyone could see it. Fixed once, and worth knowing about if you're ever debugging on a build old enough to predate that fix |
+| `LOG_LEVEL` | `INFO` | `INFO` is what actually shows the interesting decisions — decomposition splits, disambiguation candidates, article selection |
 
 ## Where to go from setting a value to understanding what it actually does
 
 Most of the notes above link to the wiki page that covers the real mechanism a setting controls — [Routing](Routing), [Caching](Caching), [Fusion](Fusion), [Kiwix Scoring](Kiwix-Scoring), and so on. The numeric default itself is rarely the interesting part; the page it links to explains why that number, specifically, was chosen.
+
+---
+
+## Development Notes
+
+- **`UPTIME_KUMA_TIMEOUT_SECONDS` didn't exist until recently** — the client previously had a bare, hardcoded `timeout=30` with no way to tune it, found via a real, live latency flag. See [The Adversarial Testing Production Bugs](The-Adversarial-Testing-Production-Bugs#a-real-genuine-backend-timeout-correctly-reported-but-with-no-way-to-tune-it) for the full story.
+- **`FUSION_MAX_SOURCES=0` used to crash with a raw error** rather than returning the sensible "no valid sources specified" message that already existed elsewhere in the same code path.
+- **Application logging was silently disabled project-wide for a real stretch of this project's history.** The root logger defaulted to `WARNING` with no handler configured, meaning every `_LOGGER.info()` call across the entire codebase was being swallowed before anyone could see it. Fixed once; worth knowing about if you're ever debugging on a build old enough to predate the fix.
