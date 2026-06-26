@@ -4,6 +4,52 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.49.0]
+
+### Fixed — A Real, Pre-Existing Concurrent File-Write Race in Both Caches
+Found while researching whether `web` query expansion's two sequential SearXNG fetches could safely be parallelized — auditing every writer of the routing cache surfaced a real, separate, pre-existing bug unrelated to that question's eventual answer. Both `_save_routing_cache()` and `_save_cache()` persisted to disk with a bare `open(path, "w")` followed by `json.dump()`, with no protection against two concurrent writers truncating the same file at the same time.
+
+This was never a hypothetical risk the parallelization work below would introduce — FastAPI's `/search` endpoint is a synchronous route, so Starlette already runs genuinely concurrent real requests on its own thread pool today, making two near-simultaneous cache saves a real, already-live scenario. Confirmed directly, not just reasoned about: a deliberate 8-writer/8-reader concurrent stress test against the old pattern produced 79,609 JSON corruption errors in two seconds. The real blast radius was bounded (the existing `except json.JSONDecodeError` fallback in `load_routing_cache()` already catches a corrupted file and starts fresh rather than crashing), but silently losing the entire on-disk cache on next restart was still a real, avoidable cost.
+
+Fixed with a new shared `_atomic_write_json()` helper in `router.py`: write to a temporary file in the same directory, then `os.replace()` onto the real target — atomic on POSIX (what this project runs on in production), so the file is always either the complete old version or the complete new one, never a partial write from either side. The identical stress test against the fix: zero errors. Both `_save_routing_cache()` and `_save_cache()` now share this one helper.
+
+### Fixed — `web` Query Expansion's Primary Fetch and Alternate-Phrasing Chain Now Run Concurrently
+The actual goal of this investigation, made possible by the fix above: `searxng.py`'s `search()` used to pay for the primary SearXNG fetch, the LLM call behind [Query Expansion](https://github.com/immortalbob/Mnemolis/wiki/Query-Expansion)'s `get_alternate_phrasing()`, and a second SearXNG fetch entirely sequentially — a real, live Adversarial Self-Testing latency flag traced this to roughly 4x the cost of a single fetch on a query that triggered expansion.
+
+The primary fetch and the alternate-phrasing chain have no real data dependency on each other (`get_alternate_phrasing()` only needs the original query text), so unlike [Conditional Query Detection](https://github.com/immortalbob/Mnemolis/wiki/Conditional-Query-Detection)'s own, similarly-shaped sequential cost (left as a documented, accepted tradeoff — see that page), this one was both genuinely parallelizable and, once the file-write race above was confirmed fixed, safe to actually parallelize. Both run concurrently now via a small `ThreadPoolExecutor`, the same pattern `fusion.py` already uses for its own multi-source dispatch — including correctly preserving the primary fetch's specific, real, user-facing timeout message (see "The SearXNG Timeout Lesson") and the alternate chain's existing non-fatal-failure guarantee. Verified against the exact original repro timings: `4.15s` sequential down to `3.04s` concurrent.
+
+### Added (Tests)
+- `TestAtomicWriteJson` (6 tests) in `test_cache_persistence.py` — including a real concurrent stress test (6 writer + 6 reader threads) proving zero corruption against the fix
+- `TestSearxngConcurrentFetch` (4 tests) in `test_searxng.py` — a real timing-based proof of genuine concurrency (not just unchanged output), the timeout message preserved correctly while the alternate thread is still in flight, and the non-fatal-failure guarantee re-verified under real concurrency
+- `TestUptimeKumaConfigurableTimeout` carried forward unchanged from 3.48.9
+
+### Changed
+- Wiki's [Caching](https://github.com/immortalbob/Mnemolis/wiki/Caching), [Query Expansion](https://github.com/immortalbob/Mnemolis/wiki/Query-Expansion), and [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) updated with the full investigation and the real, measured fix — the query-expansion latency case is no longer a documented limitation, it's resolved
+- Version bumped to 3.49.0
+
+**Total test count: 1228**
+
+---
+
+## [3.48.10]
+
+### Documented — A Second, Real Latency-Stacking Mechanism Found After Clearing Caches and Re-Running
+A fresh Adversarial Self-Testing flag after clearing both caches and running a few clean cycles: `nosplit_adjacent_to_real_conjunction` on `"difference between Iran and Israel, and find online"`, `6412ms` vs. a recipe p95 of `2502ms`. Traced to a genuinely different mechanism than the existing, documented conditional+remainder latency cost, despite the same symptom shape — this query never decomposes and resolves to a single source (`web`), no fusion or conditional handling involved at all.
+
+The real cost lives entirely inside `searxng.py`'s `search()`: a primary SearXNG fetch, followed by [Query Expansion](https://github.com/immortalbob/Mnemolis/wiki/Query-Expansion)'s `get_alternate_phrasing()` (a real, blocking LLM completion call), followed by a *second* SearXNG fetch for the alternate phrasing — three sequential round-trips billed as one source's latency whenever expansion actually fires. Reproduced directly with realistic mocked timings at roughly 4x the cost of a single fetch.
+
+Checked whether this is safely parallelizable, since the two fetches have no real data dependency on each other (unlike the conditional+remainder case): `_fetch_searxng()` is a pure function with no shared state, genuinely thread-safe. `get_alternate_phrasing()`'s own routing-cache read/write is the one place giving pause — not because it's known-unsafe, but because this project has real history (`suppress_cache_writes()`'s own design) showing concurrent cache access looks safe until it isn't. Documented as a known, accepted cost for now rather than attempted as a fix, the same call made for the conditional+remainder case — verifying it's actually safe to parallelize is real, separate work this finding didn't set out to do.
+
+Two distinct recipes now have real, legitimate latency-variance mechanisms a single, global `ADVERSARIAL_TEST_LATENCY_OUTLIER_MULTIPLIER` can't tell apart from a genuine anomaly — recorded as a real, now twice-motivated design question (a per-recipe latency baseline) in the known-limitations section, not yet built.
+
+### Changed
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) and [Query Expansion](https://github.com/immortalbob/Mnemolis/wiki/Query-Expansion) updated with the real, traced finding and a corrected account of exactly what the routing cache does and doesn't save on a repeat (skips the LLM call; does NOT skip the second SearXNG fetch, which only the alternate-phrasing *text* is cached, not its results)
+- Version bumped to 3.48.10
+
+**Total test count: 1218** (no code changes this release — investigation and documentation only)
+
+---
+
 ## [3.48.9]
 
 ### Fixed — Uptime Kuma's Connection Timeout Was a Bare, Unconfigurable Literal

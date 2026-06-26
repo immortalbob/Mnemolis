@@ -5,6 +5,7 @@ import logging
 import os
 import sqlite3
 import contextvars
+import tempfile
 from contextlib import contextmanager
 from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma, fusion, home_assistant
 from app.snapshots import get_changes, format_changes
@@ -457,12 +458,77 @@ def _set_routing(query: str, decision: str) -> None:
     _save_routing_cache()
 
 
-def _save_routing_cache() -> None:
-    """Persist routing cache to disk."""
+def _atomic_write_json(filepath: str, data: dict) -> None:
+    """Write `data` as JSON to `filepath` without ever leaving it in a
+    truncated or corrupted state, even under real concurrent writers.
+
+    Found via a real investigation, not written defensively up front:
+    researching whether searxng.py's two sequential fetches (primary +
+    query-expansion alternate) could safely run concurrently led to
+    auditing every writer of the routing cache, which surfaced this —
+    both _save_routing_cache() and _save_cache() previously did a bare
+    `open(path, "w")` followed by `json.dump()`. FastAPI's /search
+    endpoint is a SYNC route, meaning Starlette already runs concurrent
+    real requests on its own thread pool today — two requests landing
+    close enough together to both trigger a cache save is a real,
+    already-possible scenario, not a hypothetical one this change
+    introduces.
+
+    The actual risk isn't really the in-memory dict (individual dict
+    operations are already safe under the GIL) — it's the FILE. If
+    thread A's `open(path, "w")` truncates the file and thread B's
+    `open(path, "w")` ALSO truncates it before thread A's `json.dump()`
+    finishes writing, the file can end up malformed or missing data
+    entirely. The existing `load_routing_cache()`/load-cache logic
+    already catches a `json.JSONDecodeError` and falls back to an
+    empty cache rather than crashing — so the real-world blast radius
+    of this bug was never a hard crash, just silently losing the
+    ENTIRE on-disk cache (not just one entry) on the next restart,
+    which is still a real, avoidable cost worth fixing properly rather
+    than accepting.
+
+    Fixed with the standard, well-established pattern for this exact
+    problem: write to a temporary file in the SAME directory (so it's
+    guaranteed to be on the same filesystem — required for the next
+    step to actually be atomic), then `os.replace()` it onto the real
+    target path. `os.replace()` is atomic on POSIX (which is what this
+    project actually runs on — Docker containers on Linux): at every
+    point in time, the target path either has the complete OLD content
+    or the complete NEW content, never a partial write from either
+    writer, no matter how two concurrent calls interleave. The
+    temporary file's name includes the PID to avoid two concurrent
+    calls colliding with each other's temp file before either reaches
+    the replace step.
+    """
+    directory = os.path.dirname(filepath) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=f".{os.path.basename(filepath)}.", suffix=f".{os.getpid()}.tmp")
     try:
-        os.makedirs(os.path.dirname(ROUTING_CACHE_FILE), exist_ok=True)
-        with open(ROUTING_CACHE_FILE, "w") as f:
-            json.dump(_routing_cache, f)
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, filepath)
+    except Exception:
+        # Clean up the temp file on any failure — os.replace() never
+        # ran, so it's still sitting there under its own, never-
+        # collided-with name and won't be picked up by anything else.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _save_routing_cache() -> None:
+    """Persist routing cache to disk.
+
+    Uses _atomic_write_json() rather than a bare open()+json.dump() —
+    found via a real investigation into whether two of searxng.py's
+    own sequential fetches could safely run concurrently, which
+    surfaced a real, pre-existing file-write race here. See that
+    function's own docstring for the full mechanism and why it matters.
+    """
+    try:
+        _atomic_write_json(ROUTING_CACHE_FILE, _routing_cache)
     except Exception as e:
         _LOGGER.warning("Could not save routing cache to disk: %s", e)
 
@@ -603,11 +669,14 @@ def _set_cached(source: str, query: str, result: str) -> None:
 
 
 def _save_cache() -> None:
-    """Persist cache to disk."""
+    """Persist cache to disk.
+
+    Uses _atomic_write_json() — the identical race _save_routing_cache()
+    had, fixed the same way; see that function's own comment and
+    _atomic_write_json()'s docstring for the full investigation.
+    """
     try:
-        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-        with open(CACHE_FILE, "w") as f:
-            json.dump(_cache, f)
+        _atomic_write_json(CACHE_FILE, _cache)
     except Exception as e:
         _LOGGER.warning("Could not save cache to disk: %s", e)
 

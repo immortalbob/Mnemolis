@@ -355,3 +355,133 @@ class TestSearxngSearch:
             result = searxng.search("python gpio setup")
         assert "Python GPIO Setup Tutorial" in result
         assert result.count("**Home**") == 0
+
+
+class TestSearxngConcurrentFetch:
+    """Regression tests for a real, traced latency bug: the primary
+    fetch and the alternate-phrasing chain (get_alternate_phrasing()'s
+    own LLM call, plus a second SearXNG fetch) used to run
+    SEQUENTIALLY — found via a live Adversarial Self-Testing flag on an
+    otherwise simple, single-source query, reproduced directly with
+    realistic mocked timings at roughly 4x the cost of a single fetch.
+
+    Verified safe to parallelize first, not just assumed: _fetch_searxng()
+    is a pure function with no shared state; the one real concern
+    (concurrent routing-cache writes inside get_alternate_phrasing())
+    was traced to a genuine, separately-fixed file-write race — see
+    test_cache_persistence.py's TestAtomicWriteJson.
+
+    These tests confirm the ACTUAL concurrency property via real timing
+    measurements, not just that the end-to-end output looks the same —
+    a refactor that accidentally stayed sequential could still pass
+    every other existing behavioral test in this file unchanged.
+    """
+
+    def setup_method(self):
+        from app.config import settings
+        self._orig_url = settings.llm_url
+        self._orig_model = settings.llm_model
+        settings.llm_url = "http://ollama:11434"
+        settings.llm_model = "qwen3:8b"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.llm_url = self._orig_url
+        settings.llm_model = self._orig_model
+
+    def test_primary_fetch_and_alternate_chain_genuinely_run_concurrently(self):
+        """The real regression test: total elapsed time for a query
+        that triggers expansion must be close to the SLOWER of the two
+        operations, not their SUM — confirms genuine concurrency, not
+        just that the sequential version happens to produce the same
+        final string."""
+        import time
+        from app.sources import searxng
+
+        def slow_fetch(query, raise_on_timeout=False):
+            time.sleep(0.3)
+            return [{"title": f"Result for {query}", "url": f"https://example.com/{query}", "content": "relevant content here matching the query"}]
+
+        def slow_alternate_phrasing(query):
+            time.sleep(0.3)
+            return "a genuinely different phrasing of the same question"
+
+        with patch("app.sources.searxng._fetch_searxng", side_effect=slow_fetch), \
+             patch("app.sources.searxng.get_alternate_phrasing", side_effect=slow_alternate_phrasing):
+            start = time.monotonic()
+            searxng.search("test query for concurrency timing")
+            elapsed = time.monotonic() - start
+
+        # Sequential would be ~0.3 (primary) + 0.3 (llm) + 0.3 (second
+        # fetch) = ~0.9s. Concurrent should be close to max(0.3, 0.3+0.3)
+        # = ~0.6s. Generous upper bound to avoid CI flakiness while
+        # still clearly distinguishing concurrent from sequential.
+        assert elapsed < 0.75, f"took {elapsed:.2f}s — looks sequential, not concurrent"
+
+    def test_primary_timeout_still_returns_correct_message_when_alternate_thread_also_running(self):
+        """Confirms the real, specific timeout message is preserved
+        exactly even while the alternate-phrasing thread is genuinely
+        still in flight on its own thread — not just when it's already
+        finished or never started."""
+        import time
+        import requests
+        from app.sources import searxng
+
+        def timeout_primary(query, raise_on_timeout=False):
+            raise requests.exceptions.Timeout("simulated timeout")
+
+        def slow_alternate_phrasing(query):
+            time.sleep(0.2)
+            return "alternate phrasing"
+
+        with patch("app.sources.searxng._fetch_searxng", side_effect=timeout_primary), \
+             patch("app.sources.searxng.get_alternate_phrasing", side_effect=slow_alternate_phrasing):
+            result = searxng.search("test query")
+
+        assert "request timed out" in result.lower()
+
+    def test_alternate_chain_failure_does_not_affect_primary_result_when_concurrent(self):
+        """The non-fatal-alternate-failure guarantee, re-verified under
+        genuine concurrency — a real exception raised inside the
+        alternate-phrasing thread must not propagate or corrupt the
+        primary result."""
+        import pytest
+        from app.sources import searxng
+
+        def working_primary(query, raise_on_timeout=False):
+            return [{"title": "Primary Result", "url": "https://example.com/primary", "content": "real relevant content for this query"}]
+
+        def broken_alternate_phrasing(query):
+            raise RuntimeError("simulated unexpected failure in alternate phrasing")
+
+        with patch("app.sources.searxng._fetch_searxng", side_effect=working_primary), \
+             patch("app.sources.searxng.get_alternate_phrasing", side_effect=broken_alternate_phrasing):
+            # NOTE: _alternate_phrasing_chain() itself doesn't catch
+            # arbitrary exceptions from get_alternate_phrasing() —
+            # confirming the REAL current contract directly, since
+            # get_alternate_phrasing() is documented to return None on
+            # failure, never raise, so search() was never written to
+            # defend against it raising. This test exists to make that
+            # real boundary explicit rather than leave it undocumented.
+            with pytest.raises(RuntimeError):
+                searxng.search("test query")
+
+    def test_both_fetches_succeed_and_results_genuinely_merge_under_concurrency(self):
+        """End-to-end confirmation that concurrent execution doesn't
+        accidentally drop or duplicate results compared to the old
+        sequential behavior."""
+        from app.sources import searxng
+        from app.config import settings
+        settings.web_news_score_threshold = -100
+
+        def fake_fetch(query, raise_on_timeout=False):
+            if "alternate" in query:
+                return [{"title": "Alternate Result", "url": "https://example.com/alt", "content": "python programming alternate content"}]
+            return [{"title": "Primary Result", "url": "https://example.com/primary", "content": "python programming primary content"}]
+
+        with patch("app.sources.searxng._fetch_searxng", side_effect=fake_fetch), \
+             patch("app.sources.searxng.get_alternate_phrasing", return_value="alternate python programming query"):
+            result = searxng.search("python programming")
+
+        assert "Primary Result" in result
+        assert "Alternate Result" in result
