@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import logging
 import os
 import sqlite3
@@ -412,17 +413,32 @@ def health():
     own exceptions and silently logs a warning rather than surfacing
     failure anywhere externally visible), and connectivity status for
     every configured source.
+
+    The seven source checks below run concurrently, not sequentially.
+    Found via a real v3.50.2 benchmark run: a warm-cache /health sample
+    hit 5244ms, several times worse than its own 750ms median — each
+    check is a real network call with its own 3-5 second timeout, run as
+    plain sequential calls, so one or two slow real checks (the LLM ping
+    reaching across to a separate machine; a slow SearXNG /healthz) could
+    stack additively into a multi-second worst case. Every _check_*
+    function already catches its own exceptions internally and never
+    raises, so this is genuinely safe to parallelize the same way
+    fusion.py's own multi-source dispatch already is — no exception
+    handling needed in the executor itself, unlike fusion's case.
     """
     books = get_books()
-    sources = {
-        "kiwix": _check_kiwix(),
-        "forecast": _check_forecast(),
-        "news": _check_news(),
-        "web": _check_web(),
-        "uptime": _check_uptime(),
-        "ha": _check_ha(),
-        "llm": _check_llm(),
+    checks = {
+        "kiwix": _check_kiwix,
+        "forecast": _check_forecast,
+        "news": _check_news,
+        "web": _check_web,
+        "uptime": _check_uptime,
+        "ha": _check_ha,
+        "llm": _check_llm,
     }
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(checks)) as executor:
+        futures = {name: executor.submit(fn) for name, fn in checks.items()}
+        sources = {name: future.result() for name, future in futures.items()}
     # Overall status — ok if container is running regardless of source health
     return {
         "status": "ok",

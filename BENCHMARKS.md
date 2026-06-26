@@ -351,6 +351,72 @@ The last real benchmark in this file was v3.17.0. Everything from v3.18.0 throug
 
 **Median latency remains completely unaffected by the entire battle-testing and bulletproofing campaign.** Aggregated median held at 24ms cold and warm — consistent with every benchmarked version back to v3.5.0, across roughly 25 releases and dozens of real bug fixes in between. Every fix in this stretch was a correctness change, not new computation on the steady-state path, and the numbers confirm that held true in practice, not just in theory.
 
+### 20 Users — Cold vs Warm Cache (v3.50.2, post-adversarial-self-testing and post-latency-parallelization work)
+
+The last real benchmark in this file was v3.44.0. Everything between v3.44.1 and v3.50.2 — the config-completeness audit (v3.45.0), Adversarial Self-Testing's full build-out and real production run (v3.46.0–v3.48.x), Cross-Source Temporal Pattern Detection (v3.47.0), and the full latency-parallelization investigation that fixed `web` query expansion's sequential cost and `conditional_with_remainder`'s sequential cost at the root (v3.48.10–v3.50.0) — had never been measured under real load. Two of those fixes are directly testable by this exact run: `web`'s primary fetch and alternate-phrasing chain now run concurrently instead of sequentially, and `conditional_with_remainder`'s condition and remainder now run concurrently too.
+
+**Cold cache** — both caches explicitly cleared immediately before this run.
+
+| Endpoint | Median | p95 | p98 | p99 | Failures |
+|----------|--------|-----|-----|-----|----------|
+| `/health` | 740ms | 810ms | 810ms | 810ms | 0% |
+| `/search [kiwix]` | 24ms | 1100ms | 1700ms | 2800ms | 0% |
+| `/search [kiwix_disambiguation]` | 22ms | 2300ms | 2300ms | 2300ms | 0% |
+| `/search [web]` | 24ms | 970ms | 1100ms | 1300ms | 0% |
+| `/search [conditional]` | 26ms | 1000ms | 1400ms | 1400ms | 0% |
+| `/search [conditional_remainder]` | 30ms | 1100ms | 1400ms | 1400ms | 0% |
+| `/search [discourse_framing]` | 28ms | 1200ms | 2100ms | 2100ms | 0% |
+| `/search [forecast]` | 24ms | 40ms | 740ms | 740ms | 0% |
+| `/search [news]` | 23ms | 38ms | 87ms | 87ms | 0% |
+| `/search [uptime]` | 24ms | 1900ms | 1900ms | 1900ms | 0% |
+| `/search [ha]` | 40ms | 340ms | 340ms | 340ms | 0% |
+| `/search [auto]` | 24ms | 2400ms | 3200ms | 10000ms | 0% |
+| `/search [fusion_explicit]` | 21ms | 42ms | 760ms | 1800ms | 0% |
+| `/search [fusion_auto]` | 25ms | 38ms | 160ms | 1800ms | 0% |
+| `/search [fusion_triple]` | 23ms | 110ms | 1300ms | 1300ms | 0% |
+| `/search [cache_hit]` | 22ms | 47ms | 47ms | 47ms | 0% |
+| **Aggregated** | **24ms** | **810ms** | **1600ms** | **2300ms** | **0%** |
+
+**862 requests. 0 failures.**
+
+**`web`'s cold p99 dropped from 3900ms (v3.44.0) to 1300ms** — a real, large improvement, directionally consistent with the v3.49.0 query-expansion concurrency fix, though larger in magnitude than that fix's own documented repro timings (`4.15s` → `3.04s` sequential-to-concurrent) predict on their own; the gap is likely real query-mix and hardware-state differences between a controlled repro and a full 20-user benchmark pool, not evidence the documented fix alone fully explains this specific number. **`discourse_framing`'s cold p98 also dropped, from 4200ms to 2100ms** — plausible given the discourse-framing keyword-path fix and the fusion-merge-chain fixes both landed in this stretch and both removed real wasted work rather than adding any, but this is one sample against one prior sample, not a controlled comparison.
+
+**`auto`'s cold p99 (10000ms) is the single worst sample across this entire run.** `AUTO_QUERIES` in `tests/locustfile.py` is still the same fixed 6-entry pool the v3.44.0 entry already named as the likely cause of `auto`'s tail — unchanged since then. This is consistent with, and very likely the same mechanism as, the already-documented thundering-herd cache-write collision on a small fixed pool, just a worse single sample than v3.44.0 happened to draw. **Fixed immediately after this run**: `AUTO_QUERIES` widened from 6 to 12 entries, and `CONDITIONAL_QUERIES`/`CONDITIONAL_WITH_REMAINDER_QUERIES` widened from 4/2 to 8/4 — every new entry verified directly against `detect_intent()`/`detect_conditional()` to confirm it resolves the way intended before being added, not just assumed. `app/adversarial_testing.py`'s `CONDITIONAL_SEEDS` was updated in lockstep, since `TestSeedVocabularyIntegrity` enforces that every `CONDITIONAL_QUERIES` entry has a matching seed there — caught by that exact test before this fix was complete. The next benchmark run against these widened pools is the real test of whether this actually reduces the collision rate; not yet re-run as of this writing.
+
+**Warm cache** — identical run immediately afterward, no clearing in between.
+
+| Endpoint | Median | p95 | p98 | p99 | Failures |
+|----------|--------|-----|-----|-----|----------|
+| `/health` | 750ms | 5200ms | 5200ms | 5200ms | 0% |
+| `/search [kiwix]` | 23ms | 32ms | 38ms | 41ms | 0% |
+| `/search [kiwix_disambiguation]` | 22ms | 29ms | 32ms | 42ms | 0% |
+| `/search [web]` | 23ms | 34ms | 43ms | 49ms | 0% |
+| `/search [conditional]` | 28ms | 59ms | 1100ms | 1100ms | 0% |
+| `/search [conditional_remainder]` | 33ms | 62ms | 1500ms | 1500ms | 0% |
+| `/search [discourse_framing]` | 30ms | 44ms | 55ms | 55ms | 0% |
+| `/search [forecast]` | 23ms | 33ms | 41ms | 41ms | 0% |
+| `/search [news]` | 23ms | 34ms | 37ms | 39ms | 0% |
+| `/search [uptime]` | 25ms | 1500ms | 1500ms | 1500ms | 0% |
+| `/search [ha]` | 38ms | 67ms | 67ms | 67ms | 0% |
+| `/search [auto]` | 26ms | 1000ms | 1100ms | 1200ms | 0% |
+| `/search [fusion_explicit]` | 22ms | 34ms | 40ms | 65ms | 0% |
+| `/search [fusion_auto]` | 25ms | 42ms | 46ms | 73ms | 0% |
+| `/search [fusion_triple]` | 22ms | 34ms | 36ms | 43ms | 0% |
+| `/search [cache_hit]` | 23ms | 33ms | 34ms | 34ms | 0% |
+| **Aggregated** | **24ms** | **44ms** | **730ms** | **1000ms** | **0%** |
+
+**893 requests. 0 failures.**
+
+**`web`, `kiwix`, `kiwix_disambiguation`, `discourse_framing`, `fusion_triple`, and `cache_hit` all collapse fully on cache hit, consistent with every prior release.**
+
+**`/health`'s warm-cache max (5244ms) is a real, fresh finding, not previously flagged in this file.** `/health`'s seven source checks (`_check_kiwix`, `_check_forecast`, `_check_news`, `_check_web`, `_check_uptime`, `_check_ha`, `_check_llm`) run as plain sequential calls in `app/main.py`, each with its own real 3-5 second timeout — confirmed directly by reading the endpoint. This is structurally the same class of "sequential where it could be concurrent" cost that fusion, query expansion, and conditional+remainder have all already been fixed for elsewhere in this codebase, just never applied here, likely because `/health` was never on anyone's hot path the way search queries are. A single slow real check (the LLM ping reaching across to The Beast, a slow SearXNG `/healthz`) stacking with normal overhead on top of the others could plausibly produce a multi-second worst case this way — a real, plausible mechanism, not a confirmed root cause; tracing exactly which check was slow on this specific sample wasn't done.
+
+**`auto`, `conditional`, `conditional_remainder`, and `uptime` again stayed expensive at p95+ even warm — the same pattern as v3.44.0, reproduced a second time.** `CONDITIONAL_QUERIES` (4 entries) and `CONDITIONAL_WITH_REMAINDER_QUERIES` (2 entries) in `tests/locustfile.py` were both still the exact same small, fixed pools the v3.44.0 entry already named, unchanged at the time this run was taken — both have since been widened (see above; 8 and 4 entries respectively as of immediately after this run). This is the same thundering-herd cache-write collision under artificial concurrent load already documented twice; nothing about the latency-parallelization fixes in this release range changes that explanation, since the fixes addressed *sequential-vs-concurrent cost within one query's resolution*, not *cache-write collisions across many concurrent users sharing a too-small query pool*.
+
+**`uptime`'s warm-cache tail (p95 1500ms, p99 1500ms) has now shown up in three separate releases (v3.17.0, v3.44.0, this one) — and this run surfaced the first real, testable hypothesis for it, not just a fourth "still unexplained."** Unlike `auto`/`conditional`, `uptime`'s task uses a single, fixed, literal query (`"are all services up"`, explicit `source="uptime"`) — there's no pool to collide on, so the thundering-herd explanation that covers the other three tails structurally can't apply here. `CACHE_TTL_UPTIME_SECONDS` defaults to 60 seconds — deliberately the shortest TTL of any source, since uptime status is meant to stay close to real-time — but this benchmark run lasts 120 seconds, meaning the `uptime` cache entry genuinely expires and gets refetched live from Uptime Kuma at least once during every single run, cold or warm. Every other source's TTL (30min minimum) comfortably outlasts the 120-second run window; `uptime`'s is the one short enough not to. The observed tail (1500-1900ms) is well within `UPTIME_KUMA_TIMEOUT_SECONDS`'s configured 10-second cap, consistent with a real, slow-but-successful Socket.IO round-trip rather than a timeout or failure. **Not confirmed** — would need either a direct check of Uptime Kuma's own connection logs during a run, or a diagnostic run with `CACHE_TTL_UPTIME_SECONDS` temporarily raised well above 120s to see if the tail disappears — but this is the first mechanism proposed for this anomaly that doesn't require assuming an unexplained bug, and it's specific enough to actually test.
+
+**Median latency remains completely unaffected across this entire release range too.** Aggregated median held at 24ms cold and warm — now confirmed constant across roughly 35 releases and every major feature shipped since v3.5.0, including two entirely new background-job features (Adversarial Self-Testing, Cross-Source Temporal Pattern Detection) that run on their own schedule and were never expected to touch the request-handling path at all.
+
 ## Running benchmarks
 
 Replace `192.168.1.50` below with your actual Mnemolis host's real IP or hostname — not a placeholder. `--host` silently accepts anything that looks like a URL, so a leftover example value doesn't fail loudly; it fails much later as a DNS error (`Temporary failure in name resolution`) on every single request, which doesn't obviously point back to `--host` as the cause.

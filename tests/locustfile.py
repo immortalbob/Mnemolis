@@ -74,6 +74,22 @@ AUTO_QUERIES = [
     "what is nitrogen",
     "is anything down on my network",
     "do I need an umbrella tomorrow",
+    # Widened from the original 6-entry pool — both the v3.44.0 and
+    # v3.50.2 benchmark runs found the same thundering-herd cache-write
+    # collision on this pool under 20 concurrent users (auto's p99 hit
+    # a full 10 seconds in the v3.50.2 cold run). A small fixed pool
+    # means multiple concurrent users can pick the SAME never-yet-cached
+    # query before the first one to resolve it has written the cache
+    # entry, so several pay the full LLM routing cost concurrently even
+    # on a nominally "warm" run. Doubling the pool size doesn't eliminate
+    # the collision possibility, but meaningfully dilutes the odds with
+    # 20 concurrent users randomly sampling from it.
+    "what's the temperature outside right now",
+    "any new headlines today",
+    "is my network up",
+    "are my services running",
+    "will it rain this week",
+    "do I have any news today",
 ]
 
 FUSION_QUERIES = [
@@ -105,19 +121,34 @@ HA_QUERIES = [
 # _frame_conditional_response(). Mix of structured (ha/uptime/forecast,
 # gets a real verdict) and open-ended (kiwix, honest abstention) sources,
 # since both paths have genuinely different cost profiles.
+#
+# Widened from the original 4-entry pool for the same reason AUTO_QUERIES
+# was widened above — both the v3.44.0 and v3.50.2 benchmark runs found
+# the same thundering-herd cache-write collision here under 20 concurrent
+# users (_resolve_conditional() caches on the EXTRACTED condition text,
+# not the original "if X, Y" string, so each distinct condition has to
+# warm independently, and a small pool means concurrent users can collide
+# on the same not-yet-cached condition before the first one finishes).
 CONDITIONAL_QUERIES = [
     "if the back door is unlocked, let me know",
     "if any services are down, let me know right away",
     "if it is raining, remind me to bring an umbrella",
     "if mercury is in retrograde, I will be careful with communication",
+    "if the garage door is open, let me know",
+    "if the network is down, tell me right away",
+    "if it is going to snow, remind me to grab a coat",
+    "if jupiter is in retrograde, I will be extra careful today",
 ]
 
 # Conditional queries with a real remainder after the consequence — also
 # exercises the remainder extraction/independent-search/merge path added
-# alongside detect_conditional(), not just the simple no-remainder case
+# alongside detect_conditional(), not just the simple no-remainder case.
+# Widened from 2 to 4 entries for the same thundering-herd reason as above.
 CONDITIONAL_WITH_REMAINDER_QUERIES = [
     "if any services are down, let me know, and also whats the weather",
     "if the back door is unlocked, let me know, and also check the news",
+    "if it is raining, remind me to bring an umbrella, and also is everything up",
+    "if the garage door is open, let me know, and also whats happening with bitcoin",
 ]
 
 # Discourse-framing queries ("everyone's obsessed with X") — exercises

@@ -194,6 +194,14 @@ CONDITIONAL_SEEDS = [
     "if any services are down",
     "if it is raining",
     "if mercury is in retrograde",
+    # Added alongside locustfile.py's CONDITIONAL_QUERIES widening
+    # (v3.50.2 benchmark pass) — kept in sync per
+    # TestSeedVocabularyIntegrity's real, enforced requirement that every
+    # locustfile CONDITIONAL_QUERIES entry have a matching seed here.
+    "if the garage door is open",
+    "if the network is down",
+    "if it is going to snow",
+    "if jupiter is in retrograde",
 ]
 
 # Consequence phrases to pair with conditions — plain text, since Mnemolis

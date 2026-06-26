@@ -4,6 +4,44 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.3]
+
+### Fixed — `/health`'s Seven Source Checks Now Run Concurrently, Not Sequentially
+The first real Locust benchmark run since v3.44.0 (see `BENCHMARKS.md`) surfaced a fresh, previously-undocumented finding: a warm-cache `/health` sample hit `5244ms`, several times worse than its own `750ms` median. `_check_kiwix()`, `_check_forecast()`, `_check_news()`, `_check_web()`, `_check_uptime()`, `_check_ha()`, and `_check_llm()` were plain sequential calls in `app/main.py`'s `health()` endpoint, each a real network request with its own 3-5 second timeout — one or two genuinely slow real checks (the LLM ping reaching across to a separate machine; a slow SearXNG `/healthz`) could stack additively into a multi-second worst case.
+
+This is the same "sequential where it could be concurrent" shape already fixed elsewhere in this codebase (`fusion.py`'s multi-source dispatch, `searxng.py`'s query-expansion chain, `_resolve_conditional()`'s condition/remainder split) — `/health` just never got the same treatment, since it was never on anyone's hot path the way search queries are.
+
+Fixed with the same `ThreadPoolExecutor` pattern `fusion.py` already established, genuinely simpler here since every `_check_*` function already catches its own exceptions internally and never raises — none of `fusion.py`'s `as_completed()`/exception-propagation handling was needed.
+
+### Added (Tests)
+- `TestHealthConcurrentSourceChecks` (3 tests) in `test_main.py` — a real timing-based proof of genuine concurrency (not just that the response shape is unchanged, which a refactor that accidentally stayed sequential could still pass), confirmation a single slow check doesn't block the other six from completing, and confirmation response content is identical regardless of execution order. Both timing tests needed to mock `requests.get` at two separate import sites (`app.main` and `app.sources.kiwix`, since `get_books()` makes its own independent real network call) and needed a genuinely valid, non-empty OPDS feed in the mock response — an empty feed makes `get_books()`'s own real caching check (`if _book_cache: return _book_cache`, falsy for an empty list) re-fetch on every single call rather than ever caching, which would have made the timing assertions measure that separate, pre-existing quirk instead of the concurrency property actually being tested.
+
+### Investigation Note — A Real, Separate, Pre-Existing Quirk Found While Writing the Tests Above, Not Yet Fixed
+`get_books()`'s cache check (`if _book_cache: return _book_cache`) is falsy for a genuinely empty list — a Kiwix instance with zero books in its catalog (a fresh install before any ZIM files are added, or a real outage) would never actually cache that empty result, and would re-fetch the full catalog on every single call that touches it, forever, rather than caching the "no books" result the same way a real result gets cached. Found incidentally while building the `/health` concurrency tests above; out of scope for this release, not yet fixed.
+
+### Changed — Real Benchmark Run Against Current Code (First Since v3.44.0)
+A full cold/warm Locust run (20 users, 120s, the same methodology every prior entry uses) against the current v3.50.1 codebase — the last real benchmark in `BENCHMARKS.md` was v3.44.0; everything since (the config-completeness audit, Adversarial Self-Testing's full build-out, Cross-Source Temporal Pattern Detection, and the full latency-parallelization investigation) had never been measured under real load. See `BENCHMARKS.md`'s new v3.50.2 entry for the full tables.
+
+**Real, measured improvements, consistent with documented fixes shipped in between:** `web`'s cold p99 dropped from `3900ms` to `1300ms`; `discourse_framing`'s cold p98 dropped from `4200ms` to `2100ms`. Both plausible given the query-expansion concurrency fix and the discourse-framing/fusion-merge fixes, though neither drop's exact magnitude is cleanly attributable to a single documented fix — flagged honestly as directionally consistent, not precisely proven.
+
+**`uptime`'s warm-cache tail reproduced a third time (v3.17.0, v3.44.0, now v3.50.2) — and this run produced the first real, testable hypothesis for it.** Unlike `auto`/`conditional`'s already-explained thundering-herd cache-write collisions (which need a small query pool to collide on), `uptime`'s benchmark task uses one fixed, literal query — there's no pool here, so that explanation can't apply. `CACHE_TTL_UPTIME_SECONDS` (60s) is the only source TTL shorter than the 120-second benchmark run itself, meaning the `uptime` cache entry genuinely expires and gets refetched live mid-run, every run. The observed tail sits comfortably within `UPTIME_KUMA_TIMEOUT_SECONDS`'s 10-second cap, consistent with a real, slow-but-successful Socket.IO round-trip rather than a timeout. **Deliberately left unconfirmed and unfixed** — raising `CACHE_TTL_UPTIME_SECONDS` on the strength of an unconfirmed benchmark-methodology hypothesis would trade a real, deliberate design tradeoff (uptime status staying close to real-time) for a guess; confirming this needs either a direct check of Uptime Kuma's own connection logs during a run, or a diagnostic run with the TTL temporarily raised, neither of which was done this release.
+
+**Real, fresh finding, not previously documented**: `/health`'s own worst-case latency, traced and fixed above.
+
+### Changed — `tests/locustfile.py` Pools Widened, Per a Recommendation Made Twice and Not Previously Acted On
+`AUTO_QUERIES` widened from 6 to 12 entries; `CONDITIONAL_QUERIES` widened from 4 to 8; `CONDITIONAL_WITH_REMAINDER_QUERIES` widened from 2 to 4 — diluting the thundering-herd cache-write-collision odds the v3.44.0 benchmark entry already identified and recommended fixing, reproduced again (worse: a full `10000ms` p99) in this release's run. Every new entry verified directly against `detect_intent()`/`detect_conditional()` before being added, not assumed — one initial candidate (`"check if everything is running"`) was caught resolving to the wrong source (`kiwix`, not `uptime`) and replaced before being committed.
+
+**A real cross-file dependency caught by the existing test suite, not missed:** `app/adversarial_testing.py`'s `CONDITIONAL_SEEDS` must have a matching entry for every `CONDITIONAL_QUERIES` entry in `locustfile.py` — `TestSeedVocabularyIntegrity` enforces this directly, specifically to keep the two corpora from silently drifting apart, and correctly failed when the widening above landed without a matching `CONDITIONAL_SEEDS` update. Fixed by adding the four new condition fragments there too.
+
+The widened pools have not yet been re-benchmarked — confirming whether this actually reduces the collision rate, rather than just moving it around, is the natural next run.
+
+### Changed
+- Version bumped to 3.50.3
+
+**Total test count: 1244**
+
+---
+
 ## [3.50.2]
 
 ### Changed — Wiki Restructured: Reference-First Pages, Dev-Blog-Style Design History

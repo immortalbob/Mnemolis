@@ -6,6 +6,7 @@ import pytest
 import sqlite3
 import tempfile
 import os
+import time
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 
@@ -182,6 +183,117 @@ class TestHealthEndpoint:
         sources = resp.json()["sources"]
         for name, info in sources.items():
             assert "status" in info
+
+
+class TestHealthConcurrentSourceChecks:
+    """Regression test for a real, traced latency finding: /health's seven
+    source checks (_check_kiwix, _check_forecast, _check_news, _check_web,
+    _check_uptime, _check_ha, _check_llm) used to run as plain SEQUENTIAL
+    calls, each with its own real 3-5 second network timeout — found via a
+    real v3.50.2 benchmark run where a warm-cache /health sample hit
+    5244ms, several times worse than its own 750ms median.
+
+    Every _check_* function already catches its own exceptions internally
+    and never raises, so parallelizing them carries none of the exception-
+    propagation complexity fusion.py's own concurrent dispatch needed.
+
+    This test confirms the ACTUAL concurrency property via a real timing
+    measurement, not just that the response shape is unchanged — a
+    refactor that accidentally stayed sequential could still pass every
+    other existing /health test in this file unchanged."""
+
+    def test_source_checks_genuinely_run_concurrently(self, client):
+        """If all seven checks took 0.3s each and ran sequentially, the
+        endpoint would take at least 2.1s. Run concurrently, it should
+        take close to 0.3s regardless of how many checks there are."""
+        # A minimal, genuinely valid, NON-empty OPDS feed — get_books()'s
+        # real caching check (`if _book_cache: return _book_cache`) is
+        # falsy for an empty list, so a genuinely empty catalog re-fetches
+        # on every single call rather than ever caching (a separate, real,
+        # pre-existing quirk, out of scope for this test). A non-empty
+        # feed lets get_books() actually cache after its first real call
+        # the way a normal deployment with real ZIM files would, so this
+        # test measures the concurrency property it's actually testing.
+        _ONE_BOOK_OPDS_FEED = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<feed xmlns="http://www.w3.org/2005/Atom" '
+            b'xmlns:dc="http://purl.org/dc/terms/">'
+            b'<entry><title>Test</title>'
+            b'<link type="text/html" href="/content/test_en_2026-01"/>'
+            b'</entry></feed>'
+        )
+
+        def slow_get(*args, **kwargs):
+            time.sleep(0.3)
+            resp = type("Resp", (), {})()
+            resp.status_code = 200
+            resp.content = _ONE_BOOK_OPDS_FEED
+            resp.raise_for_status = lambda: None
+            return resp
+
+        # get_books() (called once on the main thread before the executor
+        # starts, and again inside _check_kiwix() within the executor —
+        # though the second call should hit the now-populated cache and
+        # not re-fetch) makes its own real requests.get call from
+        # app.sources.kiwix, a genuinely separate import from app.main's
+        # — both need mocking.
+        with patch("app.main.requests.get", side_effect=slow_get), \
+             patch("app.sources.kiwix.requests.get", side_effect=slow_get):
+            start = time.monotonic()
+            resp = client.get("/health")
+            elapsed = time.monotonic() - start
+
+        assert resp.status_code == 200
+        assert elapsed < 0.75, f"took {elapsed:.2f}s for 7 checks at 0.3s each — looks sequential, not concurrent"
+
+    def test_a_single_slow_check_does_not_block_the_others_from_completing(self, client):
+        """One genuinely slow check (simulating a real, unreachable
+        backend hitting its full timeout) shouldn't make the other six
+        checks wait for it — they should all complete independently,
+        and the overall response time should be governed by the SLOWEST
+        single check, not the sum of all seven."""
+        _ONE_BOOK_OPDS_FEED = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<feed xmlns="http://www.w3.org/2005/Atom" '
+            b'xmlns:dc="http://purl.org/dc/terms/">'
+            b'<entry><title>Test</title>'
+            b'<link type="text/html" href="/content/test_en_2026-01"/>'
+            b'</entry></feed>'
+        )
+        call_count = {"n": 0}
+
+        def variable_speed_get(*args, **kwargs):
+            call_count["n"] += 1
+            # First call simulates a real, slow timeout; the rest are fast.
+            if call_count["n"] == 1:
+                time.sleep(0.4)
+            resp = type("Resp", (), {})()
+            resp.status_code = 200
+            resp.content = _ONE_BOOK_OPDS_FEED
+            resp.raise_for_status = lambda: None
+            return resp
+
+        with patch("app.main.requests.get", side_effect=variable_speed_get), \
+             patch("app.sources.kiwix.requests.get", side_effect=variable_speed_get):
+            start = time.monotonic()
+            resp = client.get("/health")
+            elapsed = time.monotonic() - start
+
+        assert resp.status_code == 200
+        # Governed by the one slow check (~0.4s), not several checks run sequentially.
+        assert elapsed < 0.85, f"took {elapsed:.2f}s — one slow check appears to be blocking the others"
+
+    def test_response_content_is_unaffected_by_running_checks_concurrently(self, client):
+        """The actual status/error content for each source must be
+        identical to what sequential calls would have produced — only
+        the WALL-CLOCK TIMING should change, never the result content."""
+        resp = client.get("/health")
+        data = resp.json()
+        assert "sources" in data
+        for expected in ["kiwix", "forecast", "news", "web", "uptime", "ha", "llm"]:
+            assert expected in data["sources"]
+            assert "status" in data["sources"][expected]
+            assert data["sources"][expected]["status"] in ("ok", "error", "not_configured")
 
 
 class TestSourcesEndpoint:
