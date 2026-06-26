@@ -282,7 +282,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.50.0",
+    version="3.50.1",
     lifespan=lifespan,
 )
 
@@ -795,6 +795,18 @@ def adversarial_flagged(limit: int = 50, include_dismissed: bool = False):
     Pass include_dismissed=true to also see rows already reviewed and
     closed via POST /adversarial/dismiss — useful for an audit trail,
     not the default working view.
+
+    Each row also includes last_flagged_result_excerpt — up to 500
+    characters of the actual response text that triggered the most
+    recent flag (null on a clean run; never populated for combinations
+    that have never flagged at all). Added after a real, unresolved
+    investigation hit a hard wall: a flag fired once, every code-level
+    hypothesis for why was checked and ruled out against real evidence,
+    and the schema had no way to ever recover the actual text that
+    matched a real anomaly check — only the fact that something did.
+    This field exists so the next occurrence is diagnosable from the
+    stored evidence directly, not by re-deriving and ruling out every
+    possible mechanism after the fact.
 
     Deliberately left unauthenticated, same as /health and /areas: this
     exposes only synthetic, generated test queries and their structural

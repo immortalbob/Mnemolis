@@ -4,6 +4,26 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.1]
+
+### Added — `last_flagged_result_excerpt`, Because an Investigation Just Hit a Wall the Schema Itself Built
+A real `unexpected_empty` flag (`"vs Python and JavaScript, plus while at work"`, routed to `changes`) got traced as far as production logs and live container state would allow — six separate, real hypotheses checked and ruled out one at a time: the LLM being down (it was, but this query never touches it), a different query's failures bleeding across in the same batch, a time-window edge case, cold-start snapshots, a swallowed exception, a timezone misconfiguration, and stale message text. Every one confirmed negative against real evidence, not assumption. The investigation reached the genuine limit of what was recoverable and stopped — `times_generated` was `1`; it had only happened once, and there was nothing left to check.
+
+The real, lasting finding wasn't a root cause — it was that `adversarial_combinations` recorded *that* a known empty/error phrase matched, but never *what* the actual response text was. Once that one occurrence was gone, no amount of code-reading could recover it.
+
+New `last_flagged_result_excerpt` column (up to 500 characters), populated only when a flag genuinely fires — never on a clean run, so the overwhelming majority of combinations that never need this stay exactly as small as before. Exposed through `GET /adversarial/flagged` and `review_flagged.py`'s own `list`/`list-dismissed` output. Migrates cleanly onto MiniDock's real, already-running database the same way every previous schema addition to this table has.
+
+### Added (Tests)
+- `TestFlaggedResultExcerpt` (6 tests) in `test_adversarial_testing.py` — excerpt stored only on a real flag, truncation at 500 chars, exposure through the public API, preservation through a later clean run (the same "don't erase the original evidence" convention `first_flagged_*` already follows), and a real migration test against a reconstructed pre-existing database matching MiniDock's actual schema
+
+### Changed
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) updated with the full, honest account of the investigation — including that it ended without a root cause, which is itself the real finding
+- Version bumped to 3.50.1
+
+**Total test count: 1241**
+
+---
+
 ## [3.50.0]
 
 ### Fixed — `conditional_with_remainder`'s Condition and Remainder Now Run Concurrently

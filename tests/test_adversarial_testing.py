@@ -788,6 +788,152 @@ class TestFullCycle:
             assert result["flagged"] == 4  # every one matches unexpected_empty
 
 
+class TestFlaggedResultExcerpt:
+    """Regression tests for last_flagged_result_excerpt — found
+    necessary via a real, unresolved investigation: a flag fired once,
+    every code-level hypothesis for why was checked and ruled out
+    against real evidence, and the investigation hit a hard wall the
+    schema itself created — there was no way to ever recover the
+    actual text that matched _looks_empty(), only the fact that
+    something did. This column exists so the next occurrence isn't
+    structurally unrecoverable the same way."""
+
+    def test_flagged_result_is_stored_as_an_excerpt(self, tmp_path):
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.adversarial_testing.settings.adversarial_test_batch_size", 1), \
+             patch("app.router.route_with_source", return_value=("No results found.", "web")):
+            init_adversarial_db()
+            run_adversarial_test_cycle()
+            con = _connect(temp_db)
+            row = con.execute(
+                "SELECT last_flagged_result_excerpt FROM adversarial_combinations LIMIT 1"
+            ).fetchone()
+            con.close()
+        assert row[0] == "No results found."
+
+    def test_clean_run_never_stores_an_excerpt(self, tmp_path):
+        """The overwhelming common case — a clean run with no flag —
+        must NOT store any result text, since storing full text on
+        every single combination would be real, unnecessary bloat for
+        data that's only ever useful when something actually went
+        wrong. Forces the no_intent_fallthrough recipe specifically —
+        the one shape where 'kiwix' is always a genuinely correct
+        answer regardless of the random query content, avoiding a real
+        source_mismatch false flag from an unrelated, randomly-rolled
+        recipe expecting a different source."""
+        from app.adversarial_testing import RECIPES
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.adversarial_testing.RECIPES", {"no_intent_fallthrough": RECIPES["no_intent_fallthrough"]}), \
+             patch("app.adversarial_testing.settings.adversarial_test_batch_size", 1), \
+             patch("app.router.route_with_source", return_value=("[KIWIX — X] real, legitimate content here.", "kiwix")):
+            init_adversarial_db()
+            run_adversarial_test_cycle()
+            con = _connect(temp_db)
+            row = con.execute(
+                "SELECT last_flagged_result_excerpt FROM adversarial_combinations LIMIT 1"
+            ).fetchone()
+            con.close()
+        assert row[0] is None
+
+    def test_excerpt_is_truncated_for_a_long_result(self, tmp_path):
+        long_result = "Error: " + ("x" * 1000)
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.adversarial_testing.settings.adversarial_test_batch_size", 1), \
+             patch("app.router.route_with_source", return_value=(long_result, "web")):
+            init_adversarial_db()
+            run_adversarial_test_cycle()
+            con = _connect(temp_db)
+            row = con.execute(
+                "SELECT last_flagged_result_excerpt FROM adversarial_combinations LIMIT 1"
+            ).fetchone()
+            con.close()
+        assert len(row[0]) == 500
+        assert row[0] == long_result[:500]
+
+    def test_excerpt_is_exposed_via_get_flagged_combinations(self, tmp_path):
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.adversarial_testing.settings.adversarial_test_batch_size", 1), \
+             patch("app.router.route_with_source", return_value=("No results found.", "web")):
+            init_adversarial_db()
+            run_adversarial_test_cycle()
+            flagged = get_flagged_combinations()
+        assert len(flagged) == 1
+        assert flagged[0]["last_flagged_result_excerpt"] == "No results found."
+
+    def test_excerpt_from_first_flag_preserved_through_a_later_clean_run(self, tmp_path):
+        """The same 'preserve history, don't let a clean run erase it'
+        convention every other first_flagged_* column already follows
+        — a later clean run must not wipe out the excerpt that
+        explains the ORIGINAL anomaly, since that's exactly the
+        evidence a human would want when reviewing an intermittent
+        flag later."""
+        import json
+        temp_db = str(tmp_path / "test_adversarial.db")
+        fp = json.dumps(["stable-fingerprint-for-excerpt-test"])
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            _record_result(fp, "no_intent_fallthrough", "q", "web", 100, "unexpected_empty: x", "No results found.")
+            _record_result(fp, "no_intent_fallthrough", "q", "kiwix", 100, None, "[KIWIX — X] real content now.")
+            con = _connect(temp_db)
+            row = con.execute(
+                "SELECT last_flagged_result_excerpt, last_flagged_reason FROM adversarial_combinations WHERE fingerprint = ?",
+                (fp,)
+            ).fetchone()
+            con.close()
+        assert row[0] == "No results found."  # preserved from the original flag
+        assert row[1] is None  # but last_flagged_reason correctly reflects the clean run
+
+    def test_migration_adds_column_to_a_real_pre_existing_database(self, tmp_path):
+        """The exact real-world scenario this fix needs to handle
+        correctly: MiniDock's actual database predates this column
+        entirely. Confirms init_adversarial_db()'s migration adds it
+        without erroring or losing any pre-existing data."""
+        import sqlite3
+        old_db = str(tmp_path / "old_schema.db")
+        con = sqlite3.connect(old_db)
+        con.execute("""
+            CREATE TABLE adversarial_combinations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fingerprint TEXT NOT NULL UNIQUE,
+                recipe_name TEXT NOT NULL,
+                first_seen_timestamp TEXT NOT NULL,
+                times_generated INTEGER NOT NULL DEFAULT 1,
+                last_query_text TEXT NOT NULL,
+                last_source_used TEXT,
+                last_latency_ms INTEGER,
+                last_flagged_reason TEXT,
+                last_run_timestamp TEXT NOT NULL,
+                ever_flagged INTEGER NOT NULL DEFAULT 0,
+                first_flagged_reason TEXT,
+                first_flagged_timestamp TEXT,
+                review_status TEXT
+            )
+        """)
+        con.execute(
+            "INSERT INTO adversarial_combinations "
+            "(fingerprint, recipe_name, first_seen_timestamp, last_query_text, last_run_timestamp) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("old-fp", "test_recipe", "2026-01-01T00:00:00Z", "old query", "2026-01-01T00:00:00Z")
+        )
+        con.commit()
+        con.close()
+
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", old_db):
+            init_adversarial_db()
+            con2 = _connect(old_db)
+            cols = {row[1] for row in con2.execute("PRAGMA table_info(adversarial_combinations)").fetchall()}
+            preserved = con2.execute(
+                "SELECT last_query_text FROM adversarial_combinations WHERE fingerprint = 'old-fp'"
+            ).fetchone()
+            con2.close()
+        assert "last_flagged_result_excerpt" in cols
+        assert preserved[0] == "old query"
+
+
 class TestHealthSummaryAndFlaggedEndpointData:
     """Tests for the /health and /adversarial/flagged data functions."""
 

@@ -79,7 +79,8 @@ def init_adversarial_db():
                 ever_flagged INTEGER NOT NULL DEFAULT 0,
                 first_flagged_reason TEXT,
                 first_flagged_timestamp TEXT,
-                review_status TEXT
+                review_status TEXT,
+                last_flagged_result_excerpt TEXT
             )
         """)
         con.execute("""
@@ -111,6 +112,19 @@ def init_adversarial_db():
             ("first_flagged_reason", "ALTER TABLE adversarial_combinations ADD COLUMN first_flagged_reason TEXT"),
             ("first_flagged_timestamp", "ALTER TABLE adversarial_combinations ADD COLUMN first_flagged_timestamp TEXT"),
             ("review_status", "ALTER TABLE adversarial_combinations ADD COLUMN review_status TEXT"),
+            # Found via a real, unresolved investigation: a flag fired
+            # once (unexpected_empty on a "changes" source query, real
+            # production data), and every code-level hypothesis for WHY
+            # was checked and ruled out against real evidence — LLM
+            # outage, timezone misconfiguration, cold-start snapshots,
+            # a swallowed exception, stale message text, all confirmed
+            # NOT the cause. The investigation hit a hard wall: the
+            # schema never stored the actual text that matched
+            # _looks_empty(), only the fact that something did. Without
+            # the real bytes, a real, live anomaly was structurally
+            # unrecoverable after the fact — this column exists so the
+            # NEXT one isn't.
+            ("last_flagged_result_excerpt", "ALTER TABLE adversarial_combinations ADD COLUMN last_flagged_result_excerpt TEXT"),
         ]
         for column_name, ddl in migrations:
             if column_name not in existing_columns:
@@ -646,6 +660,7 @@ def _record_result(
     source_used: str | None,
     latency_ms: int | None,
     flagged_reason: str | None,
+    result: str | None = None,
 ):
     """Upsert one combination's result. INSERT on first sighting, UPDATE
     (incrementing times_generated, overwriting the 'last_*' columns) on
@@ -670,7 +685,23 @@ def _record_result(
     genuinely separate, queryable facts; GET /adversarial/flagged
     defaults to showing the union of both (see get_flagged_combinations)
     rather than only the narrower, disappearing "currently flagged" set.
+
+    `result` is the real response text — only ever truncated and stored
+    when flagged_reason is genuinely set, never on a clean run, so this
+    doesn't bloat the database with full result text for the
+    overwhelming majority of combinations that never need it. Found
+    necessary via a real, unresolved investigation: a flag fired once,
+    every code-level hypothesis for why was checked and ruled out
+    against real evidence, and the investigation hit a hard wall the
+    schema itself created — there was no way to ever see the actual
+    text that matched _looks_empty(), only the fact that something did.
+    Truncated to 500 chars — enough to identify which real phrase
+    matched and see the surrounding context, not a full replacement for
+    the real result, which can be considerably longer.
     """
+    EXCERPT_MAX_CHARS = 500
+    excerpt = (result or "")[:EXCERPT_MAX_CHARS] if flagged_reason else None
+
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         con = _connect(ADVERSARIAL_DB)
@@ -685,11 +716,13 @@ def _record_result(
                    (fingerprint, recipe_name, first_seen_timestamp, times_generated,
                     last_query_text, last_source_used, last_latency_ms,
                     last_flagged_reason, last_run_timestamp,
-                    ever_flagged, first_flagged_reason, first_flagged_timestamp)
-                   VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ever_flagged, first_flagged_reason, first_flagged_timestamp,
+                    last_flagged_result_excerpt)
+                   VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (fingerprint_json, recipe_name, now, query, source_used, latency_ms,
                  flagged_reason, now,
-                 ever_flagged, flagged_reason if ever_flagged else None, now if ever_flagged else None)
+                 ever_flagged, flagged_reason if ever_flagged else None, now if ever_flagged else None,
+                 excerpt)
             )
         else:
             already_ever_flagged = bool(existing[1])
@@ -706,10 +739,11 @@ def _record_result(
                            last_run_timestamp = ?,
                            ever_flagged = 1,
                            first_flagged_reason = ?,
-                           first_flagged_timestamp = ?
+                           first_flagged_timestamp = ?,
+                           last_flagged_result_excerpt = ?
                        WHERE fingerprint = ?""",
                     (query, source_used, latency_ms, flagged_reason, now,
-                     flagged_reason, now, fingerprint_json)
+                     flagged_reason, now, excerpt, fingerprint_json)
                 )
             elif flagged_reason and already_ever_flagged:
                 # A NEW flag firing on a fingerprint that's been flagged
@@ -737,15 +771,20 @@ def _record_result(
                            last_latency_ms = ?,
                            last_flagged_reason = ?,
                            last_run_timestamp = ?,
-                           review_status = NULL
+                           review_status = NULL,
+                           last_flagged_result_excerpt = ?
                        WHERE fingerprint = ?""",
-                    (query, source_used, latency_ms, flagged_reason, now, fingerprint_json)
+                    (query, source_used, latency_ms, flagged_reason, now, excerpt, fingerprint_json)
                 )
             else:
                 # A clean run — whether on a never-flagged combination
                 # or one with flag history. review_status is left
                 # completely untouched here: a clean result is not a
                 # reason to un-dismiss something a human already closed.
+                # last_flagged_result_excerpt is likewise left untouched
+                # on a clean run — it should keep showing whatever text
+                # actually caused the LAST real flag, not be wiped just
+                # because a later, unrelated clean run happened.
                 con.execute(
                     """UPDATE adversarial_combinations
                        SET times_generated = times_generated + 1,
@@ -823,7 +862,7 @@ def run_adversarial_test_cycle() -> dict:
                 recipe_name, ingredients, query, result or "", source_used or "", error, latency_ms
             )
 
-            _record_result(fingerprint_json, recipe_name, query, source_used, latency_ms, flagged_reason)
+            _record_result(fingerprint_json, recipe_name, query, source_used, latency_ms, flagged_reason, result)
 
             if flagged_reason:
                 flagged_count += 1
@@ -941,7 +980,7 @@ def get_flagged_combinations(limit: int = 50, include_dismissed: bool = False) -
                       last_query_text, last_source_used, last_latency_ms,
                       last_flagged_reason, last_run_timestamp,
                       ever_flagged, first_flagged_reason, first_flagged_timestamp,
-                      review_status
+                      review_status, last_flagged_result_excerpt
                FROM adversarial_combinations
                {where_clause}
                ORDER BY last_run_timestamp DESC
@@ -958,7 +997,7 @@ def get_flagged_combinations(limit: int = 50, include_dismissed: bool = False) -
         "last_query_text", "last_source_used", "last_latency_ms",
         "last_flagged_reason", "last_run_timestamp",
         "ever_flagged", "first_flagged_reason", "first_flagged_timestamp",
-        "review_status",
+        "review_status", "last_flagged_result_excerpt",
     ]
     results = [dict(zip(columns, row)) for row in rows]
     for r in results:
