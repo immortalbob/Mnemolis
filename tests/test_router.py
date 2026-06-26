@@ -3374,3 +3374,70 @@ class TestResultCacheThunderingHerd:
                 f"from — this is the exact collision that caused the v3.50.4 "
                 f"benchmark's cold-cache cache_hit anomaly (p90 5100ms, p99 8000ms)"
             )
+
+    def test_locustfile_thundering_herd_pools_are_wide_enough_to_clear_the_collision_peak(self):
+        """Regression test for the actual sizing decision behind the
+        second pool widening (v3.50.8): AUTO_QUERIES, CONDITIONAL_QUERIES,
+        and CONDITIONAL_WITH_REMAINDER_QUERIES were widened past the
+        point where the expected NUMBER of pool entries hit by 2+ of 20
+        concurrent Locust users actually peaks — a real, worked-out
+        birthday-paradox-shaped calculation, not an arbitrary "double it
+        again" guess. The v3.50.3 widening (the first one) landed several
+        of these pools right ON that peak rather than past it, which is
+        the documented reason it only partially helped.
+
+        This test doesn't re-run the full probability model (that lives
+        in the design reasoning, not in CI) — it enforces the concrete
+        conclusion: each pool must be at or above the specific size this
+        investigation determined sits past its own collision peak. A
+        future accidental shrink (or a well-meaning "simplify this" edit
+        that quietly drops entries) gets caught here rather than silently
+        reintroducing the exact tail this work removed.
+        """
+        import ast
+        import os
+
+        locustfile_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "locustfile.py"
+        )
+        with open(locustfile_path) as f:
+            tree = ast.parse(f.read(), filename=locustfile_path)
+
+        list_literals: dict[str, list[str]] = {}
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.List)
+            ):
+                name = node.targets[0].id
+                values = [
+                    elt.value
+                    for elt in node.value.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                ]
+                list_literals[name] = values
+
+        # Minimums determined by the v3.50.8 collision-math investigation
+        # (see locustfile.py's own comments on each pool for the full
+        # reasoning) — each sits past that pool's own modeled collision
+        # peak under 20 concurrent users, not just "bigger than before".
+        minimums = {
+            "AUTO_QUERIES": 24,
+            "CONDITIONAL_QUERIES": 20,
+            "CONDITIONAL_WITH_REMAINDER_QUERIES": 12,
+        }
+        for pool_name, minimum in minimums.items():
+            assert pool_name in list_literals, (
+                f"{pool_name} not found in tests/locustfile.py — has it been "
+                f"renamed? This test needs updating to match."
+            )
+            actual = len(list_literals[pool_name])
+            assert actual >= minimum, (
+                f"{pool_name} has {actual} entries, below the {minimum}-entry "
+                f"minimum the v3.50.8 collision-math investigation determined "
+                f"sits past this pool's own collision peak under 20 concurrent "
+                f"users — shrinking this pool risks reintroducing the exact "
+                f"thundering-herd tail that investigation removed"
+            )

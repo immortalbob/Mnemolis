@@ -202,6 +202,21 @@ CONDITIONAL_SEEDS = [
     "if the network is down",
     "if it is going to snow",
     "if jupiter is in retrograde",
+    # Added alongside locustfile.py's second CONDITIONAL_QUERIES widening
+    # (8 -> 20 entries, v3.50.8 benchmark-driven pool sizing pass) — kept
+    # in sync for the same reason as the block above.
+    "if the front porch light is off",
+    "if the freezer is too warm",
+    "if it is going to be windy tomorrow",
+    "if saturn is in retrograde",
+    "if the side gate is unlocked",
+    "if the internet connection drops",
+    "if there is a frost warning tonight",
+    "if mars is in retrograde",
+    "if the basement sensor detects water",
+    "if any cameras go offline",
+    "if the humidity gets too high",
+    "if venus is in retrograde",
 ]
 
 # Consequence phrases to pair with conditions — plain text, since Mnemolis

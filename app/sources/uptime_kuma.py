@@ -17,6 +17,40 @@ _LOGGER = logging.getLogger(__name__)
 # successful connect, `False` after any disconnect.
 _persistent_api: "UptimeKumaApi | None" = None
 
+# uptime_kuma_api's own `wait_events` (default 0.2s) exists for a real,
+# documented reason: after a `monitorList`/`heartbeatList` event type
+# is first seen, the client has no protocol-level signal for "that was
+# the last message of this type" — Uptime Kuma's server emits one
+# `heartbeatList` push per monitor, so `wait_events` is a deliberate
+# grace period to let any remaining per-monitor pushes land before the
+# client treats the batch as complete. Confirmed directly in the
+# installed library source: `_get_event_data()` pays this sleep
+# UNCONDITIONALLY once the awaited event type has any data at all —
+# including on a long-settled, already-warm persistent connection,
+# where there is structurally nothing left to wait for (the initial
+# post-login batch settled calls ago, and every later update arrives
+# as a single, complete `heartbeat` push per monitor — confirmed via
+# `_event_heartbeat()`, which appends one complete record per call,
+# no multi-message batching at all). Two such unconditional sleeps per
+# `search()` call (`get_monitors()` + `get_heartbeats()`) is exactly
+# the ~0.4s structural floor traced directly to the recurring,
+# unexplained `uptime` warm-cache tail across the v3.50.4/v3.50.6/
+# v3.50.7 benchmark runs — not lock contention, not server-side
+# variance, a fixed, deterministic library cost paid on every genuine
+# cache miss.
+#
+# The real risk window for shortening `wait_events` is narrow and
+# specific: only the FIRST call after a fresh connect/login, while the
+# initial per-monitor `heartbeatList` batch may still be arriving.
+# Every later call on the SAME, already-settled connection has nothing
+# left to wait for. _SETTLED_WAIT_EVENTS is applied only after that
+# first call completes — see get_connection()'s `_settled` attribute
+# below — never at construction time, so the safe, full 0.2s default
+# always covers the one call that genuinely needs it.
+_SETTLED_WAIT_EVENTS = 0.01  # matches _get_event_data()'s own internal
+                              # poll granularity — a real, brief grace
+                              # period, not zero.
+
 # uptime_kuma_api's underlying python-socketio client isn't documented
 # as thread-safe for concurrent calls from multiple threads, and
 # Mnemolis can genuinely call search() from more than one thread at
@@ -77,6 +111,16 @@ def get_connection() -> "UptimeKumaApi":
             settings.uptime_kuma_url, timeout=settings.uptime_kuma_timeout_seconds
         )
         _persistent_api.login(settings.uptime_kuma_username, settings.uptime_kuma_password)
+        # Genuinely fresh connection — the initial post-login
+        # monitorList/heartbeatList batch may still be arriving one
+        # per-monitor push at a time, so this instance keeps
+        # UptimeKumaApi's own safe default `wait_events` (0.2s) until
+        # its first real data fetch completes. _settled flips True in
+        # search() right after that first fetch succeeds — see the
+        # module-level comment above _SETTLED_WAIT_EVENTS for why this
+        # specific call is the one that genuinely needs the full wait
+        # and every later one on this same instance doesn't.
+        _persistent_api._settled = False
     return _persistent_api
 
 
@@ -113,6 +157,19 @@ def search(query: str) -> str:
             api = get_connection()
             monitors = api.get_monitors()
             heartbeats = api.get_heartbeats()
+            # The two calls above just paid the real, necessary cost of
+            # waiting for this connection's initial data batch (if it
+            # was fresh) — from here on, this same instance has nothing
+            # left to wait for; every later heartbeat/monitor update
+            # arrives as a single, complete push (confirmed directly in
+            # the installed library source), not a multi-message batch
+            # `wait_events` exists to wait out. Shrinking it now is what
+            # actually removes the ~0.4s structural floor from every
+            # subsequent call on this connection, without skipping the
+            # one call that genuinely needed the full, safe wait.
+            if not getattr(api, "_settled", True):
+                api.wait_events = _SETTLED_WAIT_EVENTS
+                api._settled = True
     except Exception as e:
         _LOGGER.error("Failed to connect to Uptime Kuma: %s", e)
         # Force a fresh connection attempt next call — whatever state

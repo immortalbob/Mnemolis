@@ -557,6 +557,8 @@ Run against the real v3.50.6 codebase on MiniDock, validating the `cache_hit` th
 
 **`auto`/`conditional`/`conditional_remainder` show the same noisy, partially-effective pattern as v3.50.5, also unchanged by this release.** Cold p98/p99 moved in both directions relative to the v3.50.5 baseline (`auto`: 1300/3800ms → 1800/3000ms; `conditional`: 5100/5100ms → 1800/1800ms; `conditional_remainder`: 4300/4300ms → 1300/1300ms) while warm p95 stayed essentially flat (~440-450ms across all three, both runs) — exactly the "inherently noisier metric, single-run sampling variance" caveat the original design doc attached to this specific success criterion. `auto`'s cold run still shows roughly 8 of 76 requests (≈10%) landing in a real slow tail (440ms+), consistent with "the widening helped but isn't enough headroom for 20 concurrent users" rather than either "fixed" or "didn't help" — no change to that verdict from this run.
 
+**Both open items from this run were investigated further in v3.50.8 — see `CHANGELOG.md`'s v3.50.8 entry for `uptime`'s actual root cause and fix, and the pool-widening's collision-math-based re-sizing.** Neither has been re-benchmarked yet as of this writing; that's the natural next run, and this file will get a new dated entry once it happens.
+
 ## Running benchmarks
 
 Replace `192.168.1.50` below with your actual Mnemolis host's real IP or hostname — not a placeholder. `--host` silently accepts anything that looks like a URL, so a leftover example value doesn't fail loudly; it fails much later as a DNS error (`Temporary failure in name resolution`) on every single request, which doesn't obviously point back to `--host` as the cause.

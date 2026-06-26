@@ -112,6 +112,33 @@ AUTO_QUERIES = [
     "are my services running",
     "will it rain this week",
     "do I have any news today",
+    # Widened again, 12 -> 24, after the v3.50.7 benchmark run still
+    # showed a real, partial collision tail at this size (auto cold
+    # p98/p99 still landing multi-second-adjacent). The actual reason
+    # the first widening only partially helped, worked out directly
+    # rather than assumed: with 20 concurrent Locust users and a pool
+    # this small, the math is closer to the classic birthday-paradox
+    # problem than a simple "more options dilutes collisions" intuition
+    # suggests — the EXPECTED NUMBER of pool entries hit by 2+ of the 20
+    # users actually peaks somewhere around pool_size ~= 10-12 (not at
+    # the smallest size), then only declines meaningfully once the pool
+    # grows well past the concurrent-user count. 24 entries sits past
+    # that peak, where widening further genuinely reduces absolute
+    # collisions rather than mostly just redistributing them across more
+    # entries. Every new entry verified directly against detect_intent()
+    # before being added, the same discipline the original widening used.
+    "will it rain later today",
+    "is everything up right now",
+    "give me the latest headlines",
+    "high temp for tomorrow",
+    "is anything offline right now",
+    "whats in my feeds today",
+    "going to be hot this weekend",
+    "check services status now",
+    "low temp tonight",
+    "is it down right now",
+    "any new headlines for me",
+    "is the network up",
 ]
 
 FUSION_QUERIES = [
@@ -160,6 +187,30 @@ CONDITIONAL_QUERIES = [
     "if the network is down, tell me right away",
     "if it is going to snow, remind me to grab a coat",
     "if jupiter is in retrograde, I will be extra careful today",
+    # Widened again, 8 -> 20, after the v3.50.7 benchmark run still
+    # showed a real, partial collision tail at this size. Per the same
+    # birthday-paradox-shaped math worked out for AUTO_QUERIES above
+    # (see that pool's own comment for the full reasoning): the
+    # expected number of pool entries hit by 2+ of 20 concurrent users
+    # actually peaks around pool_size ~= 10-12 before declining, so a
+    # modest widening from a small pool can genuinely make the absolute
+    # collision count WORSE, not better, until the pool grows well past
+    # that peak. 20 entries sits past it. Every new condition verified
+    # directly against detect_conditional() before being added — each
+    # one correctly parses into a real condition/consequence with an
+    # empty remainder, the same shape every existing entry has.
+    "if the front porch light is off, let me know",
+    "if the freezer is too warm, let me know right away",
+    "if it is going to be windy tomorrow, remind me to secure the patio furniture",
+    "if saturn is in retrograde, I will reconsider my plans",
+    "if the side gate is unlocked, let me know",
+    "if the internet connection drops, tell me right away",
+    "if there is a frost warning tonight, remind me to cover the plants",
+    "if mars is in retrograde, I will be careful with decisions",
+    "if the basement sensor detects water, let me know immediately",
+    "if any cameras go offline, let me know",
+    "if the humidity gets too high, remind me to run the dehumidifier",
+    "if venus is in retrograde, I will think twice about new purchases",
 ]
 
 # Conditional queries with a real remainder after the consequence — also
@@ -171,6 +222,30 @@ CONDITIONAL_WITH_REMAINDER_QUERIES = [
     "if the back door is unlocked, let me know, and also check the news",
     "if it is raining, remind me to bring an umbrella, and also is everything up",
     "if the garage door is open, let me know, and also whats happening with bitcoin",
+    # Widened again, 4 -> 12, after the v3.50.7 benchmark run still
+    # showed a real collision tail at this size — and per the same
+    # collision math worked out above, 4 entries against 20 concurrent
+    # users sits almost exactly at "nearly every entry collides" (the
+    # worked-out model gives ~3.9 of 4 entries expected to be hit by 2+
+    # users at this size), so this pool specifically needed to clear
+    # the math's peak, not just double. Deliberately reuses several
+    # conditions already present in CONDITIONAL_QUERIES above (e.g.
+    # "the back door is unlocked") rather than avoiding overlap —
+    # confirmed directly that this HELPS, not hurts: both tasks
+    # ultimately call route_with_source() with the identical extracted
+    # condition text as the cache key, so a condition warmed by either
+    # task benefits both, the same overlap pattern the original 4-entry
+    # pool already relied on. Every new entry verified directly against
+    # detect_conditional() to produce a genuine non-empty remainder, not
+    # assumed.
+    "if the side gate is unlocked, let me know, and also is it going to rain",
+    "if the network is down, tell me right away, and also whats the latest news",
+    "if mars is in retrograde, I will be careful with decisions, and also check if the doors are locked",
+    "if there is a frost warning tonight, remind me to cover the plants, and also whats the forecast for the weekend",
+    "if any cameras go offline, let me know, and also what is happening with bitcoin",
+    "if the humidity gets too high, remind me to run the dehumidifier, and also check the news",
+    "if the freezer is too warm, let me know right away, and also whats the weather tomorrow",
+    "if venus is in retrograde, I will think twice about new purchases, and also is everything online",
 ]
 
 # Discourse-framing queries ("everyone's obsessed with X") — exercises

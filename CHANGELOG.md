@@ -4,6 +4,41 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.8]
+
+### Fixed — `uptime`'s Remaining Tail, Actually Root-Caused: `uptime_kuma_api`'s Own Unconditional `wait_events` Sleep
+The v3.50.4/v3.50.6/v3.50.7 benchmark runs all showed the identical, deterministic ~440ms slow-tail value for `uptime` — a strong signal this was never noise, just never traced to its actual source. Doing exactly that: a direct, standalone reproduction against the installed `uptime_kuma_api` library (constructing a mock with `_event_data` already fully populated, then calling the real, unpatched `UptimeKumaApi._get_event_data()` against it) confirmed the real mechanism. `_get_event_data()` pays its `wait_events` sleep (default 0.2s) **unconditionally**, every single call, including when the awaited data has been sitting there, complete, since a previous call. Two such calls per `search()` (`get_monitors()` + `get_heartbeats()`) is exactly the ~0.4s structural floor — not lock contention, not server-side variance, a fixed, deterministic library cost paid on every genuine cache miss, fully explaining why the slow-tail value never moved across three separate benchmark runs.
+
+This wasn't a library bug — `wait_events` exists for a real, documented reason: Uptime Kuma's server emits one `heartbeatList` push *per monitor* after login, and Socket.IO gives no signal for "that was the last one of this type," so the client needs a real grace period to let trailing per-monitor pushes land before treating the initial batch as complete. The genuine risk window for shortening it is narrow — only the **first** call after a fresh connect/login, while that initial batch may still be arriving. Confirmed directly that every later call has nothing left to wait for: `_event_heartbeat()` (the steady-state, post-login push handler) appends one complete record per call, with no multi-message batching at all — the persistent connection's whole design already keeps this data current via real-time pushes, independent of `wait_events`.
+
+**The fix**: `app/sources/uptime_kuma.py` now tracks whether a connection's first data fetch has settled (a `_settled` flag set directly on the `UptimeKumaApi` instance, tied to that instance's own lifetime — a reconnect after a dead connection correctly resets it via a brand-new instance). The first call after any fresh connect/login keeps the library's safe default `wait_events` (0.2s), exactly the one call that genuinely needs it. Every later call on the same, now-settled connection gets `wait_events` shrunk to `_SETTLED_WAIT_EVENTS` (0.01s, matching `_get_event_data()`'s own internal polling granularity — a real, brief grace period kept, not eliminated outright). This removes the ~0.4s floor from the large majority of real traffic without touching the one call where the original, full wait genuinely matters.
+
+`search()`'s public contract, `CACHE_TTL_UPTIME_SECONDS`, and `UPTIME_KUMA_TIMEOUT_SECONDS` are all unchanged — this is purely a connection-instance-level adjustment to a setting the persistent-connection fix (v3.50.4) never touched.
+
+### Added (Tests)
+- `TestWaitEventsSettling` (6 tests) in `test_uptime_kuma.py` — confirms a fresh connection keeps the safe, full `wait_events` for its first call (the real safety property this fix depends on), confirms it shrinks after that first fetch settles, confirms the settled value is real and nonzero (not eliminated outright), confirms an already-settled connection isn't touched a second time, confirms a reconnect after a dead connection independently re-settles on its own first call rather than inheriting a prior instance's shrunk value, and a genuine wall-clock timing proof (not just an attribute check) that a second call on a settled connection measurably takes less real time than the first.
+
+### Changed — Re-Widened `AUTO_QUERIES`/`CONDITIONAL_QUERIES`/`CONDITIONAL_WITH_REMAINDER_QUERIES`, This Time Against a Worked-Out Model Instead of a Doubling Guess
+The v3.50.3 widening (6→12, 4→8, 2→4) was confirmed, across two separate re-benchmark runs (v3.50.5, v3.50.7), to have genuinely helped but not enough — `auto`'s cold p99 dropped from a 10-second spike but stayed multi-second-adjacent, and `conditional`/`conditional_remainder` kept real warm-cache tails that shouldn't exist on a fully-warmed pool. Rather than double the pools again on the same "more options should dilute collisions" intuition that already underperformed once, this pass actually modeled the collision mechanics: with 20 concurrent Locust users, the **expected number of pool entries hit by 2 or more users simultaneously is not monotonically decreasing in pool size** — it's closer to a classic birthday-paradox curve that *peaks* somewhere around pool_size ≈ 10–12 before declining, meaning a small widening from an already-small pool can leave the absolute collision count roughly flat (or, for `conditional_with_remainder`'s 4-entry pool specifically, modeled to get *worse* before getting better).
+
+Concretely worked out (20 users, uniform random pool selection): `conditional_with_remainder` at 4 entries has ~3.9 of 4 entries expected to be hit by 2+ users — essentially total collision, matching exactly what the benchmark kept showing. The peak for all three pools sits around 10-12 entries; meaningful, accelerating decline only resumes well past that. New sizes were chosen to clear that peak, not just to be "bigger than last time": `AUTO_QUERIES` 12→24, `CONDITIONAL_QUERIES` 8→20, `CONDITIONAL_WITH_REMAINDER_QUERIES` 4→12. Every new entry verified directly against `detect_intent()`/`detect_conditional()` before being added, the same discipline the original widening used — none assumed.
+
+`CONDITIONAL_WITH_REMAINDER_QUERIES`'s new entries deliberately reuse several conditions already present in `CONDITIONAL_QUERIES` (e.g. "the back door is unlocked") rather than avoiding overlap — confirmed directly this *helps*, not hurts: both tasks ultimately call `route_with_source()` with the identical extracted condition text as the cache key, so a condition warmed by either task benefits both, the same overlap pattern the original 4-entry pool already relied on.
+
+`app/adversarial_testing.py`'s `CONDITIONAL_SEEDS` updated in lockstep with the 12 new `CONDITIONAL_QUERIES` conditions — `TestSeedVocabularyIntegrity` enforces this directly, the same cross-file dependency already established in v3.50.3.
+
+A genuine, modeled limitation worth stating honestly rather than implying these pools are now "fixed": getting the *expected* colliding-entry count meaningfully below 1 (true elimination, not just dilution) would need pools in the 150-200 entry range at this concurrency level — not realistic to hand-write and individually verify as natural-feeling queries, and it would make the load test itself unwieldy. The new sizes are a genuine, modeled improvement past the worst part of the curve, not a claim that the thundering-herd tail is now fully gone — a real re-benchmark is still the only way to confirm how much this specific change actually moved the numbers.
+
+### Added (Tests)
+- `test_locustfile_thundering_herd_pools_are_wide_enough_to_clear_the_collision_peak` in `test_router.py`'s `TestResultCacheThunderingHerd` — enforces the concrete sizing conclusion (not the probability model itself) so a future accidental shrink is caught rather than silently reintroducing the exact tail this pass removed.
+
+### Changed
+- Version bumped to 3.50.8
+
+**Total test count: 1262**
+
+---
+
 ## [3.50.7]
 
 ### Changed — Re-Benchmark: Confirming the `cache_hit` Fix Actually Closed the Gap

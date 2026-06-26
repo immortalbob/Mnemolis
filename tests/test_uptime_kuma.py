@@ -444,3 +444,232 @@ class TestPersistentConnection:
             result = uptime_kuma.search("status")
         assert "could not connect" not in result.lower()
         mock_api_instance.login.assert_called_once()
+
+
+class TestWaitEventsSettling:
+    """Regression coverage for the actual root cause traced down behind
+    `uptime`'s recurring, unexplained warm-cache tail (v3.50.4, v3.50.6,
+    v3.50.7 benchmark runs all showed the identical ~440ms tail value):
+    `uptime_kuma_api`'s own `_get_event_data()` pays its `wait_events`
+    sleep (default 0.2s) UNCONDITIONALLY every single time it's called,
+    even when the awaited data has been sitting there, fully complete,
+    since a previous call — confirmed directly against the installed
+    library source via a standalone reproduction (not an assumption):
+    constructing a mock with `_event_data` already populated and
+    calling the real, unpatched `UptimeKumaApi._get_event_data` against
+    it still took the full 0.2s.
+
+    Two such unconditional sleeps per `search()` call
+    (`get_monitors()` + `get_heartbeats()`) is exactly the ~0.4s
+    structural floor that landed at p90+ in every benchmark run to
+    date — not lock contention, not server-side variance, a fixed,
+    deterministic library cost paid on every genuine cache miss.
+
+    The fix narrows `wait_events` only AFTER a connection's first
+    successful data fetch settles — the one call that genuinely needs
+    the full, safe wait, per the library's own documented purpose
+    (waiting for trailing per-monitor `heartbeatList`/`monitorList`
+    push messages right after login). Every later call on the same,
+    already-settled persistent connection has nothing structurally
+    left to wait for — confirmed directly: `_event_heartbeat()`
+    (the steady-state, post-login push handler) appends one complete
+    record per call, with no multi-message batching at all.
+    """
+
+    def setup_method(self):
+        from app.config import settings
+        settings.uptime_kuma_url = "http://uptime-kuma:3001"
+        settings.uptime_kuma_username = "testuser"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.uptime_kuma_url = ""
+        settings.uptime_kuma_username = ""
+
+    def test_fresh_connection_keeps_the_safe_default_wait_events_for_its_first_call(self):
+        """The one call that genuinely needs the full, safe wait — a
+        fresh connect/login, where the initial per-monitor
+        heartbeatList batch may still be arriving — must NOT have its
+        wait_events shrunk before that first fetch completes. This is
+        the real safety property the whole fix depends on: shrinking
+        too early risks get_heartbeats() returning incomplete data for
+        a monitor whose push hadn't landed yet."""
+        from app.sources import uptime_kuma
+
+        mock_api_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+        mock_api_instance.wait_events = 0.2  # the real library's safe default
+
+        captured_wait_events_during_fetch = {}
+
+        def capturing_get_monitors():
+            # Captures wait_events AT THE MOMENT get_monitors() is
+            # called — i.e. before this module's own post-fetch
+            # shrink logic has had any chance to run yet.
+            captured_wait_events_during_fetch["during_get_monitors"] = mock_api_instance.wait_events
+            return [_make_monitor(1, "Test")]
+
+        mock_api_instance.get_monitors.side_effect = capturing_get_monitors
+
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api_instance):
+            uptime_kuma.search("status")
+
+        assert captured_wait_events_during_fetch["during_get_monitors"] == 0.2, (
+            "wait_events was shrunk BEFORE the first fetch completed — "
+            "this risks an incomplete heartbeatList read on a genuinely "
+            "fresh connection"
+        )
+
+    def test_wait_events_shrinks_after_the_first_successful_fetch_settles(self):
+        """The actual fix: once a connection's first data fetch has
+        genuinely completed, wait_events should be narrowed for every
+        subsequent call on that same connection — this is what
+        actually removes the ~0.4s structural floor."""
+        from app.sources import uptime_kuma
+
+        mock_api_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+        mock_api_instance.wait_events = 0.2
+
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api_instance):
+            uptime_kuma.search("status")
+
+        assert mock_api_instance.wait_events == uptime_kuma._SETTLED_WAIT_EVENTS, (
+            "wait_events was never shrunk after the first successful "
+            "fetch — the ~0.4s structural floor would still apply to "
+            "every later call on this same connection"
+        )
+
+    def test_settled_wait_events_is_not_zero(self):
+        """A real, brief grace period must remain — not eliminated
+        outright. Zero would remove even the small, real protection
+        wait_events provides against a genuinely straggling message,
+        and the library's own internal polling granularity (0.01s, the
+        `_get_event_data()` while-loop's own sleep interval) is the
+        natural, conservative floor to match rather than going below
+        it."""
+        from app.sources import uptime_kuma
+        assert uptime_kuma._SETTLED_WAIT_EVENTS > 0
+        assert uptime_kuma._SETTLED_WAIT_EVENTS <= 0.01
+
+    def test_already_settled_connection_is_not_shrunk_a_second_time(self):
+        """Once a connection has already settled, a second call must
+        leave wait_events exactly where the first settling left it —
+        confirms this isn't re-applied or reset on every call, just
+        once per fresh connection."""
+        from app.sources import uptime_kuma
+
+        mock_api_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+        mock_api_instance.wait_events = 0.2
+
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api_instance):
+            uptime_kuma.search("status")
+            assert mock_api_instance.wait_events == uptime_kuma._SETTLED_WAIT_EVENTS
+
+            # Manually nudge it to prove the second call doesn't touch
+            # it again (a real re-apply would reset it back to the
+            # settled value even if something else had changed it,
+            # which isn't the actual contract — settling happens once).
+            mock_api_instance.wait_events = 0.05
+            uptime_kuma.search("status")
+
+        assert mock_api_instance.wait_events == 0.05, (
+            "wait_events was modified again on an already-settled "
+            "connection — settling should only ever happen once per "
+            "fresh connection, not on every call"
+        )
+
+    def test_reconnecting_after_a_dead_connection_resets_to_the_safe_default_path(self):
+        """A reconnect creates a genuinely NEW UptimeKumaApi instance —
+        confirms the new instance goes through the same fresh-connection
+        safety window as any other first-ever connection, rather than
+        inheriting a shrunk wait_events from whatever the previous,
+        now-dead instance had settled to."""
+        from app.sources import uptime_kuma
+
+        first_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+        first_instance.wait_events = 0.2
+        second_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+        second_instance.wait_events = 0.2  # the real library always
+                                            # constructs a fresh instance
+                                            # at its own safe default,
+                                            # never inheriting a prior
+                                            # instance's shrunk value
+
+        mock_api_class = MagicMock(side_effect=[first_instance, second_instance])
+
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", mock_api_class):
+            uptime_kuma.search("status")
+            assert first_instance.wait_events == uptime_kuma._SETTLED_WAIT_EVENTS
+
+            # Simulate the connection dying between calls.
+            first_instance.sio.connected = False
+            uptime_kuma.search("status")
+
+        # The second instance must independently settle on its OWN
+        # first call — confirming get_connection() correctly marks
+        # every freshly-created instance as unsettled, not just the
+        # very first one ever created in the process's lifetime.
+        assert second_instance.wait_events == uptime_kuma._SETTLED_WAIT_EVENTS
+
+    def test_second_call_on_a_settled_connection_is_genuinely_faster(self):
+        """A real, wall-clock timing proof — not just an attribute
+        check — that settling actually reduces real elapsed time, the
+        same "prove the property, not just unchanged output" discipline
+        TestPersistentConnection's own reuse test already established.
+        Uses a real UptimeKumaApi-shaped object whose get_monitors/
+        get_heartbeats methods genuinely call time.sleep(self.wait_events)
+        themselves (mirroring the real library's own unconditional
+        sleep inside _get_event_data), scaled down so the test stays
+        fast (0.05s "full" wait vs. the real 0.2s) while still proving
+        the actual mechanism via measured time, not mocked attributes."""
+        import time
+        from app.sources import uptime_kuma
+
+        class _RealisticMockApi:
+            """Mimics the real UptimeKumaApi's actual unconditional-sleep
+            behavior closely enough to prove real elapsed-time savings,
+            without needing the real library or a real connection."""
+            def __init__(self):
+                self.wait_events = 0.05  # scaled-down stand-in for 0.2
+                self.sio = MagicMock()
+                self.sio.connected = True
+                self._settled = False
+
+            def login(self, *a, **kw):
+                pass
+
+            def disconnect(self):
+                pass
+
+            def get_monitors(self):
+                time.sleep(self.wait_events)  # mirrors the real library's
+                                                # unconditional _get_event_data sleep
+                return [_make_monitor(1, "Test")]
+
+            def get_heartbeats(self):
+                time.sleep(self.wait_events)
+                return _make_heartbeats(1, 1)
+
+        mock_instance = _RealisticMockApi()
+
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_instance):
+            start = time.monotonic()
+            uptime_kuma.search("status")
+            first_call_elapsed = time.monotonic() - start
+
+            start = time.monotonic()
+            uptime_kuma.search("status")
+            second_call_elapsed = time.monotonic() - start
+
+        # First call pays the full, safe wait_events (2 calls x 0.05s).
+        assert first_call_elapsed >= 0.08, (
+            f"first call took {first_call_elapsed:.3f}s — expected it to "
+            f"pay the full, safe wait_events cost"
+        )
+        # Second call, on the now-settled connection, should be
+        # dramatically faster — using _SETTLED_WAIT_EVENTS (0.01s) for
+        # both calls instead of the original 0.05s.
+        assert second_call_elapsed < first_call_elapsed / 2, (
+            f"second call ({second_call_elapsed:.3f}s) wasn't meaningfully "
+            f"faster than the first ({first_call_elapsed:.3f}s) — the "
+            f"settling fix doesn't appear to be reducing real elapsed time"
+        )
