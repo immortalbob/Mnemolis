@@ -975,3 +975,37 @@ def dismiss_flagged_combination(fingerprint: str) -> bool:
     except Exception as e:
         _LOGGER.warning("Could not dismiss flagged combination %r: %s", fingerprint, e)
         return False
+
+
+def undismiss_flagged_combination(fingerprint: str) -> bool:
+    """Reverse a dismissal, putting a combination back into the default
+    review queue. The real, symmetric counterpart to
+    dismiss_flagged_combination() — found necessary via real usage, not
+    written defensively up front: dismissal previously had no way back
+    short of editing the database by hand, and a real batch-dismiss by
+    the wrong set of indices (matching against a stale, previously-seen
+    listing rather than a fresh one) needed an honest way to recover
+    without raw fingerprint-JSON surgery.
+
+    Returns True if a matching row was found and updated, False
+    otherwise (unknown fingerprint, or a DB error) — the same contract
+    as dismiss_flagged_combination().
+
+    Sets review_status back to NULL rather than some other sentinel —
+    NULL is what a combination's review_status already is before it's
+    ever dismissed for the first time, so undismissing genuinely
+    restores the exact prior state, not a new, third state.
+    """
+    try:
+        con = _connect(ADVERSARIAL_DB)
+        cursor = con.execute(
+            "UPDATE adversarial_combinations SET review_status = NULL WHERE fingerprint = ?",
+            (fingerprint,)
+        )
+        con.commit()
+        updated = cursor.rowcount > 0
+        con.close()
+        return updated
+    except Exception as e:
+        _LOGGER.warning("Could not undismiss flagged combination %r: %s", fingerprint, e)
+        return False
