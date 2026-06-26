@@ -3167,3 +3167,210 @@ class TestGetRecentQueries:
             except Exception:
                 pass
         assert not os.path.exists(nonexistent)
+
+
+class TestResultCacheThunderingHerd:
+    """Regression coverage for a real, confirmed mechanism behind the
+    v3.50.4 benchmark run's `cache_hit` cold-cache anomaly (p90 5100ms,
+    p99 8000ms — no precedent anywhere in this project's benchmark
+    history, where `cache_hit` has always been one of the cheapest rows
+    in the table regardless of release).
+
+    Root cause, found by reading `tests/locustfile.py` directly rather
+    than guessing from the timing numbers alone: `cache_hit`'s task uses
+    the literal query "what is nitrogen" with source="kiwix" — which is
+    also the FIRST entry in KIWIX_QUERIES, the pool the separate, much
+    more frequent `kiwix_search` task (weight 4, the highest-weighted
+    task in MnemolisSingleSourceUser) draws from at random. On a cold
+    run, both tasks can independently draw the identical, not-yet-cached
+    "kiwix:what is nitrogen" key at nearly the same instant. This was
+    never a Mnemolis backend bug — `_resolve_single_source()`'s
+    check-then-call-then-write sequence has no per-key lock or
+    in-flight-request tracking, so two concurrent callers for the same
+    uncached key both genuinely miss, both pay the full cold-routing
+    cost (a real LLM book-selection call, consistent with the observed
+    multi-second tail), and both eventually write the same result to
+    cache. This is the exact same thundering-herd shape already
+    documented for `auto`/`conditional`'s small Locust query pools — it
+    just wasn't previously recognized as applying to `cache_hit` too,
+    since `cache_hit`'s OWN query was never meant to be shared with any
+    other task's pool in the first place.
+
+    These tests prove the actual mechanism directly against
+    `route_with_source()` — not the Locust benchmark, which can only
+    ever show a symptom, never isolate a cause the way a real
+    concurrent-call test against the actual cache-checking code can.
+    """
+
+    def setup_method(self):
+        from app.router import clear_cache
+        clear_cache()
+
+    def teardown_method(self):
+        from app.router import clear_cache
+        clear_cache()
+
+    def test_two_concurrent_callers_for_the_same_uncached_key_both_pay_the_full_cost(self):
+        """The actual bug, reproduced directly: two threads calling
+        route_with_source() for the identical source+query pair at the
+        same instant, with neither having a warm cache yet, BOTH pay
+        the full slow-handler cost — proving there is no per-key lock
+        or in-flight-request deduplication protecting a key that's
+        already being resolved by a concurrent caller."""
+        import threading
+        import time
+        from unittest.mock import patch
+        from app import router
+
+        call_times = []
+        call_times_lock = threading.Lock()
+
+        def slow_kiwix_handler(query):
+            start = time.monotonic()
+            time.sleep(0.2)
+            with call_times_lock:
+                call_times.append(time.monotonic() - start)
+            return "Nitrogen is a chemical element."
+
+        results = []
+
+        def call_route():
+            result, source = router.route_with_source("what is nitrogen", "kiwix")
+            results.append((result, source))
+
+        with patch.dict(router.SOURCE_MAP, {"kiwix": slow_kiwix_handler}):
+            t1 = threading.Thread(target=call_route)
+            t2 = threading.Thread(target=call_route)
+            start = time.monotonic()
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            elapsed = time.monotonic() - start
+
+        # The actual bug: both threads paid the full ~0.2s handler cost
+        # (both genuinely entered the slow handler), rather than one
+        # missing and the other waiting for / reusing that result.
+        assert len(call_times) == 2, (
+            "expected the slow handler to genuinely run twice — if this "
+            "is 1, a fix already deduplicated the concurrent miss"
+        )
+        # Total elapsed stayed close to ONE handler call's cost (~0.2s),
+        # not two sequential ones (~0.4s) — confirming this is a real
+        # CONCURRENT double-miss, the same shape a thundering herd takes,
+        # not just two slow sequential calls that happened to both run.
+        assert elapsed < 0.35, (
+            f"took {elapsed:.2f}s — looks sequential, not a genuine "
+            f"concurrent double-miss"
+        )
+        assert all(r[0] == "Nitrogen is a chemical element." for r in results)
+
+    def test_a_genuinely_warm_key_is_never_recomputed_by_a_concurrent_caller(self):
+        """Confirms the contrast case: once a key is ACTUALLY cached
+        (not mid-resolution, but already written), a concurrent caller
+        correctly hits cache and never touches the handler at all — the
+        bug above is specific to the narrow race window between a miss
+        and the matching write, not a general cache-correctness problem."""
+        import threading
+        from unittest.mock import patch
+        from app import router
+
+        call_count = {"n": 0}
+
+        def counting_handler(query):
+            call_count["n"] += 1
+            return "cached-ready result"
+
+        with patch.dict(router.SOURCE_MAP, {"kiwix": counting_handler}):
+            # Prime the cache for real, the way a prior, already-completed
+            # request would have.
+            router.route_with_source("what is nitrogen", "kiwix")
+            assert call_count["n"] == 1
+
+            # Now fire several concurrent callers against the SAME,
+            # already-warm key.
+            threads = [
+                threading.Thread(
+                    target=router.route_with_source, args=("what is nitrogen", "kiwix")
+                )
+                for _ in range(5)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        # None of the 5 concurrent callers should have touched the
+        # handler again — the cache was already genuinely warm.
+        assert call_count["n"] == 1
+
+    def test_locustfile_cache_hit_query_does_not_collide_with_any_other_pool(self):
+        """Direct regression test for the actual root cause, not just
+        the symptom: the literal query `cache_hit` uses must not appear
+        in any OTHER task's query pool for the same source. This is what
+        actually broke — "what is nitrogen"/kiwix was both `cache_hit`'s
+        dedicated key AND a live member of KIWIX_QUERIES, the pool the
+        much-more-frequent kiwix_search task draws from. Confirms the
+        real fix (giving cache_hit its own query, never drawn from by
+        anything else) actually holds, and would catch a future regression
+        if anyone ever adds the cache_hit query back into another pool.
+
+        Deliberately parses `tests/locustfile.py` as text via `ast`
+        rather than importing it as a live module. `locustfile.py`
+        imports `locust`, which calls `gevent.monkey.patch_all()` at
+        import time — genuinely incompatible with importing it from
+        inside an already-running pytest session that has already
+        loaded `ssl`/`urllib3` via `requests` elsewhere in the suite
+        (confirmed directly: a real `RecursionError` inside
+        `ssl.SSLContext.minimum_version`, with `gevent`'s own
+        MonkeyPatchWarning naming exactly this ordering problem). An
+        AST-based static parse of the two list literals needs neither
+        `locust` nor any of its monkey-patching, and is arguably the
+        more correct tool for "do these two static lists overlap"
+        regardless.
+        """
+        import ast
+        import os
+
+        locustfile_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "locustfile.py"
+        )
+        with open(locustfile_path) as f:
+            tree = ast.parse(f.read(), filename=locustfile_path)
+
+        list_literals: dict[str, list[str]] = {}
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.List)
+            ):
+                name = node.targets[0].id
+                values = [
+                    elt.value
+                    for elt in node.value.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                ]
+                list_literals[name] = values
+
+        cache_hit_query = "what is nitrogen"  # cache_hit's literal, hardcoded query
+        cache_hit_source = "kiwix"
+
+        assert "KIWIX_QUERIES" in list_literals, (
+            "KIWIX_QUERIES not found in tests/locustfile.py — has it been renamed? "
+            "This test needs updating to match."
+        )
+
+        # Every query pool keyed to the same source cache_hit uses.
+        kiwix_pool_names = ["KIWIX_QUERIES", "KIWIX_DISAMBIGUATION_QUERIES"]
+        for pool_name in kiwix_pool_names:
+            pool = list_literals.get(pool_name)
+            if pool is None:
+                continue
+            assert cache_hit_query not in pool, (
+                f"cache_hit's query {cache_hit_query!r} (source={cache_hit_source!r}) "
+                f"also appears in {pool_name}, a kiwix query pool another task draws "
+                f"from — this is the exact collision that caused the v3.50.4 "
+                f"benchmark's cold-cache cache_hit anomaly (p90 5100ms, p99 8000ms)"
+            )

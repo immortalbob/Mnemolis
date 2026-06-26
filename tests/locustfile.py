@@ -37,7 +37,6 @@ import random
 
 
 KIWIX_QUERIES = [
-    "what is nitrogen",
     "how does photosynthesis work",
     "explain docker networking",
     "what is molybdenum",
@@ -48,6 +47,29 @@ KIWIX_QUERIES = [
     "what is machine learning",
     "how does wifi work",
 ]
+
+# cache_hit's own dedicated query — deliberately NOT "what is nitrogen"
+# (the original value here, and still the first KIWIX_QUERIES entry
+# below until this fix). A real, confirmed bug: cache_hit's whole
+# purpose is to always be a cache hit after the first run, but sharing
+# its literal query with KIWIX_QUERIES meant the much-more-frequent
+# kiwix_search task (weight 4, the highest-weighted task in
+# MnemolisSingleSourceUser) could draw the identical, not-yet-cached
+# key at nearly the same instant on a cold run — both tasks then
+# genuinely miss and both pay the full cold-routing cost concurrently,
+# since route_with_source()'s check-then-call-then-write sequence has
+# no per-key lock or in-flight-request deduplication (the same
+# thundering-herd shape already documented for AUTO_QUERIES/
+# CONDITIONAL_QUERIES's own small pools, just newly visible on a task
+# that was never meant to be exposed to it). Traced directly to this
+# collision after the v3.50.4 benchmark run showed cache_hit's cold p99
+# at a genuinely surprising 8000ms — a query this task's own name says
+# should never miss at all. CACHE_HIT_QUERY must never appear in
+# KIWIX_QUERIES, KIWIX_DISAMBIGUATION_QUERIES, or any other pool any
+# other task draws from for the same source — see
+# TestResultCacheThunderingHerd in tests/test_router.py for the direct
+# reproduction and the regression test enforcing this.
+CACHE_HIT_QUERY = "what is the boiling point of tungsten"
 
 # Short, single-word-after-stemming queries that trigger the disambiguation
 # path (definitional + single ambiguous word + Wikipedia selected) — the
@@ -269,9 +291,13 @@ class MnemolisSingleSourceUser(HttpUser):
 
     @task(1)
     def cache_hit(self):
-        """Repeated query — should always be a cache hit after first run."""
+        """Repeated query — should always be a cache hit after first run.
+
+        Uses its own dedicated query (CACHE_HIT_QUERY), never drawn
+        from by any other task's pool — see that constant's own
+        comment for the real, confirmed collision this fixes."""
         self.client.post("/search", json={
-            "query": "what is nitrogen",
+            "query": CACHE_HIT_QUERY,
             "source": "kiwix"
         }, name="/search [cache_hit]")
 

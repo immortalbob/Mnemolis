@@ -417,7 +417,91 @@ The last real benchmark in this file was v3.44.0. Everything between v3.44.1 and
 
 **Median latency remains completely unaffected across this entire release range too.** Aggregated median held at 24ms cold and warm — now confirmed constant across roughly 35 releases and every major feature shipped since v3.5.0, including two entirely new background-job features (Adversarial Self-Testing, Cross-Source Temporal Pattern Detection) that run on their own schedule and were never expected to touch the request-handling path at all.
 
-## Running benchmarks
+### 20 Users — Cold vs Warm Cache (v3.50.4, validating the persistent Uptime Kuma connection and the v3.50.3 pool widening together)
+
+Run against the real v3.50.4 codebase on MiniDock, validating two changes against the same v3.50.2 baseline above in one pass rather than two separate sessions: the persistent Uptime Kuma connection (this release) and the `AUTO_QUERIES`/`CONDITIONAL_QUERIES`/`CONDITIONAL_WITH_REMAINDER_QUERIES` pool widening (v3.50.3, never previously re-benchmarked).
+
+**Cold cache** — both caches explicitly cleared immediately before this run.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | Failures |
+|----------|--------|-----|-----|-----|-----|----------|
+| `/health` | 710ms | 740ms | 760ms | 760ms | 760ms | 0% |
+| `/search [kiwix]` | 24ms | 680ms | 1100ms | 2200ms | 5000ms | 0% |
+| `/search [kiwix_disambiguation]` | 24ms | 1500ms | 2000ms | 2400ms | 2400ms | 0% |
+| `/search [web]` | 24ms | 39ms | 820ms | 1700ms | 2100ms | 0% |
+| `/search [conditional]` | 29ms | 460ms | 1200ms | 5100ms | 5100ms | 0% |
+| `/search [conditional_remainder]` | 38ms | 970ms | 1900ms | 4300ms | 4300ms | 0% |
+| `/search [discourse_framing]` | 31ms | 150ms | 1800ms | 3800ms | 3800ms | 0% |
+| `/search [forecast]` | 23ms | 32ms | 79ms | 680ms | 680ms | 0% |
+| `/search [news]` | 22ms | 31ms | 49ms | 130ms | 130ms | 0% |
+| `/search [uptime]` | 22ms | 440ms | 500ms | 500ms | 500ms | 0% |
+| `/search [ha]` | 34ms | 50ms | 55ms | 150ms | 150ms | 0% |
+| `/search [auto]` | 27ms | 450ms | 730ms | 1300ms | 3800ms | 0% |
+| `/search [fusion_explicit]` | 22ms | 30ms | 120ms | 710ms | 730ms | 0% |
+| `/search [fusion_auto]` | 25ms | 36ms | 110ms | 220ms | 230ms | 0% |
+| `/search [fusion_triple]` | 22ms | 32ms | 47ms | 880ms | 880ms | 0% |
+| `/search [cache_hit]` | 24ms | 5100ms | 5700ms | 8000ms | 8000ms | 0% |
+| **Aggregated** | **24ms** | **160ms** | **730ms** | **1800ms** | **3800ms** | **0%** |
+
+**863 requests. 0 failures.**
+
+**`uptime`'s cold-cache cost dropped substantially: p95/p99 went from 1900ms (v3.50.2) to 500ms.** Most individual `uptime` requests on this run were genuinely fast — in line with every other source's cold numbers — with a minority (roughly the slowest 2-3 of 17 total `uptime` requests, based on where the percentile table's jump from 26ms at p80 to 440ms at p90 sits) still paying a real, large cost. See the warm-cache analysis below for the full read on what this means for the fix's two success criteria.
+
+**`cache_hit`'s cold p90/p95/p99 (5100/5700/8000ms) is a genuinely new, surprising number not seen in the v3.50.2 baseline (47ms p99) or anywhere in this file's prior history**, where `cache_hit` has always been one of the cheapest, most boring rows in the table. Not investigated as part of this run — flagged here honestly rather than folded silently into "the usual cold-cache variance," since a cache-hit task spiking into multi-second territory on a *cold* run (where, by definition, nothing should be cached yet for it to hit) is a different shape of anomaly than the already-documented thundering-herd cache-write collisions on `auto`/`conditional`. Worth a dedicated look in a future pass; out of scope for what this run was set up to validate.
+
+**Warm cache** — identical run immediately afterward, no clearing in between.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | Failures |
+|----------|--------|-----|-----|-----|-----|----------|
+| `/health` | 730ms | 770ms | 1200ms | 1200ms | 1200ms | 0% |
+| `/search [kiwix]` | 24ms | 28ms | 34ms | 42ms | 49ms | 0% |
+| `/search [kiwix_disambiguation]` | 22ms | 30ms | 33ms | 44ms | 44ms | 0% |
+| `/search [web]` | 23ms | 30ms | 35ms | 43ms | 46ms | 0% |
+| `/search [conditional]` | 26ms | 59ms | 440ms | 440ms | 440ms | 0% |
+| `/search [conditional_remainder]` | 40ms | 55ms | 440ms | 460ms | 460ms | 0% |
+| `/search [discourse_framing]` | 29ms | 41ms | 47ms | 49ms | 59ms | 0% |
+| `/search [forecast]` | 23ms | 28ms | 31ms | 40ms | 45ms | 0% |
+| `/search [news]` | 23ms | 26ms | 29ms | 38ms | 38ms | 0% |
+| `/search [uptime]` | 24ms | 440ms | 470ms | 850ms | 850ms | 0% |
+| `/search [ha]` | 38ms | 48ms | 48ms | 48ms | 48ms | 0% |
+| `/search [auto]` | 25ms | 41ms | 440ms | 450ms | 450ms | 0% |
+| `/search [fusion_explicit]` | 22ms | 31ms | 38ms | 44ms | 54ms | 0% |
+| `/search [fusion_auto]` | 25ms | 34ms | 37ms | 41ms | 42ms | 0% |
+| `/search [fusion_triple]` | 21ms | 29ms | 33ms | 40ms | 43ms | 0% |
+| `/search [cache_hit]` | 24ms | 27ms | 28ms | 36ms | 36ms | 0% |
+| **Aggregated** | **24ms** | **37ms** | **49ms** | **460ms** | **730ms** | **0%** |
+
+**901 requests. 0 failures.**
+
+**`cache_hit` is back to behaving exactly as expected on warm (median 24ms, p99 36ms)** — confirming the cold run's cache_hit anomaly above is specific to the cold pass, not a new, persistent regression.
+
+#### Part 1 (persistent Uptime Kuma connection) — against the design doc's own pre-written success criteria
+
+**Primary criterion — not met.** The design doc's bar was warm-cache p95/p99 dropping to "something close to the other sources' warm-cache numbers (low tens of milliseconds)." `uptime` warm p95/p99 went from 1500ms/1500ms (v3.50.2) to 470ms/850ms — a real, large improvement (roughly 3x at p95, 1.8x at p99) but still landing in the hundreds-of-milliseconds, not the low tens. Per the design doc's own stated reading of this outcome: this means the fix didn't address the *entire* mechanism, even though it clearly addressed a real, substantial part of it.
+
+What the raw numbers actually show, reading past the percentile summary: most `uptime` requests on the warm run were genuinely fast and indistinguishable from any other warm source (median 24ms, with roughly the fastest 80% of the 29 total `uptime` requests landing under 32ms) — a real, working improvement over the old behavior, where *every* request after the 60-second TTL expired paid the full connect+login cost. But a minority of requests (roughly the slowest 3-6 of 29) still paid something in the 440-850ms range. The persistent-connection fix is doing real work; it just isn't the complete explanation for the tail.
+
+**Secondary criterion — also not met, in the informative direction.** The design doc's bar was cold-cache numbers staying "roughly unchanged" from the v3.50.2 cold baseline (1900ms), since the fix should only change *subsequent* calls, not the very first connection of the app's lifetime. Instead, cold p95/p99 also dropped substantially (1900ms → 500ms) — almost as much as the warm-cache improvement. The design doc named exactly this outcome as worth a second look: either the lifespan-warming step is running before Locust's first request reaches `uptime` (plausible — `get_connection()` runs during startup, and snapshot_uptime's own immediate startup call exercises it again right after, both well before a 120-second Locust run's first `uptime` request lands), or something else about the mechanism changed in a way not fully accounted for in the design doc's own model of "cold" vs "warm" for this specific source.
+
+**Reading both results together**: the fix is real and is doing real work — it just isn't the *complete* explanation for `uptime`'s benchmark-tail anomaly. A genuinely persistent connection eliminates the connect+login cost for the large majority of requests (confirmed by the bulk of both cold and warm runs landing in the same 22-32ms range every other warm source shows), but something else — not yet identified — is still producing a real, occasional multi-hundred-millisecond cost on a minority of calls, in both the cold and warm passes. Candidates not yet investigated: whether `get_monitors()`/`get_heartbeats()`'s own event-wait loop (`_get_event_data()`'s `while ... time.sleep(0.01)` pattern, confirmed during this fix's own library-source read) occasionally has to wait a full `wait_events` cycle (0.2s default) for a fresh push if a request's timing happens to race a heartbeat update; whether `_connection_lock` contention under 20 concurrent users occasionally serializes several calls behind one that's mid-`get_heartbeats()`; or whether Uptime Kuma's own server-side response time genuinely varies this much call-to-call regardless of connection reuse. None of these confirmed — flagged as the honest next-step candidates rather than guessed at as settled.
+
+**Not overclaiming "fixed."** Per this project's own established practice for partial results (the query-expansion concurrency fix's "not a full elimination" framing in `The-Latency-Parallelization-Investigation.md` is the precedent here): this is a real, partial, measured improvement with an honestly-stated remaining gap, not a closed investigation.
+
+#### v3.50.3 pool widening — against its own success criteria
+
+**`auto`'s cold p99 dropped from 10000ms (the v3.50.2 single-sample spike) to 3800ms** — a real improvement, and the widening clearly helped. But the design doc's stated bar was no longer "regularly hitting multi-second p99s" — and `auto`'s cold p98 (1300ms) and p99 (3800ms) are still multi-second-adjacent, and `conditional`'s cold p98/p99 (5100ms/5100ms) and `conditional_remainder`'s cold p98/p99 (4300ms/4300ms) are still squarely in multi-second territory on this run, with `conditional` and `conditional_remainder` both also still showing real warm-cache tails (p95 440ms on both) that shouldn't exist at all on a nominally warm run.
+
+Per the design doc's own stated reading: this pattern — real improvement, but still regularly hitting multi-second p98/p99 — means the widening (6→12, 4→8, 2→4) provided real headroom but not enough for 20 concurrent users, not that the underlying thundering-herd explanation was wrong. The pools may need widening further. This is also, per the design doc's own caution, an inherently noisier metric to validate on a single 120-second run than Part 1's — worth a second run before concluding the pools need more headroom rather than treating this one sample as definitive.
+
+#### A genuinely new, fresh finding from this run, not called for in the design doc
+
+**`cache_hit`'s cold-run anomaly (p90 5100ms, p99 8000ms)**, flagged in the cold-cache table notes above. Not part of either change this run was set up to validate, not previously documented anywhere in this file, and not investigated here — left as an honest, open item for a future pass rather than folded into either of the two real conclusions above.
+
+#### `/health`'s concurrency fix (v3.50.3) holding under real load
+
+Worth confirming directly since this run is the first real benchmark since that fix shipped: `/health`'s warm-cache max this run (1152ms, p99 1200ms) is consistent with the seven concurrent source checks each completing within their own real timeout, with none of the v3.50.2 baseline's 5244ms sequential-stacking signature reappearing. Not a controlled, isolated test of that fix specifically — this run wasn't set up to isolate it the way `TestHealthConcurrentSourceChecks` already does at the unit level — but a real, supporting data point that the fix is behaving as expected under actual concurrent load, not just in mocked test conditions.
+
+
 
 Replace `192.168.1.50` below with your actual Mnemolis host's real IP or hostname — not a placeholder. `--host` silently accepts anything that looks like a URL, so a leftover example value doesn't fail loudly; it fails much later as a DNS error (`Temporary failure in name resolution`) on every single request, which doesn't obviously point back to `--host` as the cause.
 

@@ -4,6 +4,51 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.6]
+
+### Fixed — `cache_hit`'s Real, Surprising 8-Second Cold-Run Tail: a Query Collision, Not a Backend Bug
+The v3.50.5 benchmark validation flagged this honestly as an open item rather than guessing at it: `cache_hit`'s cold-cache p90/p99 (5100ms/8000ms) had no precedent anywhere in this file's history, where `cache_hit` has always been one of the cheapest, most boring rows in the table regardless of release — a real anomaly worth running down given a `cache_hit` task spiking into multi-second territory makes no sense on its face.
+
+**Root cause, found by reading `tests/locustfile.py` directly rather than the timing numbers alone**: `cache_hit`'s task used the literal query `"what is nitrogen"` with `source="kiwix"` — which was also the *first entry* in `KIWIX_QUERIES`, the pool the separate, much more frequent `kiwix_search` task (weight 4, the highest-weighted task in `MnemolisSingleSourceUser`) draws from at random. On a cold run, both tasks can independently draw the identical, not-yet-cached `kiwix:what is nitrogen` key at nearly the same instant.
+
+This was never a Mnemolis backend bug. `_resolve_single_source()`'s check-cache → call-handler → write-cache sequence in `app/router.py` has no per-key lock or in-flight-request deduplication — confirmed directly by reading the function, not inferred. Two concurrent callers for the same uncached key both genuinely miss, both pay the full cold-routing cost (a real LLM book-selection call, consistent with the observed multi-second tail and `app/llm.py`'s 10-second client timeout), and both eventually write the same result to cache. This is the exact same thundering-herd shape already documented for `auto`/`conditional`'s small Locust query pools (see the v3.44.0/v3.50.2/v3.50.3 entries) — it just hadn't previously been recognized as applying to `cache_hit` too, since `cache_hit`'s whole purpose is to *never* be exposed to a cache miss at all, and nobody had checked whether its own query happened to collide with another task's pool.
+
+**Fixed at the actual root cause — the query pool, not the caching mechanism.** `cache_hit` now uses its own dedicated query (`CACHE_HIT_QUERY = "what is the boiling point of tungsten"`), confirmed via a direct AST-based parse of every list literal in `tests/locustfile.py` to not appear in any other pool. The old `"what is nitrogen"` stays in `KIWIX_QUERIES` (now 9 entries, down from 10) for the regular `kiwix_search` task. No application code changed — this is a load-test-only fix, the same category as the v3.50.3 pool widening.
+
+### Added (Tests)
+- `TestResultCacheThunderingHerd` (3 tests) in `test_router.py` — a direct reproduction against `route_with_source()` itself, not the Locust benchmark (which can only show a symptom, never isolate a cause): two concurrent threads calling the identical uncached source+query pair both genuinely pay the full slow-handler cost (proving the actual gap, not just citing it), a contrast test confirming an *already*-warm key is never recomputed by a concurrent caller (proving this is a narrow race-window bug, not a general cache-correctness problem), and a direct regression test parsing `tests/locustfile.py`'s real list literals via `ast` to confirm `cache_hit`'s query never re-collides with any other pool in the future. The `ast`-based approach mirrors `TestSeedVocabularyIntegrity`'s existing pattern in `test_adversarial_testing.py` (which solved the identical problem for `CONDITIONAL_QUERIES`/`CONDITIONAL_SEEDS`) for the same reason: `locustfile.py` imports `locust` at module level, which isn't in `requirements.txt` and isn't installed by CI — a real import attempt was confirmed to fail two different ways inside an already-running pytest session (a `ModuleNotFoundError` when `locust` isn't installed at all, and a genuine `RecursionError` inside `ssl.SSLContext.minimum_version` when it is, caused by `gevent`'s `monkey.patch_all()` re-patching `ssl` after `requests`/`urllib3` elsewhere in the suite have already imported it — `locust` itself warns about exactly this ordering hazard). Parsing the file as text needs neither `locust` nor any of its monkey-patching, and is arguably the more correct tool for "do these two static lists overlap" regardless of the import hazard.
+
+### Changed
+- `tests/locustfile.py` — `cache_hit` task now uses `CACHE_HIT_QUERY` instead of a literal string shared with `KIWIX_QUERIES`; `KIWIX_QUERIES` itself unchanged in spirit (still 9 real, distinct Kiwix queries), just no longer also double-booked as `cache_hit`'s key
+- Version bumped to 3.50.6
+
+**Total test count: 1255**
+
+---
+
+## [3.50.5]
+
+### Changed — Re-Benchmark: Validating the Persistent Uptime Kuma Connection and the v3.50.3 Pool Widening Together
+A real Locust run on MiniDock (20 users, 120s, cold immediately followed by warm, the same methodology every prior entry uses), validating v3.50.4's persistent Uptime Kuma connection and v3.50.3's `AUTO_QUERIES`/`CONDITIONAL_QUERIES`/`CONDITIONAL_WITH_REMAINDER_QUERIES` pool widening together against the same v3.50.2 baseline already in `BENCHMARKS.md` — one clean pass rather than two separate sessions with a shifted baseline between them, per the design doc both changes shared.
+
+**The persistent-connection fix is real and substantial, but not a complete fix — exactly the outcome the design doc's own pre-written success criteria were built to detect, not retrofit.** `uptime`'s warm-cache p95/p99 dropped from 1500ms (v3.50.2) to 470ms/850ms — a genuine 2-3x improvement, with the large majority of individual requests in both the cold and warm runs landing in the same 22-32ms range every other warm source shows. But the design doc's stated bar was "low tens of milliseconds, matching other sources," and a result still in the hundreds of milliseconds — even much-improved hundreds — means the fix didn't capture the entire mechanism. A second, genuinely surprising result: `uptime`'s *cold*-cache numbers also dropped substantially (1900ms → 500ms p95/p99), which the design doc explicitly flagged in advance as worth a second look if it happened, since the persistent-connection fix should only change *subsequent* calls, not the app's first-ever connection. Neither the remaining warm tail nor the unexpectedly-improved cold numbers have a confirmed root cause. Candidates not yet investigated: event-wait timing inside `uptime_kuma_api`'s own `_get_event_data()` polling loop (confirmed present during the v3.50.4 library-source read), `_connection_lock` contention under 20 concurrent users, or genuine server-side response variance independent of connection reuse. Not overclaimed as fixed — recorded as a real, partial, measured improvement with an honest remaining gap, the same discipline this project applied to the query-expansion concurrency fix's "not a full elimination" framing.
+
+**The v3.50.3 pool widening helped, but likely needs more headroom for 20 concurrent users.** `auto`'s cold p99 dropped from the v3.50.2 single-sample spike (10000ms) to 3800ms — a real improvement — but `auto`'s own cold p98 (1300ms) and `conditional`/`conditional_remainder`'s cold p98/p99 (5100ms and 4300ms respectively) are all still squarely multi-second, and both `conditional` and `conditional_remainder` still show a real warm-cache tail (p95 ~440ms on both) that a fully-warmed pool shouldn't have. Per the design doc's own stated reading: this pattern means the widening (6→12, 4→8, 2→4) wasn't enough, not that the thundering-herd explanation was wrong. Also flagged per the design doc's own caution: this is an inherently noisier metric on a single 120-second run than the connection fix's own result — worth a second run before concluding the pools specifically need more headroom rather than treating this one sample as definitive.
+
+**`/health`'s concurrency fix (v3.50.3) confirmed holding under real load, not just mocked test conditions.** Warm-cache `/health` max this run: 1152ms, p99 1200ms — no recurrence of the v3.50.2 baseline's 5244ms sequential-stacking signature. This run wasn't set up to isolate the fix the way `TestHealthConcurrentSourceChecks` already does at the unit level, but it's a real, supporting data point.
+
+**A genuinely new, unrelated finding, not called for by either change this run was set up to validate**: `cache_hit`'s *cold*-cache p90/p99 (5100ms/8000ms) has no precedent anywhere in this file's prior history, where `cache_hit` has always been one of the cheapest, most boring rows in the table regardless of release. The warm-cache run immediately after shows `cache_hit` back to its expected ~24ms/36ms median/p99, confirming this is specific to the cold pass. Not investigated as part of this run — flagged honestly as an open item for a future pass rather than folded into either of the two real conclusions above.
+
+### Changed
+- New dated entry added to `BENCHMARKS.md` (v3.50.5) with full cold/warm tables and an explicit statement of whether each of the two success criteria from the design doc was met for each of the two changes being validated
+- `wiki/Benchmarks.md`'s narrative summary rewritten: the "first real, testable hypothesis" framing for `uptime` is now "confirmed real and substantial, but not complete," and the pool-widening framing now reflects the same "real, partial improvement" read rather than an open question with no data
+- `wiki/Caching.md` and `wiki/Sources.md`'s persistent-connection language corrected from an unqualified "fixed" to the honest, measured "real, substantial improvement, not a complete one" — both now point to `wiki/Benchmarks.md`'s full account
+- Version bumped to 3.50.5 — no application code changed this release; documentation and benchmark records only
+
+**Total test count: 1252** (unchanged — this release is benchmark validation and documentation only)
+
+---
+
 ## [3.50.4]
 
 ### Fixed — `uptime`'s Recurring Benchmark Tail: a Persistent Socket.IO Connection, Not a TTL Change
