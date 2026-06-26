@@ -2756,6 +2756,162 @@ class TestConditionalIntegration:
         assert "conditional question" not in result.lower()
 
 
+class TestConditionalRemainderConcurrency:
+    """Regression tests for parallelizing _resolve_conditional()'s
+    condition and remainder route_with_source() calls — found feasible
+    via direct research into why this case had been treated as too
+    risky to attempt (see Conditional-Query-Detection.md's own
+    corrected account): the original caution conflated "this code has
+    unrelated real bug history" (detect_conditional()'s parsing,
+    _interpret_binary_state()'s keyword matching) with "this specific
+    change is risky," when re-deriving the actual data dependencies
+    shows the two calls don't depend on each other at all, the same as
+    the already-fixed searxng.py query-expansion case.
+
+    Applies the exact same verification discipline that case required,
+    since building it caught two real bugs there: a genuine timing
+    proof of concurrency (not just unchanged output), and direct
+    confirmation that router.suppress_cache_writes() correctly
+    propagates into BOTH worker threads via the same
+    contextvars.copy_context()-per-task pattern, not one shared
+    context (which fails with a real RuntimeError, confirmed directly
+    while building the searxng.py fix this mirrors).
+    """
+
+    def test_condition_and_remainder_genuinely_run_concurrently(self):
+        """Real timing proof — total elapsed time must be close to the
+        cost of ONE call, not the sum of both, confirming genuine
+        concurrency rather than a refactor that merely looks
+        unchanged."""
+        import time
+        from unittest.mock import patch
+        from app.router import _resolve_conditional
+
+        def slow_route(query, source="auto", fusion_sources=None):
+            time.sleep(0.3)
+            if "raining" in query:
+                return ("Condition result content.", "forecast")
+            return ("Remainder result content.", "news")
+
+        with patch("app.router.route_with_source", side_effect=slow_route):
+            start = time.monotonic()
+            _resolve_conditional(
+                "if it is raining, let me know, and also check the feeds", "auto"
+            )
+            elapsed = time.monotonic() - start
+
+        # Sequential would be ~0.6s (0.3 + 0.3). Concurrent should be
+        # close to max(0.3, 0.3) = ~0.3s. Generous upper bound to avoid
+        # CI flakiness while still clearly distinguishing the two.
+        assert elapsed < 0.5, f"took {elapsed:.2f}s — looks sequential, not concurrent"
+
+    def test_query_without_a_remainder_is_completely_unaffected(self):
+        """A plain "if X, Y" query with no trailing conjunction (the
+        more common real-world shape) has an empty remainder and must
+        never spin up the thread pool at all — confirmed by patching
+        route_with_source to track call count and timing, since this
+        path should remain exactly as simple and fast as before."""
+        from unittest.mock import patch
+        from app.router import _resolve_conditional
+
+        call_count = {"n": 0}
+
+        def counting_route(query, source="auto", fusion_sources=None):
+            call_count["n"] += 1
+            return ("Condition result.", "forecast")
+
+        with patch("app.router.route_with_source", side_effect=counting_route):
+            result, source = _resolve_conditional("if it is raining, bring an umbrella", "auto")
+
+        assert call_count["n"] == 1
+        assert source == "forecast"
+
+    def test_suppress_cache_writes_propagates_into_both_worker_threads(self):
+        """The exact regression found and fixed in searxng.py's own
+        concurrent fetch, re-verified here for this structurally
+        identical case: ThreadPoolExecutor does NOT propagate
+        contextvars.ContextVar state into worker threads by default,
+        so router.suppress_cache_writes() being active in the calling
+        thread must still correctly suppress writes that happen inside
+        EITHER of the two concurrent worker threads, not just the
+        calling thread itself."""
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_cache = dict(router_module._routing_cache)
+        router_module._routing_cache.clear()
+        try:
+            def fake_route_with_real_cache_write(query, source="auto", fusion_sources=None):
+                # Simulates what a real route_with_source() call does
+                # deep inside its own LLM-routing path — a real
+                # _set_routing() call that suppression must catch
+                # regardless of which thread it happens on.
+                router_module._set_routing(f"altquery:{query}", "some_decision")
+                if "raining" in query:
+                    return ("Condition content.", "forecast")
+                return ("Remainder content.", "news")
+
+            with patch("app.router.route_with_source", side_effect=fake_route_with_real_cache_write):
+                with router_module.suppress_cache_writes():
+                    router_module._resolve_conditional(
+                        "if it is raining, let me know, and also check the feeds", "auto"
+                    )
+
+            assert len(router_module._routing_cache) == 0, (
+                "a write leaked through one of the two concurrent worker threads "
+                "despite suppress_cache_writes() being active in the calling thread"
+            )
+        finally:
+            router_module._routing_cache.clear()
+            router_module._routing_cache.update(original_cache)
+
+    def test_normal_unsuppressed_call_still_caches_correctly_from_both_threads(self):
+        """The flip side — confirms the fix didn't accidentally
+        suppress writes ALL the time, only when suppress_cache_writes()
+        is genuinely active. Both the condition and remainder calls
+        should be free to cache normally."""
+        from unittest.mock import patch
+        import app.router as router_module
+
+        original_cache = dict(router_module._routing_cache)
+        router_module._routing_cache.clear()
+        try:
+            def fake_route_with_real_cache_write(query, source="auto", fusion_sources=None):
+                router_module._set_routing(f"altquery:{query}", "some_decision")
+                if "raining" in query:
+                    return ("Condition content.", "forecast")
+                return ("Remainder content.", "news")
+
+            with patch("app.router.route_with_source", side_effect=fake_route_with_real_cache_write):
+                router_module._resolve_conditional(
+                    "if it is raining, let me know, and also check the feeds", "auto"
+                )
+
+            assert len(router_module._routing_cache) == 2
+        finally:
+            router_module._routing_cache.clear()
+            router_module._routing_cache.update(original_cache)
+
+    def test_real_exception_in_remainder_thread_propagates_correctly(self):
+        """If the remainder's route_with_source() call genuinely raises,
+        that exception must surface to the caller via future.result(),
+        not be silently swallowed by the thread pool."""
+        from unittest.mock import patch
+        import pytest
+        from app.router import _resolve_conditional
+
+        def failing_route(query, source="auto", fusion_sources=None):
+            if "raining" in query:
+                return ("Condition content.", "forecast")
+            raise RuntimeError("simulated remainder failure")
+
+        with patch("app.router.route_with_source", side_effect=failing_route):
+            with pytest.raises(RuntimeError):
+                _resolve_conditional(
+                    "if it is raining, let me know, and also check the feeds", "auto"
+                )
+
+
 class TestRecursiveConditionalDetection:
     """Tests for re-checking decomposed sub-queries for their own
     embedded conditional structure — the real gap found while designing

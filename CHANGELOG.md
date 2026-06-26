@@ -4,6 +4,48 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.0]
+
+### Fixed — `conditional_with_remainder`'s Condition and Remainder Now Run Concurrently
+The other half of the latency-stacking investigation, finished properly this time. `_resolve_conditional()`'s condition and remainder calls used to run as two separate, sequential, blocking `route_with_source()` calls — found via real, live Adversarial Self-Testing latency data, and originally left as a documented, accepted cost on the (re-examined and corrected) reasoning that the surrounding code's unrelated real bug history made any change here too risky.
+
+Re-deriving the actual data dependencies directly: the condition and remainder calls don't depend on each other at all — the same as [Query Expansion](https://github.com/immortalbob/Mnemolis/wiki/Query-Expansion)'s two SearXNG fetches, fixed in 3.49.0/3.49.1. Built on the lesson from that fix rather than relearning it: each task submitted to the executor gets its own `contextvars.copy_context()` call before submission, so `suppress_cache_writes()` correctly propagates into both worker threads (the exact regression 3.49.0 shipped with and 3.49.1 fixed). Only spins up the thread pool when a remainder genuinely exists — a plain `"if X, Y"` query with no trailing conjunction (the more common real-world shape) has an empty remainder and never needed a second call in the first place; that path is byte-for-byte unchanged.
+
+Verified with the same three checks that caught two real bugs in the `web` case before trusting it: a genuine timing proof of concurrency, direct confirmation `suppress_cache_writes()` reaches both worker threads correctly, and confirmation normal caching still works when suppression isn't active. A fourth check — real exception propagation from the remainder thread — was added too, since this case's failure semantics differ from the alternate-phrasing chain's deliberately non-fatal design. All four passed cleanly; no second regression this time.
+
+Verified against realistic timings matching the real flagged query's shape: `2.0s` concurrent versus what would have been `3.5s` sequential.
+
+### Added (Tests)
+- `TestConditionalRemainderConcurrency` (5 tests) in `test_router.py` — genuine concurrency timing, the empty-remainder fast path confirmed unaffected, `suppress_cache_writes()` propagation into both threads, normal unsuppressed caching, and real exception propagation
+
+### Changed
+- Wiki's [Conditional Query Detection](https://github.com/immortalbob/Mnemolis/wiki/Conditional-Query-Detection) and [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) updated to reflect this is now fixed, not just found feasible — both real recipe-latency-variance mechanisms this investigation uncovered are now resolved at the root
+- Version bumped to 3.50.0
+
+**Total test count: 1235**
+
+---
+
+## [3.49.1]
+
+### Fixed — A Real Regression in 3.49.0's Own Concurrent Fetch Fix
+Asked directly afterward whether the *other*, more cautiously-treated parallelization candidate (conditional+remainder's sequential routing) was actually infeasible or just assumed to be. Re-deriving the real data dependencies confirmed it has no more of a dependency problem than the `web` query-expansion case already fixed — and re-examining the original "this code has a real bug history" caution found both real bugs live in unrelated parsing/interpretation logic, not in call ordering.
+
+That re-investigation is what surfaced this: researching whether `ThreadPoolExecutor` actually propagates `contextvars.ContextVar` state into worker threads (confirmed, via official Python docs: it does **not**, by default) led to testing the *already-shipped* 3.49.0 fix directly against this. Found a real, live regression: `suppress_cache_writes()` active in the calling thread was being silently ignored inside the concurrent alternate-phrasing thread in `searxng.py`, meaning a synthetic Adversarial Self-Testing query could leak a real write into the routing cache — precisely the bug `suppress_cache_writes()` exists to prevent, reintroduced by 3.49.0's own fix. Confirmed directly with a failing test before this fix.
+
+Fixed by giving each task submitted to the executor its own `contextvars.copy_context()` call before submission, rather than submitting the functions directly. A first attempt shared one captured context between both tasks, which failed a second, separate way — confirmed via a real `RuntimeError: cannot enter context... already entered` from the test suite itself: a single `Context` object cannot be entered by two threads simultaneously (`Context.run()` is documented as non-reentrant across concurrent execution). Each task needs its own, independently-copied context.
+
+### Added (Tests)
+- `test_suppress_cache_writes_genuinely_suppresses_writes_from_the_concurrent_alternate_thread` and `test_normal_unsuppressed_call_still_caches_correctly` in `test_searxng.py` — the real regression, reproduced and confirmed fixed, plus confirmation normal caching still works when suppression isn't active
+
+### Changed
+- Wiki's [Caching](https://github.com/immortalbob/Mnemolis/wiki/Caching), [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing), and [Conditional Query Detection](https://github.com/immortalbob/Mnemolis/wiki/Conditional-Query-Detection) updated with the full, honest account — including correcting Conditional Query Detection's own earlier reasoning for not parallelizing that case, which conflated "this code has unrelated bug history" with "this specific change is risky." That case is now recorded as likely feasible and not yet attempted, a meaningfully different status than "deliberately rejected" — distinct from being implemented in this release
+- Version bumped to 3.49.1
+
+**Total test count: 1230**
+
+---
+
 ## [3.49.0]
 
 ### Fixed — A Real, Pre-Existing Concurrent File-Write Race in Both Caches

@@ -1,4 +1,5 @@
 import concurrent.futures
+import contextvars
 import logging
 import requests
 from app.config import settings
@@ -90,9 +91,32 @@ def search(query: str) -> str:
     # error message — see "The SearXNG Timeout Lesson") is preserved
     # exactly: it's re-raised from the future's own result() call
     # below, the same as it would have been called inline.
+    #
+    # ctx.run(...) below is NOT optional decoration — ThreadPoolExecutor
+    # does NOT propagate contextvars.ContextVar state into worker
+    # threads by default (confirmed directly: a real test of this exact
+    # code, before this fix, showed router.suppress_cache_writes() being
+    # silently ignored inside the alternate-phrasing thread, letting a
+    # synthetic Adversarial Self-Testing query leak a real write into
+    # the routing cache — precisely the bug suppress_cache_writes()
+    # exists to prevent, reintroduced by this very parallelization).
+    # Capturing the CALLING thread's context and explicitly running each
+    # submitted callable inside it, rather than submitting them
+    # directly, is the standard, documented fix for this exact gap.
+    #
+    # Each future gets its OWN copy_context() call, not one SHARED
+    # context object reused for both — found via a real test failure,
+    # not anticipated up front: a single Context object cannot be
+    # entered by two threads at once (Context.run() is not reentrant
+    # across concurrent execution; the official docs state this
+    # directly — "attempting to enter an already entered context...
+    # raises a RuntimeError"). Both copies still correctly capture the
+    # same parent state, since copy_context() is called twice from the
+    # SAME calling thread before either worker starts, just as two
+    # independent objects rather than one shared one.
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        primary_future = executor.submit(_fetch_searxng, query, raise_on_timeout=True)
-        alternate_future = executor.submit(_alternate_phrasing_chain, query)
+        primary_future = executor.submit(contextvars.copy_context().run, _fetch_searxng, query, raise_on_timeout=True)
+        alternate_future = executor.submit(contextvars.copy_context().run, _alternate_phrasing_chain, query)
 
         try:
             primary_results = primary_future.result()

@@ -485,3 +485,73 @@ class TestSearxngConcurrentFetch:
 
         assert "Primary Result" in result
         assert "Alternate Result" in result
+
+    def test_suppress_cache_writes_genuinely_suppresses_writes_from_the_concurrent_alternate_thread(self):
+        """The most important test in this file. ThreadPoolExecutor does
+        NOT propagate contextvars.ContextVar state into worker threads
+        by default — confirmed as a real, live regression while
+        researching this exact change: the first version of the
+        concurrent fetch fix submitted the alternate-phrasing chain
+        directly (executor.submit(_alternate_phrasing_chain, query)),
+        and a real test of exactly this scenario showed
+        router.suppress_cache_writes() being silently ignored inside
+        that worker thread — letting a synthetic Adversarial Self-
+        Testing query leak a real write into the routing cache,
+        precisely the bug suppress_cache_writes() exists to prevent,
+        reintroduced by the very change meant to improve performance.
+
+        Fixed by giving each submitted task its own
+        contextvars.copy_context() call (a SHARED single context object
+        cannot be entered by two threads simultaneously — found via a
+        second real failure when the first attempted fix tried exactly
+        that) so the calling thread's suppression state correctly
+        propagates into both worker threads."""
+        import app.router as router_module
+        from app.sources import searxng
+
+        original_cache = dict(router_module._routing_cache)
+        router_module._routing_cache.clear()
+        try:
+            def fake_fetch(query, raise_on_timeout=False):
+                return [{"title": "Result", "url": "https://example.com/a", "content": "real relevant content matching the query well"}]
+
+            with patch.object(router_module.settings, "llm_url", "http://fake"), \
+                 patch.object(router_module.settings, "llm_model", "fake-model"), \
+                 patch("app.llm.is_configured", return_value=True), \
+                 patch("app.llm.complete", return_value="a different phrasing of the same question"), \
+                 patch("app.sources.searxng._fetch_searxng", side_effect=fake_fetch):
+                with router_module.suppress_cache_writes():
+                    searxng.search("suppression regression test query")
+
+            assert len(router_module._routing_cache) == 0, (
+                "a write leaked through the concurrent alternate-phrasing thread "
+                "despite suppress_cache_writes() being active in the calling thread"
+            )
+        finally:
+            router_module._routing_cache.clear()
+            router_module._routing_cache.update(original_cache)
+
+    def test_normal_unsuppressed_call_still_caches_correctly(self):
+        """The flip side of the test above — confirms the fix didn't
+        accidentally suppress writes ALL the time, only when
+        suppress_cache_writes() is genuinely active."""
+        import app.router as router_module
+        from app.sources import searxng
+
+        original_cache = dict(router_module._routing_cache)
+        router_module._routing_cache.clear()
+        try:
+            def fake_fetch(query, raise_on_timeout=False):
+                return [{"title": "Result", "url": "https://example.com/a", "content": "real relevant content matching the query well"}]
+
+            with patch.object(router_module.settings, "llm_url", "http://fake"), \
+                 patch.object(router_module.settings, "llm_model", "fake-model"), \
+                 patch("app.llm.is_configured", return_value=True), \
+                 patch("app.llm.complete", return_value="a different phrasing of the same question"), \
+                 patch("app.sources.searxng._fetch_searxng", side_effect=fake_fetch):
+                searxng.search("normal unsuppressed query about programming languages")  # no suppression context, long enough that the mocked alternate phrasing passes the real 2x-word-count sanity check
+
+            assert len(router_module._routing_cache) == 1
+        finally:
+            router_module._routing_cache.clear()
+            router_module._routing_cache.update(original_cache)

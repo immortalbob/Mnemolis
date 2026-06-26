@@ -6,6 +6,7 @@ import os
 import sqlite3
 import contextvars
 import tempfile
+import concurrent.futures
 from contextlib import contextmanager
 from app.sources import kiwix, forecast, freshrss, searxng, uptime_kuma, fusion, home_assistant
 from app.snapshots import get_changes, format_changes
@@ -1807,7 +1808,46 @@ def _resolve_conditional(query: str, source: str) -> tuple[str, str] | None:
         "Detected conditional query — condition=%r consequence=%r remainder=%r",
         condition[:50], consequence[:50], remainder[:50]
     )
-    condition_result, condition_source = route_with_source(condition, "auto")
+
+    # The condition and remainder calls have no real data dependency on
+    # each other — route_with_source(remainder, ...) only needs the
+    # REMAINDER text, never the condition's result, and
+    # _frame_conditional_response() (which DOES need condition_result)
+    # only needs the CONDITION's own outputs. Confirmed via the same
+    # direct research, and fixed with the same verified-safe pattern,
+    # already applied to searxng.py's structurally identical two-fetch
+    # case — see that module's search() and the wiki's Adversarial
+    # Self-Testing page for the real, traced history: a genuine, pre-
+    # existing file-write race in both on-disk caches (now fixed via
+    # router._atomic_write_json()) was the actual reason this was once
+    # treated as too risky to attempt, not anything about THIS specific
+    # pair of calls.
+    #
+    # Only spun up at all when a remainder genuinely exists — a plain
+    # "if X, Y" query with no trailing conjunction (the more common
+    # real-world shape) has an empty remainder and never needed a
+    # second call in the first place; the ordinary single-call path
+    # below is completely unchanged for that case.
+    if remainder:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            # contextvars.copy_context() is called ONCE per task, not
+            # once shared between both — a single Context object cannot
+            # be entered by two threads simultaneously (Context.run() is
+            # documented as non-reentrant across concurrent execution;
+            # confirmed directly via a real RuntimeError from exactly
+            # this mistake while building searxng.py's own fix).
+            condition_future = executor.submit(
+                contextvars.copy_context().run, route_with_source, condition, "auto"
+            )
+            remainder_future = executor.submit(
+                contextvars.copy_context().run, route_with_source, remainder, "auto"
+            )
+            condition_result, condition_source = condition_future.result()
+            remainder_result, remainder_source = remainder_future.result()
+    else:
+        condition_result, condition_source = route_with_source(condition, "auto")
+        remainder_result, remainder_source = None, None
+
     framed = _frame_conditional_response(condition, consequence, condition_result, condition_source)
 
     # A real, separate intent followed the conditional statement
@@ -1827,7 +1867,6 @@ def _resolve_conditional(query: str, source: str) -> tuple[str, str] | None:
     # that needed the identical fix: only wrap genuinely
     # single-source results, pass fusion results through as-is.
     if remainder:
-        remainder_result, remainder_source = route_with_source(remainder, "auto")
         if not _looks_empty(remainder_result):
             overall_source = "fusion" if remainder_source != condition_source else condition_source
             remainder_section = (
