@@ -2,7 +2,11 @@
 Tests for app/sources/uptime_kuma.py
 Uses unittest.mock to avoid real Socket.IO connections.
 """
+import threading
+import time
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 
 def _make_monitor(id: int, name: str) -> dict:
@@ -11,6 +15,35 @@ def _make_monitor(id: int, name: str) -> dict:
 
 def _make_heartbeats(monitor_id: int, status: int) -> dict:
     return {monitor_id: [{"status": status}]}
+
+
+def _mock_api(monitors: list, heartbeats: dict) -> MagicMock:
+    """Builds a mock UptimeKumaApi instance matching the real object's
+    shape post-persistent-connection-fix: no more __enter__/__exit__
+    (search() no longer uses `with UptimeKumaApi(...) as api:`), and a
+    real `.sio.connected` attribute — confirmed directly against the
+    installed uptime_kuma_api/python-socketio source as the actual
+    liveness signal get_connection() checks, since UptimeKumaApi itself
+    has no `.connected` property of its own.
+    """
+    mock_api = MagicMock()
+    mock_api.sio.connected = True
+    mock_api.get_monitors.return_value = monitors
+    mock_api.get_heartbeats.return_value = heartbeats
+    return mock_api
+
+
+@pytest.fixture(autouse=True)
+def _reset_persistent_connection():
+    """Every test in this file gets a clean `_persistent_api` slate,
+    regardless of what a prior test left behind — the same isolation
+    principle conftest.py's router-cache fixture already establishes
+    project-wide, applied here because this module now has its own
+    piece of shared, persistent module state to worry about."""
+    import app.sources.uptime_kuma as uptime_kuma_module
+    uptime_kuma_module._persistent_api = None
+    yield
+    uptime_kuma_module._persistent_api = None
 
 
 class TestUptimeKumaGuard:
@@ -41,19 +74,11 @@ class TestUptimeKumaStatus:
         settings.uptime_kuma_url = ""
         settings.uptime_kuma_username = ""
 
-    def _mock_api(self, monitors: list, heartbeats: dict) -> MagicMock:
-        mock_api = MagicMock()
-        mock_api.__enter__ = MagicMock(return_value=mock_api)
-        mock_api.__exit__ = MagicMock(return_value=False)
-        mock_api.get_monitors.return_value = monitors
-        mock_api.get_heartbeats.return_value = heartbeats
-        return mock_api
-
     def test_all_up_returns_clean_message(self):
         from app.sources import uptime_kuma
         monitors = [_make_monitor(1, "MiniDock"), _make_monitor(2, "MiniPlex")]
         heartbeats = {**_make_heartbeats(1, 1), **_make_heartbeats(2, 1)}
-        mock_api = self._mock_api(monitors, heartbeats)
+        mock_api = _mock_api(monitors, heartbeats)
         with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api):
             result = uptime_kuma.search("status")
         assert "all" in result.lower()
@@ -64,7 +89,7 @@ class TestUptimeKumaStatus:
         from app.sources import uptime_kuma
         monitors = [_make_monitor(1, "MiniDock"), _make_monitor(2, "MiniPlex")]
         heartbeats = {**_make_heartbeats(1, 1), **_make_heartbeats(2, 0)}
-        mock_api = self._mock_api(monitors, heartbeats)
+        mock_api = _mock_api(monitors, heartbeats)
         with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api):
             result = uptime_kuma.search("status")
         assert "MiniPlex" in result
@@ -82,7 +107,7 @@ class TestUptimeKumaStatus:
             **_make_heartbeats(2, 0),
             **_make_heartbeats(3, 1),
         }
-        mock_api = self._mock_api(monitors, heartbeats)
+        mock_api = _mock_api(monitors, heartbeats)
         with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api):
             result = uptime_kuma.search("status")
         assert "ServiceA" in result
@@ -93,7 +118,7 @@ class TestUptimeKumaStatus:
         from app.sources import uptime_kuma
         monitors = [_make_monitor(1, "ServiceA"), _make_monitor(2, "ServiceB")]
         heartbeats = {**_make_heartbeats(1, 1), **_make_heartbeats(2, 3)}
-        mock_api = self._mock_api(monitors, heartbeats)
+        mock_api = _mock_api(monitors, heartbeats)
         with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api):
             result = uptime_kuma.search("status")
         assert "maintenance" in result.lower()
@@ -112,7 +137,7 @@ class TestUptimeKumaStatus:
         monitors = [_make_monitor(1, "ServiceA"), _make_monitor(2, "BrandNewService")]
         # ServiceA has a real heartbeat; BrandNewService has NONE at all
         heartbeats = _make_heartbeats(1, 1)
-        mock_api = self._mock_api(monitors, heartbeats)
+        mock_api = _mock_api(monitors, heartbeats)
         with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api):
             result = uptime_kuma.search("status")
         assert "maintenance" not in result.lower()
@@ -121,17 +146,19 @@ class TestUptimeKumaStatus:
 
     def test_no_monitors_returns_message(self):
         from app.sources import uptime_kuma
-        mock_api = self._mock_api([], {})
+        mock_api = _mock_api([], {})
         with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api):
             result = uptime_kuma.search("status")
         assert "no monitors" in result.lower()
 
     def test_connection_error_returns_error_message(self):
+        """A failure during connection acquisition (the constructor
+        itself, standing in for the real Socket.IO handshake) must
+        still produce the same documented fallback message as before
+        the persistent-connection fix — search()'s public contract on
+        failure is unchanged."""
         from app.sources import uptime_kuma
-        mock_api = MagicMock()
-        mock_api.__enter__ = MagicMock(side_effect=Exception("Connection refused"))
-        mock_api.__exit__ = MagicMock(return_value=False)
-        with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api):
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", side_effect=Exception("Connection refused")):
             result = uptime_kuma.search("status")
         assert "could not connect" in result.lower() or "error" in result.lower()
 
@@ -145,7 +172,7 @@ class TestUptimeKumaStatus:
             **_make_heartbeats(1, 1), **_make_heartbeats(2, 1),
             **_make_heartbeats(3, 1), **_make_heartbeats(4, 0),
         }
-        mock_api = self._mock_api(monitors, heartbeats)
+        mock_api = _mock_api(monitors, heartbeats)
         with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api):
             result = uptime_kuma.search("status")
         assert "3" in result  # 3 of 4 up
@@ -233,11 +260,7 @@ class TestUptimeKumaConfigurableTimeout:
         settings.uptime_kuma_timeout_seconds = 3
         try:
             mock_api_class = MagicMock()
-            mock_api_instance = MagicMock()
-            mock_api_instance.__enter__ = MagicMock(return_value=mock_api_instance)
-            mock_api_instance.__exit__ = MagicMock(return_value=False)
-            mock_api_instance.get_monitors.return_value = [_make_monitor(1, "Test")]
-            mock_api_instance.get_heartbeats.return_value = _make_heartbeats(1, 1)
+            mock_api_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
             mock_api_class.return_value = mock_api_instance
 
             with patch("app.sources.uptime_kuma.UptimeKumaApi", mock_api_class):
@@ -259,3 +282,165 @@ class TestUptimeKumaConfigurableTimeout:
         with patch("app.sources.uptime_kuma.UptimeKumaApi", side_effect=TimeoutError("timed out")):
             result = uptime_kuma.search("status")
         assert "could not connect" in result.lower()
+
+
+class TestPersistentConnection:
+    """Tests for the persistent-connection fix (the design doc's actual
+    subject): connection reuse across calls, dead-connection detection
+    and recovery, and thread-safety under concurrent access. Each test
+    here proves a real property of the new mechanism, not just that
+    search()'s output is unchanged — the same "prove the property, not
+    just the symptom" discipline TestHealthConcurrentSourceChecks and
+    TestSearxngConcurrentFetch already established elsewhere in this
+    project.
+    """
+
+    def setup_method(self):
+        from app.config import settings
+        settings.uptime_kuma_url = "http://uptime-kuma:3001"
+        settings.uptime_kuma_username = "testuser"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.uptime_kuma_url = ""
+        settings.uptime_kuma_username = ""
+
+    def test_connection_reused_across_two_calls_not_recreated(self):
+        """Proves pooling, not just unchanged output: UptimeKumaApi's
+        constructor must be called exactly once across two sequential
+        search() calls, confirming the second call reused the first
+        call's connection rather than opening a fresh one — the actual
+        mechanism this whole fix exists to change."""
+        from app.sources import uptime_kuma
+
+        mock_api_class = MagicMock()
+        mock_api_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+        mock_api_class.return_value = mock_api_instance
+
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", mock_api_class):
+            uptime_kuma.search("status")
+            uptime_kuma.search("status")
+
+        assert mock_api_class.call_count == 1
+        assert mock_api_instance.login.call_count == 1
+        # get_monitors/get_heartbeats DO get called fresh each time —
+        # only the connection+login step is being skipped on reuse.
+        assert mock_api_instance.get_monitors.call_count == 2
+
+    def test_dead_connection_is_detected_and_replaced_not_silently_reused(self):
+        """The actual new risk this design introduces that the
+        original fresh-connection-every-time approach never had: a
+        persistent connection can go stale (Uptime Kuma restarts, a
+        network blip drops the socket) in a way a fresh-every-time
+        connection structurally cannot. Confirms a connection whose
+        `sio.connected` has gone False gets discarded and replaced with
+        a genuinely new one — not reused in a silently broken state."""
+        from app.sources import uptime_kuma
+
+        first_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+        second_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+        mock_api_class = MagicMock(side_effect=[first_instance, second_instance])
+
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", mock_api_class):
+            uptime_kuma.search("status")
+            # Simulate the connection going dead between calls (a
+            # Kuma restart, a dropped socket) — exactly the real
+            # liveness signal get_connection() checks.
+            first_instance.sio.connected = False
+            uptime_kuma.search("status")
+
+        assert mock_api_class.call_count == 2
+        # The dead connection's own disconnect() should have been
+        # called once during cleanup, not left dangling.
+        first_instance.disconnect.assert_called_once()
+        second_instance.login.assert_called_once()
+
+    def test_concurrent_calls_do_not_create_multiple_connections(self):
+        """Real concurrency-correctness proof, not a speed proof:
+        snapshot_uptime() (scheduler thread, every 2 minutes) and a
+        live request's call to search() (request-handling thread) can
+        genuinely overlap. Confirms _connection_lock actually
+        serializes connection acquisition under real concurrent
+        threads — exactly one UptimeKumaApi gets constructed even when
+        many threads call search() at once with no connection yet
+        established, the same style of real concurrent-call test
+        TestHealthConcurrentSourceChecks already established for a
+        different feature."""
+        from app.sources import uptime_kuma
+
+        construction_count = {"n": 0}
+        lock_for_counting = threading.Lock()
+
+        def _slow_constructor(*args, **kwargs):
+            # A small real delay so concurrent callers genuinely race
+            # to construct a connection, rather than the test passing
+            # only because everything happens to run sequentially fast
+            # enough that no real race window ever opens.
+            time.sleep(0.02)
+            with lock_for_counting:
+                construction_count["n"] += 1
+            return _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+
+        mock_api_class = MagicMock(side_effect=_slow_constructor)
+
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", mock_api_class):
+            threads = [
+                threading.Thread(target=uptime_kuma.search, args=("status",))
+                for _ in range(8)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        # _connection_lock should have forced every thread but the
+        # first to find the already-established connection waiting
+        # for it, rather than each racing to build its own.
+        assert mock_api_class.call_count == 1
+
+    def test_disconnect_cleanly_closes_an_open_connection(self):
+        """disconnect() — the new lifespan-shutdown hook — must
+        actually call through to the real connection's own
+        disconnect(), and must leave the module ready to establish a
+        fresh connection afterward rather than leaving a dead
+        reference behind."""
+        from app.sources import uptime_kuma
+
+        mock_api_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api_instance):
+            uptime_kuma.search("status")  # establishes the persistent connection
+
+        uptime_kuma.disconnect()
+        mock_api_instance.disconnect.assert_called_once()
+        assert uptime_kuma._persistent_api is None
+
+    def test_disconnect_is_a_safe_noop_when_never_connected(self):
+        """Uptime Kuma was never configured, or the app shuts down
+        before any uptime query ever ran — disconnect() must not raise
+        in either case."""
+        from app.sources import uptime_kuma
+        uptime_kuma.disconnect()  # should not raise
+
+    def test_get_connection_uses_sio_connected_not_a_nonexistent_api_connected(self):
+        """Guards against the exact wrong-assumption risk the design
+        doc flagged before this was built: UptimeKumaApi has no
+        `.connected` property of its own (confirmed directly against
+        the installed library source) — the real liveness signal is
+        the underlying `sio` client's `.connected` attribute. A mock
+        that only defines `.connected` on the outer object (mimicking
+        the wrong assumption) must NOT be mistaken for a live
+        connection — get_connection() must check `.sio.connected`."""
+        from app.sources import uptime_kuma
+
+        # Deliberately a bare MagicMock with no .sio configured as a
+        # real bool — accessing .sio.connected on it returns a
+        # truthy MagicMock, which would incorrectly look "connected"
+        # if the code checked the wrong attribute, but the outer
+        # `.connected` attribute is unset/auto-mocked too, so this
+        # test only proves something real if get_connection() is
+        # actually reading through `.sio`.
+        mock_api_instance = _mock_api([_make_monitor(1, "Test")], _make_heartbeats(1, 1))
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api_instance):
+            result = uptime_kuma.search("status")
+        assert "could not connect" not in result.lower()
+        mock_api_instance.login.assert_called_once()

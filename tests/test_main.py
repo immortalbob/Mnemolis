@@ -296,6 +296,67 @@ class TestHealthConcurrentSourceChecks:
             assert data["sources"][expected]["status"] in ("ok", "error", "not_configured")
 
 
+class TestUptimeKumaLifespanIntegration:
+    """Tests for the persistent Uptime Kuma connection's lifespan wiring
+    in lifespan() — confirms get_connection() is genuinely called during
+    app startup when uptime is configured (warming the connection before
+    the first real request, rather than paying the connect+login cost on
+    whichever request happens to arrive first), confirms it's correctly
+    SKIPPED when uptime isn't configured (no UptimeKumaApi construction
+    attempted against a blank URL), and confirms disconnect() runs on
+    shutdown.
+
+    Builds its own TestClient rather than using the module-scoped
+    `client` fixture above, since that fixture's app instance has
+    already run its lifespan with uptime left unconfigured — this needs
+    settings configured BEFORE the lifespan startup code runs.
+    """
+
+    def test_get_connection_called_on_startup_when_uptime_configured(self):
+        """lifespan() explicitly warms the connection once, and the
+        scheduler's own immediate startup snapshot_uptime() call (which
+        calls search() -> get_connection() again) is expected to follow
+        right behind it — that second call should find the
+        already-warmed connection waiting, not need its own fresh one.
+        This test confirms get_connection() is genuinely exercised
+        during startup at all; reuse-not-recreation is covered
+        separately in test_uptime_kuma.py's TestPersistentConnection."""
+        from app.config import settings
+        original_url = settings.uptime_kuma_url
+        original_user = settings.uptime_kuma_username
+        settings.uptime_kuma_url = "http://uptime-kuma:3001"
+        settings.uptime_kuma_username = "testuser"
+        try:
+            with patch("app.sources.uptime_kuma.get_connection") as mock_get_connection, \
+                 patch("app.sources.uptime_kuma.disconnect") as mock_disconnect:
+                from app.main import app
+                with TestClient(app):
+                    assert mock_get_connection.call_count >= 1
+                    mock_disconnect.assert_not_called()
+                mock_disconnect.assert_called_once()
+        finally:
+            settings.uptime_kuma_url = original_url
+            settings.uptime_kuma_username = original_user
+
+    def test_get_connection_not_called_on_startup_when_uptime_unconfigured(self):
+        """Mirrors every other source's graceful-disable behavior —
+        leaving UPTIME_KUMA_URL blank should not attempt any real
+        connection at startup, the same way it already doesn't error
+        out of search() itself."""
+        from app.config import settings
+        original_url = settings.uptime_kuma_url
+        settings.uptime_kuma_url = ""
+        try:
+            with patch("app.sources.uptime_kuma.get_connection") as mock_get_connection, \
+                 patch("app.sources.uptime_kuma.disconnect") as mock_disconnect:
+                from app.main import app
+                with TestClient(app):
+                    mock_get_connection.assert_not_called()
+                mock_disconnect.assert_not_called()
+        finally:
+            settings.uptime_kuma_url = original_url
+
+
 class TestSourcesEndpoint:
     """Tests for GET /sources."""
 

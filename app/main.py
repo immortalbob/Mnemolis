@@ -31,6 +31,7 @@ from app.router import (
 )
 from app.mcp_server import mcp_app, get_mcp_app
 from app.sources.kiwix import get_books, refresh_catalog
+from app.sources import uptime_kuma
 from app.snapshots import (
     init_snapshot_db,
     snapshot_uptime,
@@ -237,6 +238,20 @@ async def lifespan(app: FastAPI):
         if settings.temporal_pattern_detection_enabled:
             await loop.run_in_executor(None, init_temporal_patterns_db)
 
+        # Warm the persistent Uptime Kuma connection (if configured) before
+        # the scheduler starts -- connects and logs in once here, during
+        # startup, rather than paying that cost on whichever request or
+        # snapshot tick happens to arrive first. See get_connection() in
+        # app/sources/uptime_kuma.py for why this exists: a fresh
+        # Socket.IO handshake+login on every single call (a live query AND
+        # every 2-minute snapshot_uptime() tick) was the real, confirmed
+        # cost behind uptime's recurring benchmark tail (v3.17.0, v3.44.0,
+        # v3.50.2) -- not the result-cache TTL, which only explains why a
+        # cache miss happens, not why it costs as much as it does.
+        if settings.uptime_kuma_url and settings.uptime_kuma_username:
+            await loop.run_in_executor(None, uptime_kuma.get_connection)
+            stack.callback(uptime_kuma.disconnect)
+
         # Start snapshot scheduler
         scheduler = BackgroundScheduler()
         scheduler.add_job(snapshot_uptime, "interval", minutes=2, id="snapshot_uptime")
@@ -283,7 +298,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.50.1",
+    version="3.50.4",
     lifespan=lifespan,
 )
 
