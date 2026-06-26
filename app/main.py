@@ -46,6 +46,7 @@ from app.adversarial_testing import (
     get_adversarial_test_summary,
     get_flagged_combinations,
     dismiss_flagged_combination,
+    undismiss_flagged_combination,
 )
 from app.temporal_patterns import (
     init_temporal_patterns_db,
@@ -281,7 +282,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.48.6",
+    version="3.48.9",
     lifespan=lifespan,
 )
 
@@ -840,6 +841,31 @@ def adversarial_dismiss(fingerprint: str):
     if not success:
         raise HTTPException(status_code=404, detail="No combination found with that fingerprint")
     return {"status": "dismissed", "fingerprint": fingerprint}
+
+
+@app.post("/adversarial/undismiss")
+def adversarial_undismiss(fingerprint: str):
+    """
+    Reverse a dismissal, putting a combination back into the default
+    GET /adversarial/flagged review queue. The real, symmetric
+    counterpart to POST /adversarial/dismiss — added after real usage
+    showed dismissal had no way back short of editing the database by
+    hand: a batch dismissal matched against a stale, previously-seen
+    listing rather than a freshly-fetched one closed out combinations
+    that were never actually resolved.
+
+    fingerprint is the exact JSON string from a flagged row's own
+    "fingerprint" field — use GET /adversarial/flagged?include_dismissed=true
+    to find a dismissed row's fingerprint, since the default view no
+    longer shows it once dismissed.
+
+    Returns {"status": "undismissed"} on success, or a 404 if the
+    fingerprint doesn't match any known combination.
+    """
+    success = undismiss_flagged_combination(fingerprint)
+    if not success:
+        raise HTTPException(status_code=404, detail="No combination found with that fingerprint")
+    return {"status": "undismissed", "fingerprint": fingerprint}
 
 
 @app.get("/temporal-patterns")

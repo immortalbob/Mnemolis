@@ -126,6 +126,18 @@ class Settings(BaseSettings):
     uptime_kuma_url: str = ""
     uptime_kuma_username: str = ""
     uptime_kuma_password: str = ""
+    # Previously a bare, hardcoded `timeout=30` literal with no way to
+    # tune it — found via a real, live Adversarial Self-Testing flag: a
+    # conditional_with_remainder query took 30056ms and was flagged
+    # unexpected_empty, traced directly to UptimeKumaApi's connection
+    # genuinely timing out and Mnemolis correctly, honestly reporting
+    # "Could not connect to Uptime Kuma" rather than hiding the
+    # failure. 30 seconds is a long time to wait on what should be a
+    # fast, same-LAN service before giving up — lower this for faster
+    # fallback to web/other sources on a genuinely unreachable
+    # instance, raise it only if your own Uptime Kuma instance is
+    # known to be slow to respond for some other reason.
+    uptime_kuma_timeout_seconds: int = 10
 
     # -------------------------------------------------------------------
     # Home Assistant

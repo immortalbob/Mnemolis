@@ -198,3 +198,64 @@ class TestGetStatusFromHeartbeats:
         from the None sentinel for missing data entirely."""
         heartbeats = {1: [{"status": 3}]}
         assert self.get_status(heartbeats, 1) == 3
+
+
+class TestUptimeKumaConfigurableTimeout:
+    """Regression tests for a real, live bug found via Adversarial
+    Self-Testing: a conditional_with_remainder query took 30056ms and
+    was flagged unexpected_empty, traced directly to UptimeKumaApi's
+    connection timing out at a bare, hardcoded `timeout=30` literal —
+    with no setting anywhere to tune it for a service that, on a real
+    homelab, sits on the same LAN and should respond far faster.
+    Confirms the real call site genuinely uses the new
+    UPTIME_KUMA_TIMEOUT_SECONDS setting, not just a renamed constant
+    that happens to default to the same old value."""
+
+    def setup_method(self):
+        from app.config import settings
+        settings.uptime_kuma_url = "http://uptime-kuma:3001"
+        settings.uptime_kuma_username = "testuser"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.uptime_kuma_url = ""
+        settings.uptime_kuma_username = ""
+
+    def test_default_timeout_is_ten_not_the_old_hardcoded_thirty(self):
+        from app.config import settings
+        assert settings.uptime_kuma_timeout_seconds == 10
+
+    def test_configured_timeout_value_is_genuinely_passed_to_the_real_api_call(self):
+        from app.sources import uptime_kuma
+        from app.config import settings
+
+        original_timeout = settings.uptime_kuma_timeout_seconds
+        settings.uptime_kuma_timeout_seconds = 3
+        try:
+            mock_api_class = MagicMock()
+            mock_api_instance = MagicMock()
+            mock_api_instance.__enter__ = MagicMock(return_value=mock_api_instance)
+            mock_api_instance.__exit__ = MagicMock(return_value=False)
+            mock_api_instance.get_monitors.return_value = [_make_monitor(1, "Test")]
+            mock_api_instance.get_heartbeats.return_value = _make_heartbeats(1, 1)
+            mock_api_class.return_value = mock_api_instance
+
+            with patch("app.sources.uptime_kuma.UptimeKumaApi", mock_api_class):
+                uptime_kuma.search("status")
+
+            mock_api_class.assert_called_once_with(settings.uptime_kuma_url, timeout=3)
+        finally:
+            settings.uptime_kuma_timeout_seconds = original_timeout
+
+    def test_real_timeout_exception_still_produces_the_documented_fallback_message(self):
+        """Confirms the actual real-world failure path this whole
+        investigation traced through: a genuine timeout (or any other
+        connection exception) must still produce the documented
+        "Could not connect to Uptime Kuma" message — the same real,
+        intentional fallback fusion._looks_empty() correctly recognizes
+        — regardless of what the configured timeout value is."""
+        from app.sources import uptime_kuma
+
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", side_effect=TimeoutError("timed out")):
+            result = uptime_kuma.search("status")
+        assert "could not connect" in result.lower()

@@ -35,6 +35,7 @@ from app.adversarial_testing import (
     get_adversarial_test_summary,
     get_flagged_combinations,
     dismiss_flagged_combination,
+    undismiss_flagged_combination,
 )
 
 
@@ -208,6 +209,80 @@ class TestDeduplication:
             assert _already_tried(fp) is True
 
 
+class TestHeaderPatternMatchesEveryRealHeader:
+    """Direct, explicit coverage for _HEADER_PATTERN itself — the regex
+    both _check_multi_intent_part_count and
+    _check_conditional_remainder_sections depend on to count real
+    headers in a result string.
+
+    Added after a real, live production flag (a conditional_with_
+    remainder query whose response genuinely contained a real header,
+    flagged anyway as having none) traced back to this regex
+    specifically: the original pattern
+    (r"\\[[A-Z0-9_ ]+ — [A-Z0-9_ ,'/]+\\]") required exactly ONE literal
+    " — " separator, with the tail character class deliberately
+    excluding the em-dash itself. kiwix's real label ("ENCYCLOPEDIC
+    KNOWLEDGE — UNRELATED TO OTHER SECTIONS BELOW") and news's real
+    label ("RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC
+    UNLESS STATED") both legitimately contain a SECOND em-dash, so
+    neither header could ever be matched — silently undercounting real
+    headers in BOTH checks that use this pattern, not just the one
+    that originally surfaced it. Several existing tests for those two
+    checks had also been using fabricated header text
+    (e.g. "[KIWIX — A]") that happened to be invisible to the SAME
+    broken regex for an unrelated reason, masking this bug from the
+    test suite entirely until it was traced from real production data.
+
+    Fixed by building the pattern from the real, exact header strings
+    fusion._format_header() can actually produce (re.escape()'d, not a
+    generic bracket-matching character class) — the same safe approach
+    router.py's own _dedupe_nested_fusion_sections() already uses for
+    the identical underlying need.
+    """
+
+    def test_every_real_source_header_is_matched_exactly_once(self):
+        from app.adversarial_testing import _HEADER_PATTERN
+        from app.sources.fusion import _format_header, _HEADER_LABELS
+        for source in _HEADER_LABELS:
+            header = _format_header(source)
+            matches = _HEADER_PATTERN.findall(header)
+            assert len(matches) == 1, f"{source}'s real header was not matched exactly once: {header!r}"
+
+    def test_kiwix_and_news_headers_specifically_are_matched(self):
+        """The two real, confirmed-vulnerable headers, tested
+        explicitly and individually — both contain a second em-dash in
+        their real descriptive label, the exact property that broke
+        the original regex."""
+        from app.adversarial_testing import _HEADER_PATTERN
+        from app.sources.fusion import _format_header
+        assert len(_HEADER_PATTERN.findall(_format_header("kiwix"))) == 1
+        assert len(_HEADER_PATTERN.findall(_format_header("news"))) == 1
+
+    def test_real_multi_header_result_counts_correctly(self):
+        """The actual real-world shape that exposed this bug: a
+        genuine multi-section result containing both vulnerable
+        headers (kiwix, news) alongside others — every real header
+        must be counted, not just the ones the old regex could see."""
+        from app.adversarial_testing import _HEADER_PATTERN
+        from app.sources.fusion import _format_header
+        text = "\n\n---\n\n".join(
+            f"{_format_header(s)}\ncontent" for s in ("kiwix", "forecast", "news", "uptime", "web")
+        )
+        assert len(_HEADER_PATTERN.findall(text)) == 5
+
+    def test_fabricated_header_text_is_correctly_NOT_matched(self):
+        """The flip side of the fix: text that merely LOOKS like a
+        header but isn't one of the real, exact strings Mnemolis
+        actually produces must not be matched — confirms the fix is a
+        genuine exact-match against real headers, not a slightly-
+        widened generic pattern that could still drift from reality
+        again later."""
+        from app.adversarial_testing import _HEADER_PATTERN
+        fake_headers = ["[KIWIX — A]", "[UPTIME — STATUS]", "[MADE_UP — LABEL]"]
+        for fake in fake_headers:
+            assert len(_HEADER_PATTERN.findall(fake)) == 0, f"fabricated header {fake!r} was incorrectly matched"
+
+
 class TestAnomalyDetection:
     """Each check verifies a documented Mnemolis behavioral guarantee —
     never a correctness judgment about response content."""
@@ -248,7 +323,12 @@ class TestAnomalyDetection:
         assert reason is not None
 
     def test_check_multi_intent_part_count_passes_close_match(self):
-        result = "[KIWIX — A] x\n[WEB — B] y\n[NEWS — C] z"  # 3 headers for 3 intents
+        from app.sources.fusion import _format_header
+        result = (
+            f"{_format_header('kiwix')} x\n"
+            f"{_format_header('web')} y\n"
+            f"{_format_header('news')} z"
+        )  # 3 real headers for 3 intents
         reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news"], result)
         assert reason is None
 
@@ -266,8 +346,25 @@ class TestAnomalyDetection:
         resolved to the correct source, and the 2 "missing" sources
         legitimately had nothing to report. 3 of 5 is more than half,
         so the new, deliberately looser threshold correctly does not
-        flag this."""
-        result = "[KIWIX — A] x\n[WEB — B] y\n[NEWS — C] z"  # 3 headers for 5 intended
+        flag this.
+
+        Uses real header strings from fusion._format_header() — found
+        via a SEPARATE real bug while tracing a live
+        conditional_remainder_missing_sections flag: the header-
+        matching regex itself failed to match the real kiwix and news
+        headers (their genuine descriptive labels each contain a
+        second " — " the original regex's character class couldn't
+        accommodate), so a test using fabricated header text like
+        "[KIWIX — A]" was passing for the wrong reason — the fake
+        header was ALSO invisible to the broken regex, masking the
+        real bug entirely. Real header text is required for this test
+        to mean what it claims."""
+        from app.sources.fusion import _format_header
+        result = (
+            f"{_format_header('kiwix')} x\n"
+            f"{_format_header('web')} y\n"
+            f"{_format_header('news')} z"
+        )  # 3 real headers for 5 intended
         reason = _check_multi_intent_part_count(
             "multi_intent_chain", ["forecast", "ha", "news", "uptime", "changes"], result
         )
@@ -292,12 +389,14 @@ class TestAnomalyDetection:
         """A real, severe content-loss case: only 1 of 4 intended
         sources is even visible in the result — less than half
         survived, correctly flagged."""
-        result = "[KIWIX — TOPIC] some real content\nplain web fallback text, no header here"
+        from app.sources.fusion import _format_header
+        result = f"{_format_header('kiwix')} some real content\nplain web fallback text, no header here"
         reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news", "uptime"], result)
         assert reason is not None
 
     def test_check_multi_intent_part_count_only_applies_to_its_own_recipe(self):
-        result = "[KIWIX — TOPIC] some content"
+        from app.sources.fusion import _format_header
+        result = f"{_format_header('kiwix')} some content"
         reason = _check_multi_intent_part_count("no_intent_fallthrough", ["forecast", "ha", "news", "uptime"], result)
         assert reason is None
 
@@ -306,14 +405,16 @@ class TestAnomalyDetection:
         half', so this should NOT flag — confirms the boundary itself
         is handled the intended way (strict less-than, not
         less-than-or-equal)."""
-        result = "[KIWIX — A] x\n[WEB — B] y"  # 2 headers for 4 intended
+        from app.sources.fusion import _format_header
+        result = f"{_format_header('kiwix')} x\n{_format_header('web')} y"  # 2 real headers for 4 intended
         reason = _check_multi_intent_part_count("multi_intent_chain", ["forecast", "ha", "news", "uptime"], result)
         assert reason is None
 
     def test_check_multi_intent_part_count_just_under_half_is_flagged(self):
         """Boundary case just past the line: 2 of 5 (40%, under half)
         should flag."""
-        result = "[KIWIX — A] x\n[WEB — B] y"  # 2 headers for 5 intended
+        from app.sources.fusion import _format_header
+        result = f"{_format_header('kiwix')} x\n{_format_header('web')} y"  # 2 real headers for 5 intended
         reason = _check_multi_intent_part_count(
             "multi_intent_chain", ["forecast", "ha", "news", "uptime", "changes"], result
         )
@@ -331,8 +432,9 @@ class TestAnomalyDetection:
         ) is None
 
     def test_check_discourse_framing_dropped_kiwix_passes_when_header_present(self):
+        from app.sources.fusion import _format_header
         assert _check_discourse_framing_dropped_kiwix(
-            "discourse_framing_plus_real_keyword", "[KIWIX — TOPIC] real content", "fusion"
+            "discourse_framing_plus_real_keyword", f"{_format_header('kiwix')} real content", "fusion"
         ) is None
 
     def test_check_conditional_remainder_sections_flags_missing_headers(self):
@@ -340,10 +442,32 @@ class TestAnomalyDetection:
         assert reason is not None
 
     def test_check_conditional_remainder_sections_passes_with_header(self):
+        from app.sources.fusion import _format_header
         reason = _check_conditional_remainder_sections(
-            "conditional_with_remainder", "[UPTIME — STATUS] all services up"
+            "conditional_with_remainder", f"{_format_header('uptime')} all services up"
         )
         assert reason is None
+
+    def test_check_conditional_remainder_sections_passes_with_real_kiwix_or_news_header(self):
+        """Regression test for the actual real bug found tracing a live
+        flagged row: kiwix's and news's real descriptive labels each
+        contain a SECOND " — " separator, which the original
+        _HEADER_PATTERN regex (one literal " — " required, with the
+        tail character class deliberately excluding the em-dash) could
+        never match — meaning a real, correctly-formed response
+        containing only a kiwix or news header (no other source) was
+        ALWAYS misread as having zero headers, regardless of any
+        threshold or tolerance setting. This is the exact root cause
+        behind the real "if it is raining... as well as feeds" flag,
+        and likely a meaningful contributor to the real
+        "part_count_mismatch: intended 5, found 3" flags too, since
+        both of those real queries also involved a news or kiwix
+        header among their intended sources."""
+        from app.sources.fusion import _format_header
+        for source in ("kiwix", "news"):
+            result = f"{_format_header(source)}\nReal content here."
+            reason = _check_conditional_remainder_sections("conditional_with_remainder", result)
+            assert reason is None, f"real {source} header was not recognized"
 
     def test_check_unexpected_empty_uses_real_fusion_looks_empty(self):
         """Must delegate to the real, canonical fusion._looks_empty(),
@@ -825,6 +949,66 @@ class TestHealthSummaryAndFlaggedEndpointData:
             result = dismiss_flagged_combination(json.dumps(["never-existed"]))
             assert result is False
 
+    def test_undismiss_restores_combination_to_default_view(self, tmp_path):
+        """The real, symmetric counterpart to dismiss — found necessary
+        via real production usage, not written defensively up front: a
+        real batch-dismiss matched against a stale, previously-fetched
+        listing rather than a freshly re-fetched one closed out
+        combinations that were never actually resolved, with no way
+        back short of editing the database by hand."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            fp = json.dumps(["wrongly-dismissed"])
+            _record_result(fp, "no_intent_fallthrough", "bad query", "kiwix", 100, "crash: boom")
+            dismiss_flagged_combination(fp)
+            assert len(get_flagged_combinations()) == 0
+
+            undismissed = undismiss_flagged_combination(fp)
+            assert undismissed is True
+            assert len(get_flagged_combinations()) == 1
+
+    def test_undismiss_restores_the_exact_prior_state_not_a_new_one(self, tmp_path):
+        """review_status after undismiss must be NULL — the same value
+        it had before ever being dismissed — not some other sentinel
+        value representing a third, distinct state."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            fp = json.dumps(["restore-exact-state"])
+            _record_result(fp, "no_intent_fallthrough", "bad query", "kiwix", 100, "crash: boom")
+            never_dismissed_row = get_flagged_combinations()[0]
+            assert never_dismissed_row["review_status"] is None
+
+            dismiss_flagged_combination(fp)
+            undismiss_flagged_combination(fp)
+            restored_row = get_flagged_combinations()[0]
+            assert restored_row["review_status"] is None
+
+    def test_undismiss_unknown_fingerprint_returns_false(self, tmp_path):
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            result = undismiss_flagged_combination(json.dumps(["never-existed"]))
+            assert result is False
+
+    def test_undismiss_on_never_dismissed_combination_is_a_safe_noop(self, tmp_path):
+        """Calling undismiss on a combination that was never dismissed
+        in the first place must not error or change its visibility —
+        it's already in the state undismiss would restore it to."""
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db):
+            init_adversarial_db()
+            import json
+            fp = json.dumps(["never-dismissed-at-all"])
+            _record_result(fp, "no_intent_fallthrough", "bad query", "kiwix", 100, "crash: boom")
+            result = undismiss_flagged_combination(fp)
+            assert result is True  # row exists and was updated, even though value didn't change
+            assert len(get_flagged_combinations()) == 1
+
     def test_a_new_flag_after_dismissal_resurfaces_in_default_view(self, tmp_path):
         """A genuinely NEW anomaly on a previously-dismissed fingerprint
         must reappear normally — dismissal isn't a permanent suppression
@@ -1032,6 +1216,47 @@ class TestEndpointsViaTestClient:
              patch("app.main.settings.adversarial_test_enabled", True):
             with TestClient(main.app) as client:
                 response = client.post("/adversarial/dismiss", params={"fingerprint": "[\"nonexistent\"]"})
+                assert response.status_code == 404
+
+    def test_undismiss_endpoint_restores_a_dismissed_combination(self, tmp_path):
+        """The real, symmetric counterpart endpoint to /adversarial/dismiss
+        — exercises the exact real recovery path: dismiss via the
+        endpoint, confirm it's gone from the default view, undismiss via
+        the new endpoint, confirm it's back."""
+        from fastapi.testclient import TestClient
+        import app.main as main
+        import app.adversarial_testing as at_module
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", True):
+            import json
+            at_module.init_adversarial_db()
+            fp = json.dumps(["endpoint-undismiss-test"])
+            at_module._record_result(fp, "no_intent_fallthrough", "bad query", "kiwix", 100, "crash: boom")
+
+            with TestClient(main.app) as client:
+                client.post("/adversarial/dismiss", params={"fingerprint": fp})
+                gone = client.get("/adversarial/flagged")
+                assert gone.json()["count"] == 0
+
+                undismiss_response = client.post("/adversarial/undismiss", params={"fingerprint": fp})
+                assert undismiss_response.status_code == 200
+                assert undismiss_response.json()["status"] == "undismissed"
+
+                restored = client.get("/adversarial/flagged")
+                assert restored.json()["count"] == 1
+                assert restored.json()["flagged"][0]["last_query_text"] == "bad query"
+
+    def test_undismiss_endpoint_404s_on_unknown_fingerprint(self, tmp_path):
+        from fastapi.testclient import TestClient
+        import app.main as main
+
+        temp_db = str(tmp_path / "test_adversarial.db")
+        with patch("app.adversarial_testing.ADVERSARIAL_DB", temp_db), \
+             patch("app.main.settings.adversarial_test_enabled", True):
+            with TestClient(main.app) as client:
+                response = client.post("/adversarial/undismiss", params={"fingerprint": "[\"nonexistent\"]"})
                 assert response.status_code == 404
 
     def test_flagged_endpoint_include_dismissed_query_param_works(self, tmp_path):

@@ -144,6 +144,7 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `UPTIME_KUMA_URL` | Uptime Kuma URL | _(blank — disables uptime source)_ |
 | `UPTIME_KUMA_USERNAME` | Uptime Kuma username | |
 | `UPTIME_KUMA_PASSWORD` | Uptime Kuma password | |
+| `UPTIME_KUMA_TIMEOUT_SECONDS` | How long the Uptime Kuma client waits before giving up — previously a hardcoded `30` with no way to tune it for a same-LAN service that should respond far faster | `10` |
 | `HA_URL` | Home Assistant URL | _(blank — disables HA source)_ |
 | `HA_TOKEN` | Home Assistant long-lived access token | |
 | `LLM_URL` | LLM backend URL for intelligent routing | _(blank — disables LLM routing)_ |

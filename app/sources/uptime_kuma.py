@@ -40,7 +40,7 @@ def search(query: str) -> str:
         return "Uptime Kuma is not configured. Set UPTIME_KUMA_URL and UPTIME_KUMA_USERNAME."
 
     try:
-        with UptimeKumaApi(settings.uptime_kuma_url, timeout=30) as api:
+        with UptimeKumaApi(settings.uptime_kuma_url, timeout=settings.uptime_kuma_timeout_seconds) as api:
             api.login(settings.uptime_kuma_username, settings.uptime_kuma_password)
             monitors = api.get_monitors()
             heartbeats = api.get_heartbeats()

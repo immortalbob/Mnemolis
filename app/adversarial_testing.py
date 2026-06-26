@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from app import router
 from app.config import settings
 from app.sources import kiwix
+from app.sources import fusion
 from app.sources.fusion import _looks_empty
 
 _LOGGER = logging.getLogger(__name__)
@@ -430,7 +431,28 @@ def generate_adversarial_query(rng: random.Random | None = None) -> tuple[str, d
 # guarantee against what actually happened — never "is this answer right."
 # ---------------------------------------------------------------------------
 
-_HEADER_PATTERN = re.compile(r"\[[A-Z0-9_ ]+ — [A-Z0-9_ ,'/]+\]")
+# Built from the real, exact header strings fusion._format_header() can
+# produce — re.escape()'d, not a generic bracket-matching character
+# class. Found via tracing a real, live conditional_remainder_missing_
+# sections flag: the original generic pattern
+# (r"\[[A-Z0-9_ ]+ — [A-Z0-9_ ,'/]+\]") required exactly ONE literal
+# " — " separator, with the tail character class deliberately excluding
+# the em-dash itself — but kiwix's real label ("ENCYCLOPEDIC KNOWLEDGE
+# — UNRELATED TO OTHER SECTIONS BELOW") and news's real label ("RECENT
+# NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED") both
+# legitimately contain a SECOND em-dash, breaking the match entirely.
+# Confirmed this silently undercounted real headers in BOTH places this
+# pattern is used: _check_conditional_remainder_sections (the original
+# real-world flag this was traced from) and _check_multi_intent_part_count
+# (where it explains the two real "intended 5, found 3" flags far more
+# completely than the threshold-looseness fix in 3.48.1 alone did — that
+# fix made the check tolerant of undercounting without ever finding why
+# the undercount was happening in the first place). Same safe pattern
+# router.py's own _dedupe_nested_fusion_sections() already uses for the
+# identical underlying need.
+_HEADER_PATTERN = re.compile(
+    "(" + "|".join(re.escape(fusion._format_header(src)) for src in fusion._HEADER_LABELS) + ")"
+)
 
 
 def _check_crash(result: str, error: str | None) -> str | None:

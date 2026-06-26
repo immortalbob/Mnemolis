@@ -4,6 +4,71 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.48.9]
+
+### Fixed — Uptime Kuma's Connection Timeout Was a Bare, Unconfigurable Literal
+The second and last of the two genuinely unresolved Adversarial Self-Testing flags from this whole investigation. `unexpected_empty` on `"if any services are down, let me know right away, as well as lights off"`, latency `30056ms` — the number itself was the clue: `UptimeKumaApi(settings.uptime_kuma_url, timeout=30)` was hardcoded, and `30056ms` is exactly that plus normal overhead.
+
+Confirmed via direct tracing that this is **not a Mnemolis bug** — the Uptime Kuma client connection genuinely timed out, the exception was caught, and Mnemolis correctly returned `"Could not connect to Uptime Kuma: {e}"` rather than hiding the failure. `fusion._looks_empty()` correctly recognized the real `"could not connect"` phrase, and the adversarial check correctly flagged the resulting empty response. Every layer worked exactly as designed.
+
+The real, fixable gap: every other source touched by this project (`SEARXNG_REQUEST_TIMEOUT_SECONDS`, `FUSION_TIMEOUT_SECONDS`) already has a configurable timeout; Uptime Kuma's bare `30` was the one literal left over, despite being a same-LAN service that should respond in well under a second. New `UPTIME_KUMA_TIMEOUT_SECONDS` setting (default `10`), wired directly into the real client call — the documented fallback behavior on a genuine failure is completely unchanged, only how long Mnemolis waits before reaching it.
+
+### Added (Tests)
+- `TestUptimeKumaConfigurableTimeout` (3 tests) in `test_uptime_kuma.py` — confirms the new default, confirms the configured value is genuinely passed to the real `UptimeKumaApi` call (not a renamed constant defaulting to the same old value), and confirms the documented fallback message still appears correctly on a genuine timeout regardless of the configured value
+
+### Changed
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) updated with the full investigation — both genuinely unresolved flags from this round are now real, closed findings, not open questions
+- `README.md` and Configuration Reference updated with the new setting
+- Version bumped to 3.48.9
+
+**Total test count: 1218**
+
+---
+
+## [3.48.8]
+
+### Fixed — A Real Header-Counting Bug Found While Actually Reviewing the Two Unresolved Flags
+After the 3.48.7 undismiss mishap got sorted out, the two genuinely unresolved flags (`unexpected_empty`, `conditional_remainder_missing_sections`) got a real look instead of staying parked. Tracing `conditional_remainder_missing_sections` on `"if it is raining, I will be careful with communication, as well as feeds"` — a response this check claimed had zero real sections — led directly to `_HEADER_PATTERN`, the regex both this check and `_check_multi_intent_part_count` use to count headers in a result string.
+
+The regex required exactly one literal `" — "` separator, with the character class after it deliberately excluding the em-dash itself. `kiwix`'s real label (`"ENCYCLOPEDIC KNOWLEDGE — UNRELATED TO OTHER SECTIONS BELOW"`) and `news`'s real label (`"RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED"`) both legitimately contain a *second* em-dash — so neither header could ever be matched, full stop, regardless of any threshold setting. Reconstructing the real flagged query's actual merge output confirmed this directly as the root cause.
+
+This also reframes the two real `part_count_mismatch` flags from 3.48.1, which both involved `news` as an intended source: reconstructing a realistic 5-header result including both vulnerable headers showed the regex undercounting by exactly 2 — the precise shape of both flags' literal text (`"intended 5, found 3"`). The 3.48.1 fix (loosening the threshold to "fewer than half survived") was real and still correct, but it made the check tolerant of this exact undercount without ever finding why the undercount existed — this fix is the actual root cause, not a second layer on top of an unrelated one.
+
+Several existing tests for both checks had been using fabricated header text (`"[KIWIX — A]"`) that happened to be *equally* invisible to the same broken regex for an unrelated reason — meaning the tests accidentally agreed with the bug instead of catching it. This is the real, structural reason it survived as long as it did.
+
+**Fixed** by rebuilding `_HEADER_PATTERN` from the real, exact header strings `fusion._format_header()` actually produces (`re.escape()`'d, not a generic bracket-matching character class) — the same safe approach `router.py`'s own `_dedupe_nested_fusion_sections()` already uses for the identical need.
+
+### Added (Tests)
+- `TestHeaderPatternMatchesEveryRealHeader` (4 tests) — every real header matched exactly once, the two specifically-vulnerable headers tested explicitly, a real 5-header reconstruction counting correctly, and confirmation fabricated header text is correctly rejected (the fix is a genuine exact-match, not a slightly-widened pattern that could drift again)
+- Every existing test for `_check_multi_intent_part_count` and `_check_conditional_remainder_sections` that used fabricated header text rewritten to use real strings from `fusion._format_header()`
+
+### Changed
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) updated with the real, corrected root-cause story for both the `conditional_remainder_missing_sections` flag and the earlier `part_count_mismatch` flags
+- Version bumped to 3.48.8
+
+**Total test count: 1215**
+
+---
+
+## [3.48.7]
+
+### Added — `POST /adversarial/undismiss`, the Real Reversal Dismiss Never Had
+Found necessary via real usage on MiniDock, not written defensively up front: a real batch-dismiss review session matched index numbers against a flagged-combination listing fetched a turn earlier, rather than a freshly re-fetched one — the live queue had reordered in between (a new flag had recorded since), so the indices no longer lined up with the current list, and two genuinely unresolved flags (`unexpected_empty`, `conditional_remainder_missing_sections`) got dismissed alongside seven that were actually understood and fixed. There was no way back short of editing the database by hand.
+
+New `undismiss_flagged_combination()` in `app/adversarial_testing.py`, the real, symmetric counterpart to the existing `dismiss_flagged_combination()` — restores `review_status` to exactly `NULL`, the same value a combination has before its first-ever dismissal, not a new third state. New `POST /adversarial/undismiss?fingerprint=...` endpoint, mirroring `/adversarial/dismiss`'s exact contract (404 on unknown fingerprint; a fingerprint that was never dismissed is a safe no-op).
+
+### Added (Tests)
+- 6 new tests across `test_adversarial_testing.py`: the real restore-to-default-view round trip, confirming the restored state is exactly `NULL` and not a distinct sentinel, the unknown-fingerprint 404 case, the never-dismissed no-op case, and the full endpoint-level round trip via `TestClient`
+
+### Changed
+- `review_flagged.py` (the standalone CLI helper) updated with `list-dismissed`, `undismiss`, and `undismiss-all` commands, and `list`/`dismiss` now always re-fetch the live queue immediately before acting rather than trusting an index from an earlier `list` call — the exact gap that caused the real mis-dismissal this release fixes
+- Wiki's [Adversarial Self-Testing](https://github.com/immortalbob/Mnemolis/wiki/Adversarial-Self-Testing) updated with the new endpoint and the real story behind why it exists
+- Version bumped to 3.48.7
+
+**Total test count: 1210**
+
+---
+
 ## [3.48.6]
 
 ### Changed — Every Wiki Diagram and Numeric Claim Verified Against Real Code
