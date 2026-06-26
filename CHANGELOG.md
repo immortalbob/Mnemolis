@@ -4,6 +4,25 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.7]
+
+### Changed — Re-Benchmark: Confirming the `cache_hit` Fix Actually Closed the Gap
+A real Locust run on MiniDock (20 users, 120s, cold immediately followed by warm, same methodology as every prior entry), validating v3.50.6's `cache_hit` query-collision fix against the v3.50.5 baseline. Zero exceptions, zero failures on both passes.
+
+**The fix is confirmed working, not just theoretically correct.** `cache_hit`'s cold-cache p90/p98/p99 dropped from 5100ms/8000ms/8000ms (v3.50.5) to 880ms/940ms/940ms — the same shape every other single-source cold-path row in the table shows, no longer the anomalous outlier it was. The warm run lands `cache_hit` at 29ms p99, essentially identical to `kiwix`'s own 34ms — exactly what a never-colliding cache-hit task should look like.
+
+**`uptime` and the v3.50.3 pool widening show the same shape as the v3.50.5 run, as expected** — neither was touched by this release. `uptime` warm p98/p99 this run (440ms/440ms) looks numerically better than the v3.50.5 warm run (850ms/850ms), but the underlying request counts are small enough (21 vs. 29 total) that this is ordinary run-to-run noise, not a second data point about the root cause. Read as confirmation that the v3.50.5 verdict (real, partial fix; real, unexplained minority tail) still stands, not as new evidence either way. Same read for `auto`/`conditional`/`conditional_remainder`: numbers moved in both directions relative to v3.50.5 depending on the specific percentile, consistent with the design doc's own "inherently noisier metric" caution rather than anything having changed.
+
+### Changed
+- New dated entry added to `BENCHMARKS.md` (v3.50.7) with full cold/warm tables and explicit per-finding read on what changed, what didn't, and what's just noise
+- `wiki/Benchmarks.md` updated: the `cache_hit` paragraph now states the fix is benchmark-confirmed, not just code-confirmed; the top-of-page cold/warm comparison table refreshed to the v3.50.7 numbers; the section heading covering all three findings simplified and renamed (`## What got fully fixed, what got partially fixed, and what's still genuinely unresolved`) now that one of the three is a complete, confirmed fix rather than an open or partial item — every cross-link to the old heading text updated in lockstep (`wiki/Caching.md`, `wiki/Sources.md`)
+- Fixed two real, pre-existing issues found while updating these cross-links: `BENCHMARKS.md`'s `## Running benchmarks` heading had been silently dropped during this file's own v3.50.5 edit (a real, embarrassing repeat of the exact double-hyphen-anchor class of mistake this project's own tooling exists to catch — found and fixed here by hand instead, twice, since the first attempt at fixing it accidentally repeated the same mistake before being caught and corrected); and `wiki/Contributing.md` linked to a `Benchmarks` section heading that had already gone stale from an earlier rename and was never updated, found only because this pass touched the same anchor again
+- Version bumped to 3.50.7 — no application code changed this release; benchmark records and documentation only
+
+**Total test count: 1255** (unchanged)
+
+---
+
 ## [3.50.6]
 
 ### Fixed — `cache_hit`'s Real, Surprising 8-Second Cold-Run Tail: a Query Collision, Not a Backend Bug

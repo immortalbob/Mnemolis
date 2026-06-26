@@ -501,7 +501,63 @@ Per the design doc's own stated reading: this pattern — real improvement, but 
 
 Worth confirming directly since this run is the first real benchmark since that fix shipped: `/health`'s warm-cache max this run (1152ms, p99 1200ms) is consistent with the seven concurrent source checks each completing within their own real timeout, with none of the v3.50.2 baseline's 5244ms sequential-stacking signature reappearing. Not a controlled, isolated test of that fix specifically — this run wasn't set up to isolate it the way `TestHealthConcurrentSourceChecks` already does at the unit level — but a real, supporting data point that the fix is behaving as expected under actual concurrent load, not just in mocked test conditions.
 
+### 20 Users — Cold vs Warm Cache (v3.50.7, validating the cache_hit query-collision fix)
 
+Run against the real v3.50.6 codebase on MiniDock, validating the `cache_hit` thundering-herd fix (v3.50.6) against the v3.50.5 baseline above. Zero exceptions, zero failures on both passes.
+
+**Cold cache** — both caches explicitly cleared immediately before this run.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n | Failures |
+|----------|--------|-----|-----|-----|-----|---|----------|
+| `/health` | 710ms | 760ms | 780ms | 780ms | 780ms | 17 | 0% |
+| `/search [kiwix]` | 23ms | 870ms | 1300ms | 1700ms | 2000ms | 85 | 0% |
+| `/search [kiwix_disambiguation]` | 23ms | 99ms | 2000ms | 6000ms | 6000ms | 44 | 0% |
+| `/search [web]` | 23ms | 31ms | 1300ms | 2300ms | 6600ms | 76 | 0% |
+| `/search [conditional]` | 27ms | 1300ms | 1700ms | 1800ms | 1800ms | 39 | 0% |
+| `/search [conditional_remainder]` | 38ms | 800ms | 1300ms | 1300ms | 1300ms | 19 | 0% |
+| `/search [discourse_framing]` | 28ms | 580ms | 1100ms | 1900ms | 1900ms | 39 | 0% |
+| `/search [forecast]` | 24ms | 110ms | 140ms | 730ms | 730ms | 37 | 0% |
+| `/search [news]` | 24ms | 36ms | 56ms | 120ms | 120ms | 48 | 0% |
+| `/search [uptime]` | 23ms | 440ms | 520ms | 520ms | 520ms | 16 | 0% |
+| `/search [ha]` | 40ms | 51ms | 52ms | 300ms | 300ms | 21 | 0% |
+| `/search [auto]` | 25ms | 440ms | 770ms | 1800ms | 3000ms | 76 | 0% |
+| `/search [fusion_explicit]` | 22ms | 28ms | 36ms | 84ms | 830ms | 172 | 0% |
+| `/search [fusion_auto]` | 25ms | 47ms | 150ms | 3600ms | 4400ms | 99 | 0% |
+| `/search [fusion_triple]` | 22ms | 43ms | 100ms | 1700ms | 1700ms | 50 | 0% |
+| `/search [cache_hit]` | 23ms | 880ms | 940ms | 940ms | 940ms | 18 | 0% |
+| **Aggregated** | **24ms** | **100ms** | **770ms** | **1700ms** | **2300ms** | **856** | **0%** |
+
+**`cache_hit`'s 8-second cold-run anomaly from v3.50.4/v3.50.5 is gone.** Cold p90/p98/p99 went from 5100ms/8000ms/8000ms (v3.50.5) to 880ms/940ms/940ms — the same general shape every other single-source cold-path row in this table shows, not the previous, anomalous outlier. The fix shipped in v3.50.6 (`cache_hit` no longer sharing a query with `KIWIX_QUERIES`) is confirmed working, not just theoretically correct. The remaining 880-940ms tail is the same, expected cold-routing cost any genuinely-uncached query pays once — `cache_hit`'s own first hit of the run is, correctly, no longer special-cased into a worse outcome than that.
+
+**Warm cache** — identical run immediately afterward, no clearing in between.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n | Failures |
+|----------|--------|-----|-----|-----|-----|---|----------|
+| `/health` | 710ms | 750ms | 780ms | 780ms | 780ms | 20 | 0% |
+| `/search [kiwix]` | 23ms | 29ms | 31ms | 34ms | 34ms | 80 | 0% |
+| `/search [kiwix_disambiguation]` | 24ms | 32ms | 35ms | 35ms | 35ms | 40 | 0% |
+| `/search [web]` | 22ms | 33ms | 34ms | 37ms | 37ms | 65 | 0% |
+| `/search [conditional]` | 28ms | 63ms | 440ms | 440ms | 450ms | 54 | 0% |
+| `/search [conditional_remainder]` | 42ms | 110ms | 450ms | 450ms | 450ms | 21 | 0% |
+| `/search [discourse_framing]` | 31ms | 41ms | 46ms | 50ms | 57ms | 53 | 0% |
+| `/search [forecast]` | 23ms | 27ms | 34ms | 38ms | 38ms | 37 | 0% |
+| `/search [news]` | 23ms | 31ms | 36ms | 37ms | 47ms | 57 | 0% |
+| `/search [uptime]` | 23ms | 32ms | 440ms | 440ms | 440ms | 21 | 0% |
+| `/search [ha]` | 38ms | 54ms | 61ms | 61ms | 61ms | 19 | 0% |
+| `/search [auto]` | 26ms | 41ms | 440ms | 450ms | 450ms | 75 | 0% |
+| `/search [fusion_explicit]` | 22ms | 29ms | 35ms | 37ms | 44ms | 167 | 0% |
+| `/search [fusion_auto]` | 25ms | 30ms | 37ms | 44ms | 45ms | 106 | 0% |
+| `/search [fusion_triple]` | 22ms | 25ms | 35ms | 37ms | 48ms | 53 | 0% |
+| `/search [cache_hit]` | 23ms | 26ms | 29ms | 29ms | 29ms | 19 | 0% |
+| **Aggregated** | **24ms** | **37ms** | **54ms** | **690ms** | **710ms** | **887** | **0%** |
+
+**`cache_hit`'s warm numbers are essentially identical to `kiwix`'s own warm numbers (29ms p99 vs. kiwix's 34ms p99)** — exactly what a healthy, never-colliding cache-hit task should look like, and a tighter result than even the v3.50.5 warm run's already-recovered 36ms p99 (n=19 either time; small-sample noise, not a meaningful further improvement).
+
+**`uptime` warm p98/p99 (440ms/440ms) looks better than the v3.50.5 warm run (850ms/850ms) — read with real caution, not as evidence of a new improvement.** Nothing in v3.50.6 touched `app/sources/uptime_kuma.py` or its connection logic; this release was a load-test-only fix to an unrelated task. Reading the actual distribution rather than just the percentile labels: both this run (1-2 slow requests out of 21) and the v3.50.5 run (1-3 slow requests out of 29) show the same shape — a small minority of `uptime` calls paying a real, unexplained cost in the hundreds of milliseconds, with the bulk of calls landing in the same 23-32ms range every other warm source shows. The difference between one slow sample landing at 440ms versus 850ms, on a sample this size, is ordinary run-to-run noise, not a second data point that changes the v3.50.5 verdict. **The honest read stays exactly what it was**: a real, partial fix with a real, unexplained minority tail — not fully resolved, not regressed, no new information about the root cause from this run.
+
+**`auto`/`conditional`/`conditional_remainder` show the same noisy, partially-effective pattern as v3.50.5, also unchanged by this release.** Cold p98/p99 moved in both directions relative to the v3.50.5 baseline (`auto`: 1300/3800ms → 1800/3000ms; `conditional`: 5100/5100ms → 1800/1800ms; `conditional_remainder`: 4300/4300ms → 1300/1300ms) while warm p95 stayed essentially flat (~440-450ms across all three, both runs) — exactly the "inherently noisier metric, single-run sampling variance" caveat the original design doc attached to this specific success criterion. `auto`'s cold run still shows roughly 8 of 76 requests (≈10%) landing in a real slow tail (440ms+), consistent with "the widening helped but isn't enough headroom for 20 concurrent users" rather than either "fixed" or "didn't help" — no change to that verdict from this run.
+
+## Running benchmarks
 
 Replace `192.168.1.50` below with your actual Mnemolis host's real IP or hostname — not a placeholder. `--host` silently accepts anything that looks like a URL, so a leftover example value doesn't fail loudly; it fails much later as a DNS error (`Temporary failure in name resolution`) on every single request, which doesn't obviously point back to `--host` as the cause.
 
