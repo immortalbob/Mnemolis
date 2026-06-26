@@ -14,7 +14,7 @@ class Tools:
     class Valves(BaseModel):
         MNEMOLIS_URL: str = Field(
             default="http://mnemolis:8000",
-            description="Base URL of the Mnemolis container (e.g., http://mnemolis:8888 or http://localhost:8888)",
+            description="Base URL of the Mnemolis container. Default assumes Open WebUI and Mnemolis share a Docker network (internal container port 8000). If reaching it from outside Docker, use the host-mapped port instead, e.g. http://your-host:8888",
         )
 
     def __init__(self):

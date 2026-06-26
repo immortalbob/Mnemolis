@@ -4,6 +4,59 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.2]
+
+### Changed — Wiki Restructured: Reference-First Pages, Dev-Blog-Style Design History
+The wiki had accumulated a real, genuine problem across many releases: bug-discovery narrative was interleaved sentence-by-sentence with the actual mechanism reference on most pages, making it hard to read a page for "how does this work today" without wading through "here's how we found out it didn't." Every page in the wiki was re-read and restructured on the same principle: reference content first, real bug history either condensed into a same-page "Development Notes" section at the bottom, or — when a story had its own real arc worth reading independently — promoted to a new, dedicated saga page.
+
+**Five new dedicated saga pages**, each pulling fully-told investigation narrative out of the reference pages it used to live inside:
+- **The Fusion Merge Bugs** — the three-bug same-source merge chain, the `[FUSION — FUSION]` double-header bug, and the mixed-speed timeout crash, extracted from `Fusion.md`
+- **The MCP Transport Migration** — rewritten with the corrected chronology after a changelog cross-check found an ordering mistake: an external community audit triggered the SSE→Streamable HTTP migration; the session-manager caching bug was found and fixed *during* that same migration, before it ever shipped; a real client connecting for the first time *afterward* found two more bugs (a doubled `/mcp/mcp` endpoint path, LAN connections rejected by DNS-rebinding protection) that no in-process test could have caught
+- **The Caching Concurrency Investigation** — synthetic Adversarial Self-Testing traffic silently polluting real caches, and the separate file-write race found while investigating it
+- **The Latency Parallelization Investigation** — the single most cross-page-scattered story in the project's history, consolidated into one page told in the order it actually happened, including the real regression one fix shipped with and the second fix that avoided repeating it
+- **The Adversarial Testing Production Bugs** — the complete record of everything Adversarial Self-Testing has found in Mnemolis itself: the four-bug fusion-merge chain (from the production-discovery side, cross-linked to the merge-logic mechanism page rather than re-told), the false positive and the regex bug underneath it, the Uptime Kuma timeout, and the investigation that ended without a root cause
+
+**Fifteen existing pages** gained a same-page "Development Notes" section, with narrative trimmed out of the reference text above it: `Sources`, `Routing`, `Query-Decomposition`, `Conditional-Query-Detection`, `Fusion`, `LLM-Client`, `Home-Assistant-Integration`, `Multi-Book-Fusion`, `Kiwix-Disambiguation`, `Snapshot-Engine-and-Changes`, `Caching`, `Confidence-Aware-Fusion`, `Configuration-Reference`, `Health-and-Observability`, `First-Time-Setup`.
+
+**Real gaps found and closed that the wiki had never actually documented**, surfaced by a full, deliberate re-read of `CHANGELOG.md` against the wiki's existing content rather than trusting the wiki's own prior coverage:
+- `home_assistant.py` — an area-scoped query (e.g. "indoor air quality in the living room") silently skipping real `exclude_entity_keywords` filtering that the same unscoped query already correctly applied; the three-bug chain around `binary_sensor`-style motion entity support never being wired into the relevant keywords; a small grammar fix — none of these had a wiki mention before this pass
+- `freshrss.py` — 9 of 9 natural phrasings of a general news request ("tell me the news," "give me the headlines," etc.) being misclassified as specific-topic queries
+- `Caching` — fusion's cache key applying at the sub-query level too, not just top-level, for a decomposed query whose own clause resolves to internal fusion
+- `Kiwix Disambiguation` — the three single-guess prompting strategies tried and discarded before the current multi-candidate architecture was settled on, previously undocumented
+
+**A real duplication found and closed**: `Cross-Source-Temporal-Pattern-Detection.md` told the same motion-tracking gap twice, in two different sections, with slightly different wording each time.
+
+**Programmatic link/anchor verification, run after every single page edit rather than once at the end** — built a slugifier matching GitHub's real heading-anchor algorithm and checked every `[text](Page#anchor)` link in the wiki against it. Caught and fixed real breaks every time a section was moved or a heading was renamed, including the exact double-hyphen em-dash failure mode this verification was specifically built to catch (`[FUSION — FUSION]`-style headings slugify to a single hyphen, not two, since GitHub collapses the punctuation and surrounding whitespace together).
+
+**Home.md re-examined directly** (not just trusted as already-correct) and found three real issues: Core Concepts was ordered Routing-before-Decomposition-before-Conditional-Detection, contradicting the actual pipeline order stated in the pages it links to (conditional detection runs first, then decomposition, then per-piece routing) — reordered to match; the LLM Client entry credited only two of its three real dependents (`Routing`, `Kiwix Disambiguation`) and omitted `Query Expansion` entirely, and none of the three actually linked back to `LLM-Client` despite Home's own description claiming the dependency — fixed both the description and added the three missing cross-links; Backup & Restore's summary said "five data files," stale since `temporal_patterns.db` brought the real count to six.
+
+**Design History reordered to be genuinely chronological**, with an explicit note that it is — it had drifted into extraction-order-this-session rather than actual-event-order.
+
+### Changed — README Corrected Against Actual Code and the Restructured Wiki
+A full line-by-line read of `README.md`, with every numeric default in the Configuration table re-verified directly against `app/config.py` (all 64 settings checked; every one was already accurate) and every claim cross-checked against current code or the now-restructured wiki.
+
+**Real, internal README inconsistencies found and fixed:**
+- The `GET /backup` endpoint blurb said "four files," while the Backup & Restore section two pages later — correctly — said six. Both now say six.
+- Test count claim was stale: 1204, actual current count is 1241.
+- Disambiguation candidate count was overstated as a flat "3" in two places (the LLM-routing list and the Kiwix Internal Flow diagram); the actual function generates 2-3, matching the wiki's own more careful phrasing. Both fixed.
+
+**Real errors found outside the README, in files people actually copy and run:**
+- `docker-compose.example.yml`'s header comment still documented `http://your-host:8888/mcp/sse` — the pre-migration SSE endpoint, removed back in the v3.19.0 transport migration. Fixed to the real, current `/mcp` Streamable HTTP path.
+- `mnemolis_tool.py`'s `MNEMOLIS_URL` default (`http://mnemolis:8000`) and its own description field (which only mentioned port `8888`) were genuinely confusing read together — the default itself is correct (the container's internal port, for same-Docker-network deployments), but nothing explained why it differed from every `8888` reference in the README, which documents the host-mapped port for external access. Description rewritten to state both cases explicitly rather than changing a default that was already right.
+
+**A real documentation gap, not an error**: `FORECAST_TIMEZONE` — a third, genuinely separate timezone setting from `TZ`/`LOCAL_TIMEZONE`, controlling only what timezone Open-Meteo expresses forecast sunrise/sunset times in — had no mention anywhere in the README's Timezone configuration section. Added.
+
+**Debloated**: two Configuration table cells (`UPTIME_KUMA_TIMEOUT_SECONDS`, `SEARXNG_REQUEST_TIMEOUT_SECONDS`) had bug-history framing ("previously a hardcoded 30...") baked directly into the table description, duplicating — less cleanly — what the wiki's own `Configuration Reference` page already separates into a clean reference cell plus a linked Development Note. Trimmed both to state current behavior only.
+
+Checked and confirmed *not* stale, despite initially looking like candidates: the README's seven architecture diagrams (Voice Assistant Flow, Multi-Client Architecture, Snapshot Engine, Source Fusion, Query Decomposition, Conditional Query Detection, Kiwix Internal Flow) were suspected of duplicating the wiki's own per-mechanism diagrams — checked one directly (Query Decomposition) against the wiki's version and found they're complementary, not redundant: the README shows the general decision structure, the wiki shows a real worked trace. Left as-is.
+
+### Changed
+- Version bumped to 3.50.2
+
+**Total test count: 1241** (unchanged — this release is documentation and config-comment corrections only, no application code touched)
+
+---
+
 ## [3.50.1]
 
 ### Added — `last_flagged_result_excerpt`, Because an Investigation Just Hit a Wall the Schema Itself Built

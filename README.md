@@ -122,7 +122,7 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `FRESHRSS_API_PASSWORD` | FreshRSS API password | |
 | `FRESHRSS_MAX_ARTICLES` | Max articles to fetch | `10` |
 | `SEARXNG_URL` | SearXNG container URL | `http://searxng:8080` |
-| `SEARXNG_REQUEST_TIMEOUT_SECONDS` | How long Mnemolis itself waits for a SearXNG response — separate from SearXNG's own server-side `request_timeout`. Set this to match or exceed whatever you've configured on the SearXNG side, or the documented [SearXNG timeout fix](#searxng-request-timeout) won't fully take effect | `10` |
+| `SEARXNG_REQUEST_TIMEOUT_SECONDS` | How long Mnemolis itself waits for a SearXNG response — set to match or exceed SearXNG's own server-side `request_timeout`, see [SearXNG request timeout](#searxng-request-timeout) | `10` |
 | `WEB_NEWS_RAW_RESULT_BUDGET` | How many raw, unscored results to pull from each web search before confidence-aware scoring filters them down — the scoring pipeline's *input* budget, distinct from `WEB_NEWS_TOP_N`'s *output* cap below | `25` |
 | `QUERY_EXPANSION_MIN_WORDS` | Minimum query length (in words) for web search query expansion to trigger | `3` |
 | `KIWIX_ARTICLE_MAX_CHARS` | How many characters of a fetched Kiwix article to keep before scoring/fusion sees it — distinct from `FUSION_MAX_CHARS_PER_SOURCE`, which truncates the already-combined multi-source response | `3000` |
@@ -144,7 +144,7 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `UPTIME_KUMA_URL` | Uptime Kuma URL | _(blank — disables uptime source)_ |
 | `UPTIME_KUMA_USERNAME` | Uptime Kuma username | |
 | `UPTIME_KUMA_PASSWORD` | Uptime Kuma password | |
-| `UPTIME_KUMA_TIMEOUT_SECONDS` | How long the Uptime Kuma client waits before giving up — previously a hardcoded `30` with no way to tune it for a same-LAN service that should respond far faster | `10` |
+| `UPTIME_KUMA_TIMEOUT_SECONDS` | How long the Uptime Kuma client waits before giving up. Lower for faster fallback on a genuinely unreachable instance | `10` |
 | `HA_URL` | Home Assistant URL | _(blank — disables HA source)_ |
 | `HA_TOKEN` | Home Assistant long-lived access token | |
 | `LLM_URL` | LLM backend URL for intelligent routing | _(blank — disables LLM routing)_ |
@@ -221,7 +221,7 @@ Mnemolis uses a local LLM backend in five ways:
 
 1. **Source selection** — when `auto` is used and no keyword matches, the LLM picks the best source based on the query, returning multiple sources for complex multi-topic queries to trigger fusion automatically. Also biases toward including Kiwix for "everyone's talking about X"-style discourse framing — see [Routing](https://github.com/immortalbob/Mnemolis/wiki/Routing#the-discourse-framing-bias).
 2. **Book selection** — once routed to Kiwix, the LLM picks the best books from your catalog for the query, up to `KIWIX_MAX_BOOKS` (default 2)
-3. **Search term disambiguation** — for short, definitional Kiwix queries (e.g. "what is a galaxy"), the LLM generates 3 candidate disambiguation terms to break brand-name/homonym collisions. Each candidate is actually searched and scored against real Kiwix results rather than trusting a single guess — see [Kiwix Internal Flow](#kiwix-internal-flow).
+3. **Search term disambiguation** — for short, definitional Kiwix queries (e.g. "what is a galaxy"), the LLM generates 2-3 candidate disambiguation terms to break brand-name/homonym collisions. Each candidate is actually searched and scored against real Kiwix results rather than trusting a single guess — see [Kiwix Internal Flow](#kiwix-internal-flow).
 4. **Fusion source selection** — when `fusion` is used without specifying sources, the LLM picks the best 2-3 sources for the query
 5. **Web query expansion** — for web searches of 3+ words, the LLM generates one alternate phrasing so SearXNG is queried twice and results merged, scored against your original query — see [Confidence-aware fusion](#confidence-aware-fusion-web--news)
 
@@ -260,6 +260,8 @@ environment:
 ```
 
 Most deployments should only ever need to set `TZ`.
+
+**`FORECAST_TIMEZONE`** is a separate, third setting — it tells Open-Meteo what timezone to express forecast times in, and doesn't affect `TZ`/`LOCAL_TIMEZONE` or anything else. Defaults to `UTC` and is independent on purpose: it's a parameter sent to an external API, not something Mnemolis's own internal time logic depends on. Set it to match your actual timezone if you want forecast sunrise/sunset times to read correctly in local time.
 
 ### API key authentication (optional)
 
@@ -575,7 +577,7 @@ Detection is deliberately narrow — only a leading `"if X, Y"` / `"should X, Y"
         ▼               ▼
        No              Yes
         │               │
-        │      Ask LLM for 3 candidate
+        │      Ask LLM for 2-3 candidate
         │      disambiguation terms
         │      (broad field / specific
         │       synonym / bare word)
@@ -676,7 +678,7 @@ Shows all current routing cache entries — source and Kiwix book selection deci
 Clears all routing cache entries from memory and disk.
 
 ### `GET /backup`
-Downloads a tarball of all Mnemolis data — result cache, routing cache, query log, and snapshot history. See [Backup & Restore](#backup--restore) below.
+Downloads a tarball of all six Mnemolis data files — result cache, routing cache, query log, snapshot history, adversarial self-testing history, and temporal pattern detection history. See [Backup & Restore](#backup--restore) below.
 
 ### `GET /backup/info`
 Shows file sizes and last-modified times for each data file without creating a backup.
@@ -818,7 +820,7 @@ locust -f tests/locustfile.py --host http://your-host:8888
 
 See `BENCHMARKS.md` for documented results.
 
-1204 tests across every source module, the routing/decomposition/conditional-detection pipeline, caching, adversarial self-testing, cross-source temporal pattern detection, timezone conversion, and the FastAPI/MCP endpoints — see the test file list under [Project Structure](#project-structure) below for what each file actually covers, or the [Contributing](https://github.com/immortalbob/Mnemolis/wiki/Contributing) page for what a good test for this project looks like.
+1241 tests across every source module, the routing/decomposition/conditional-detection pipeline, caching, adversarial self-testing, cross-source temporal pattern detection, timezone conversion, and the FastAPI/MCP endpoints — see the test file list under [Project Structure](#project-structure) below for what each file actually covers, or the [Contributing](https://github.com/immortalbob/Mnemolis/wiki/Contributing) page for what a good test for this project looks like.
 
 ## Project Structure
 

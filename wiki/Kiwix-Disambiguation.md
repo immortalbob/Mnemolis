@@ -8,7 +8,7 @@ Mnemolis's answer to this is structural, not just a better prompt: generate seve
 
 Multi-candidate disambiguation only fires when **all four** of these are true:
 
-1. An LLM backend is configured at all
+1. An LLM backend is [configured at all](LLM-Client#what-happens-when-nothing-is-configured-at-all)
 2. The query is recognizably definitional — *"what is X"*, *"tell me about X"*, or one of the recognized colloquial forms (*"what's the deal with X"*, *"what's up with X"*)
 3. The book selected was Wikipedia specifically — encyclopedic ambiguity is the problem being solved here, not general Q&A ambiguity
 4. The actual search term, after stop-word stripping, is exactly **one word**

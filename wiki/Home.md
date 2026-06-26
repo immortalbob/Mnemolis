@@ -23,10 +23,10 @@ This wiki holds the deep-dive material that doesn't belong in the [README](https
 The actual path a query takes, roughly in the order it's useful to read them:
 
 - **[Sources](Sources)** — what each backend (`kiwix`, `forecast`, `news`, `web`, `uptime`, `ha`, `changes`) actually does, and where its data comes from
-- **[Routing](Routing)** — how a query gets from "what you typed" to "which source(s) answer it" — keyword matching, LLM-assisted selection, and the discourse-framing bias
-- **[LLM Client](LLM-Client)** — the dual Ollama-native/OpenAI-compatible client Routing and Disambiguation both depend on, how it fails safely when nothing's configured, and the real bug that used to silently break it for thinking models
+- **[Conditional Query Detection](Conditional-Query-Detection)** — the `"if X, Y"` feature: checked first, before decomposition, since a leading conditional is structurally one statement, not a flat list of independent intents
 - **[Query Decomposition](Query-Decomposition)** — how compound questions get split into independent sub-intents, including the mixed-conjunction and proper-noun-pair handling
-- **[Conditional Query Detection](Conditional-Query-Detection)** — the `"if X, Y"` feature: what it detects, what it deliberately doesn't, and how it avoids guessing when it shouldn't
+- **[Routing](Routing)** — how each resulting piece — a plain query, an extracted condition, or a decomposed sub-query — gets from "what you typed" to "which source(s) answer it": keyword matching, LLM-assisted selection, and the discourse-framing bias
+- **[LLM Client](LLM-Client)** — the dual Ollama-native/OpenAI-compatible client that Routing, Kiwix Disambiguation, and Query Expansion all depend on, how it fails safely when nothing's configured, and the real bug that used to silently break it for thinking models
 - **[Fusion](Fusion)** — how multiple sources get queried concurrently and merged into one coherent response
 - **[Snapshot Engine & Changes](Snapshot-Engine-and-Changes)** — the background scheduler that captures source state over time, diffs it, and answers "what changed since X"
 - **[Caching](Caching)** — the result cache and routing cache: what's cached, for how long, and how size is bounded
@@ -47,27 +47,27 @@ The actual path a query takes, roughly in the order it's useful to read them:
 
 - **[MCP Server](MCP-Server)** — the Model Context Protocol interface, how it differs from the REST API, and connecting Claude Desktop or other MCP clients
 - **[Health & Observability](Health-and-Observability)** — what `/health` and `/logs/stats` actually check, including fallback visibility and background job health
-- **[Troubleshooting](Troubleshooting)** — the real problems found and fixed this project's life, indexed by symptom (start here if something's broken)
-- **[Backup & Restore](Backup-and-Restore)** — the five data files, the Docker volume naming gotcha, and how to actually restore from a backup
-- **[Benchmarks](Benchmarks)** — real performance data across every major release, cold cache vs. warm cache
-- **[Adding a New Source](Adding-a-New-Source)** — the four files a contributor touches, and the one optional fifth (fallback chains)
 - **[Adversarial Self-Testing](Adversarial-Self-Testing)** — the background job that generates combinatorial edge-case queries from Mnemolis's own real vocabulary and flags structural anomalies for review
 - **[Cross-Source Temporal Pattern Detection](Cross-Source-Temporal-Pattern-Detection)** — the background job that mines `ha`/`uptime` event history for statistically-corrected, out-of-sample-validated timing relationships, with correlation-not-causation framing baked into every result
+- **[Troubleshooting](Troubleshooting)** — the real problems found and fixed this project's life, indexed by symptom (start here if something's broken)
+- **[Backup & Restore](Backup-and-Restore)** — the six data files, the Docker volume naming gotcha, and how to actually restore from a backup
+- **[Benchmarks](Benchmarks)** — real performance data across every major release, cold cache vs. warm cache
+- **[Adding a New Source](Adding-a-New-Source)** — the four files a contributor touches, and the one optional fifth (fallback chains)
 
 ## Design History — Real Bugs, Real Fixes
 
-These pages exist because the lessons are genuinely worth keeping, not just because something broke once. Each one is a real investigation — root cause traced, fix verified against production data, sometimes with a second, third, or fourth bug found while verifying the first fix actually worked.
+These pages exist because the lessons are genuinely worth keeping, not just because something broke once. Each one is a real investigation — root cause traced, fix verified against production data, sometimes with a second, third, or fourth bug found while verifying the first fix actually worked. Roughly chronological, earliest first:
 
-- **[The Proper-Noun-Pair Saga](The-Proper-Noun-Pair-Saga)** — five distinct bugs in one piece of logic protecting "Iran and Israel" style phrases from incorrect splitting
-- **[The Meaningful-Content-Filter Bugs](The-Meaningful-Content-Filter-Bugs)** — two real bugs in a different piece of decomposition, both the same shape: a generic filter discarding something a more specific check already knew was meaningful
-- **[The Discourse-Framing Investigation](The-Discourse-Framing-Investigation)** — why "everyone's obsessed with X" queries routed past Kiwix, and why the real fix needed four separate, sequential discoveries, not the two it looked like at first
 - **[The SearXNG Timeout Lesson](The-SearXNG-Timeout-Lesson)** — a correctly-edited config file that silently didn't take effect, and how `/health` caught it
+- **[The Proper-Noun-Pair Saga](The-Proper-Noun-Pair-Saga)** — five distinct bugs in one piece of logic protecting "Iran and Israel" style phrases from incorrect splitting
 - **[The Recursion Design Bug](The-Recursion-Design-Bug)** — how an over-cautious depth counter in conditional detection blocked its own necessary logic, and the simpler design that replaced it
-- **[The Fusion Merge Bugs](The-Fusion-Merge-Bugs)** — three sequential bugs in same-source result merging, plus the `[FUSION — FUSION]` double-header bug and a mixed-speed timeout crash
+- **[The Discourse-Framing Investigation](The-Discourse-Framing-Investigation)** — why "everyone's obsessed with X" queries routed past Kiwix, and why the real fix needed four separate, sequential discoveries, not the two it looked like at first
 - **[The MCP Transport Migration](The-MCP-Transport-Migration)** — a real external community audit that turned into a full transport migration, the upstream session-manager bug found before it shipped, and two more bugs a real client found the moment it actually tried to connect
+- **[The Adversarial Testing Production Bugs](The-Adversarial-Testing-Production-Bugs)** — everything Adversarial Self-Testing has actually found in Mnemolis itself: a four-bug fusion-merge chain, a false positive with a regex bug underneath it, a real backend timeout, and one investigation that ended without a root cause
+- **[The Meaningful-Content-Filter Bugs](The-Meaningful-Content-Filter-Bugs)** — two real bugs in a different piece of decomposition, found by the same real-traffic testing above, both the same shape: a generic filter discarding something a more specific check already knew was meaningful
+- **[The Fusion Merge Bugs](The-Fusion-Merge-Bugs)** — three sequential bugs in same-source result merging, plus the `[FUSION — FUSION]` double-header bug and a mixed-speed timeout crash
 - **[The Caching Concurrency Investigation](The-Caching-Concurrency-Investigation)** — synthetic test traffic silently polluting real caches, and a separate file-write race underneath both caches, found while researching whether to parallelize query expansion
 - **[The Latency Parallelization Investigation](The-Latency-Parallelization-Investigation)** — the single most cross-page-scattered story in the project's history: two structurally similar latency problems, one fixed first, one initially (and wrongly) left alone, and a real regression caught only by going back and checking that reasoning
-- **[The Adversarial Testing Production Bugs](The-Adversarial-Testing-Production-Bugs)** — everything Adversarial Self-Testing has actually found in Mnemolis itself: a four-bug fusion-merge chain, a false positive with a regex bug underneath it, a real backend timeout, and one investigation that ended without a root cause
 
 ## Reference
 

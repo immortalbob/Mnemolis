@@ -1,6 +1,6 @@
 # Query Expansion
 
-`web` search gets one extra trick `news` doesn't: for queries with enough words to benefit from it, Mnemolis asks the LLM for a genuinely differently-worded version of the same question, searches SearXNG with *both* phrasings, and merges the raw result pools before scoring decides what's actually relevant. The idea is straightforward — SearXNG's own ranking depends heavily on the exact words you used, and a real, equally-valid phrasing can surface results the first wording missed entirely.
+`web` search gets one extra trick `news` doesn't: for queries with enough words to benefit from it, Mnemolis asks the [LLM](LLM-Client) for a genuinely differently-worded version of the same question, searches SearXNG with *both* phrasings, and merges the raw result pools before scoring decides what's actually relevant. The idea is straightforward — SearXNG's own ranking depends heavily on the exact words you used, and a real, equally-valid phrasing can surface results the first wording missed entirely.
 
 ## When it actually triggers
 

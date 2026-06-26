@@ -11,7 +11,7 @@ services:
   # ---------------------------------------------------------------------------
   # Mnemolis — unified knowledge broker
   # REST API: http://your-host:8888
-  # MCP SSE:  http://your-host:8888/mcp/sse
+  # MCP:      http://your-host:8888/mcp  (Streamable HTTP)
   # API docs: http://your-host:8888/docs
   # ---------------------------------------------------------------------------
   mnemolis:

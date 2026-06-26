@@ -39,9 +39,9 @@ A deliberate, full read of every file in `app/`, top to bottom — specifically 
 
 `mcp_server.py`, `query_expansion.py`, and `searxng.py` were read with the same scrutiny and came back genuinely clean — a real, useful outcome in its own right, confirming prior work in those files holds up.
 
-## Documentation Restructuring — in progress
+## Documentation Restructuring — complete
 
-- 🔄 This wiki
+- ✅ This wiki — every page split between user-facing reference and dev-blog-style Design History, narrative moved out of mechanism pages into dedicated saga pages or same-page Development Notes sections
 - ⬜ The README stays lean going forward — deep-dive material gets added here instead of growing the README further
 
 ## Known limitations (tracked, accepted, not blocking)
