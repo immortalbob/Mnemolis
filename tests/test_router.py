@@ -1416,12 +1416,27 @@ class TestDedupeNestedFusionSections:
         # the same convention _merge_same_source() already uses.
         assert result.index("[NEWS —") < result.index("[WEB —")
 
-    def test_duplicate_content_does_not_leave_dangling_separators(self):
-        """Confirms the fix doesn't leave a visually confusing leftover
-        '---' artifact at the boundary between merged content blocks —
-        the original per-section '---' separator that used to sit
-        between two now-merged sections must not survive inside the
-        merged section's own body."""
+    def test_duplicate_content_uses_clean_separator_not_a_dangling_artifact(self):
+        """Confirms the merge produces exactly ONE clean item separator
+        between the two now-combined news blocks, not a leftover,
+        malformed artifact from the original outer split (e.g. a
+        doubled "---\\n\\n---\\n\\n" or a separator with mismatched
+        whitespace around it).
+
+        Updated to reflect a deliberate behavior change from the
+        per-group separator fix (see _dedupe_nested_fusion_sections' own
+        docstring): combining 2+ genuinely separate same-source pieces
+        under one header is, definitionally, a multi-item situation the
+        moment there are two of them — so the merged NEWS section's body
+        now correctly joins "First news block." and "Second news
+        block." with the real "\\n\\n---\\n\\n" item separator, the same
+        way fusion._merge_same_source() now does for the structurally
+        identical case. A prior, per-pair version of this fix produced a
+        bare "\\n\\n" here instead, which was itself part of the same
+        underlying bug this release closes — see
+        test_mixed_single_and_multi_item_chain_gets_consistent_separator
+        below for the case that actually exposes why the bare newline
+        was wrong."""
         nested_fusion_blob = (
             "[KIWIX — ENCYCLOPEDIC KNOWLEDGE — UNRELATED TO OTHER SECTIONS BELOW]\n"
             "Kiwix content.\n\n---\n\n"
@@ -1432,13 +1447,43 @@ class TestDedupeNestedFusionSections:
             ("fusion", nested_fusion_blob),
             ("news", "Second news block."),
         ])
-        # The merged NEWS section's body must join the two news blocks
-        # with a clean blank line, never a literal "---" in between —
-        # that would be visually indistinguishable from a real section
-        # boundary.
         news_section_start = result.index("[NEWS —")
         news_section_body = result[news_section_start:]
-        assert "---" not in news_section_body
+        # Exactly one real item separator between the two news blocks —
+        # not zero (a bare, ambiguous "\n\n"), and not a doubled or
+        # malformed artifact from the original outer split.
+        assert news_section_body.count("---") == 1
+        assert "First news block.\n\n---\n\nSecond news block." in news_section_body
+
+    def test_mixed_single_and_multi_item_chain_gets_consistent_separator(self):
+        """Regression test for the real bug this fix closes, at the
+        text-assembly level: a chain mixing single-item and multi-item
+        pieces under the SAME header must get a consistent "---"
+        separator at every boundary, not just the boundary adjacent to
+        the already-multi-item piece. Mirrors fusion.py's own
+        test_merge_same_source_mixed_single_and_multi_item_chain_gets_consistent_separator
+        — the sibling function had the byte-for-byte identical gap."""
+        text = (
+            "[WEB — LIVE WEB SEARCH RESULTS]\nUnrelated web section.\n\n---\n\n"
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\n"
+            "**Bitcoin Hits New High** (CoinDesk)\nPrice surged today.\n\n---\n\n"
+            "[FORECAST — WEATHER FORECAST FOR YOUR CONFIGURED HOME LOCATION]\nSunny today.\n\n---\n\n"
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\n"
+            "**Election Results Certified** (AP)\nOfficials confirmed the vote.\n\n---\n\n"
+            "[NEWS — RECENT NEWS HEADLINES — GENERAL, NOT LOCATION-SPECIFIC UNLESS STATED]\n"
+            "**Storm Approaches** (Weather.com)\nHeavy rain expected.\n\n---\n\n"
+            "**Flooding Reported** (Local News)\nSeveral roads closed."
+        )
+        result = self.dedupe(text)
+        assert result.count("[NEWS —") == 1
+        news_section_start = result.index("[NEWS —")
+        news_section_body = result[news_section_start:]
+        # The boundary between Bitcoin and Election must be the real
+        # item separator — a prior, per-pair version left this one as a
+        # bare "\n\n" since neither side of that specific pair was
+        # multi-item on its own.
+        assert "Price surged today.\n\n**Election" not in news_section_body
+        assert "Price surged today.\n\n---\n\n**Election" in news_section_body
 
     def test_three_or_more_duplicate_headers_all_merge_into_one(self):
         """Confirms the fix generalizes beyond exactly two duplicates —

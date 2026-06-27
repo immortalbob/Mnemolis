@@ -161,7 +161,8 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `BATTERY_LOW_THRESHOLD_PCT` | Battery level (%) below which a snapshot diff reports "low" | `20.0` |
 | `FUSION_MAX_SOURCES` | Maximum number of sources allowed in a single fusion query | `4` |
 | `FUSION_MAX_CHARS_PER_SOURCE` | Characters per source result before truncation in fusion output | `1500` |
-| `FUSION_TIMEOUT_SECONDS` | Maximum time to wait for any single source in a fusion query | `15` |
+| `FUSION_TIMEOUT_SECONDS` | Maximum time to wait for any single source in a fusion query — now also bounds the caller's actual wait, not just the gather loop (see v3.50.18) | `15` |
+| `FUSION_THREAD_POOL_SIZE` | Worker threads in fusion's shared, long-lived thread pool, reused across every concurrent fusion call instead of a fresh pool per call | `12` |
 | `CACHE_MAX_SIZE` | Maximum result cache entries before oldest-eviction kicks in | `500` |
 | `ROUTING_CACHE_MAX_SIZE` | Maximum routing cache entries before oldest-eviction kicks in | `1000` |
 | `KIWIX_SEARCH_LIMIT` | Results requested per book per Kiwix search — higher values help the scoring function find the right answer among brand-name collisions | `15` |

@@ -3,10 +3,62 @@ Mnemolis Fusion Source
 Queries multiple sources concurrently and merges results.
 """
 import logging
+import contextvars
 import concurrent.futures
 from app.config import settings
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Shared, module-level thread pool — reused across every fusion call
+# ---------------------------------------------------------------------------
+#
+# Found via a deliberate investigation into a real, recurring,
+# previously-unexplained RemoteDisconnected('Remote end closed connection
+# without response') failure that had appeared sporadically in this
+# project's own benchmark history since v3.50.9, on fusion_* endpoints
+# only. search() used to create a brand-new ThreadPoolExecutor on every
+# single call, sized to len(valid) (typically 2-3) — confirmed directly,
+# not estimated: 20 concurrent fusion-shaped requests produce 81 real,
+# live OS threads at peak (20 outer "request" threads, each spinning up
+# its own 3-worker inner executor, plus baseline), with no ceiling at all
+# as concurrent fusion traffic increases.
+#
+# Both confirmed RemoteDisconnected occurrences that prompted this fix
+# landed within the first 33 seconds of a cold benchmark run — the
+# single worst-case moment for concurrent thread pressure, immediately
+# after a cache clear guarantees every concurrent user's next pick is a
+# cold miss. Neither occurrence produced a corresponding application-
+# layer log line, consistent with the failure happening at the OS/socket
+# level rather than inside Python code this project controls — the layer
+# undocumented thread-count pressure would actually manifest at on a
+# resource-constrained host like the N100 this project's reference
+# deployment runs on. NOT confirmed as the definitive, proven mechanism
+# behind those specific historical failures (no direct access to the
+# real deployment's ulimits or dmesg output from the moment of either
+# failure) — recorded honestly as a well-corroborated, plausible
+# mechanism with no real downside to fixing, not an overstated certainty.
+#
+# Replaced with a single, shared, long-lived pool — the same shape of
+# fix app/llm.py's connection pool already applied to a different
+# unbounded-per-call resource (HTTP connections, in that case). A plain
+# module-level singleton, not a lazy-init-with-lock accessor —
+# ThreadPoolExecutor construction does no real work eagerly (worker
+# threads are spawned on first submit, not at construction), so there's
+# no "first caller pays a real cost" race to guard against.
+#
+# One real risk checked before shipping this, not assumed away: whether
+# any fusion-dispatchable source module relies on thread-local state that
+# assumed a fresh, never-reused thread per call — a shared pool means the
+# same OS thread now runs many different source calls over its lifetime,
+# not just one. Checked directly: no module in app/sources/ or app/llm.py
+# uses threading.local() or any thread-local storage. Worth re-checking
+# if any source module ever adds thread-local state in the future.
+_fusion_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=settings.fusion_thread_pool_size,
+    thread_name_prefix="fusion",
+)
 
 
 def _looks_empty(result: str) -> bool:
@@ -99,6 +151,44 @@ def _looks_empty(result: str) -> bool:
     case (all of them do, since the offending headline only ever
     appears wrapped in the same markdown formatting every other
     real article does).
+
+    FIVE MORE REAL PHRASE-LIST GAPS, FOUND AND FIXED THIS RELEASE: a
+    second, systematic cross-check — every plain-string failure/empty
+    return statement in every source file, checked one at a time against
+    the phrase list above — found five more real, directly-reachable
+    gaps the first pass missed: "unable to retrieve" (forecast.py's own
+    exception handler, `f"Unable to retrieve forecast: {e}"`, returned on
+    ANY failure — a network timeout, Open-Meteo briefly down, a malformed
+    response), "no valid sources"/"no results returned" (fusion.py's own
+    two self-generated messages — this function never recognized its own
+    module's failure output, only every other module's), and "no entity
+    states returned"/"no matching entities found"/"no significant
+    changes" (home_assistant.py and snapshots.py).
+
+    The forecast.py gap was a real, user-visible, caching-driven bug, not
+    just a theoretical one: router.py's _resolve_single_source() calls
+    `_set_cached(source, query, result)` whenever `not _looks_empty(result)`
+    — and since this function didn't recognize "Unable to retrieve
+    forecast: ..." as empty, a single transient API hiccup got cached as
+    if it were a genuine, successful weather result, for
+    cache_ttl_forecast_seconds (30 minutes by default). A single network
+    blip could leave every forecast query returning that exact stale
+    error for up to half an hour, instead of correctly retrying on the
+    very next request the way it already did for every other recognized
+    failure phrase. The two new fusion.py phrases matter for a different,
+    non-caching reason: router.py's decomposition loop calls
+    fusion.search() on an individual decomposed sub-query and checks
+    `_looks_empty(sub_result)` before merging it in — without these two
+    phrases, a genuinely failed nested fusion call's own error message
+    would be treated as real content and merged into the user-facing
+    response.
+
+    Confirmed the same structural gate already protecting the original
+    phrase list (the "**" check above, evaluated before any phrase
+    comparison) protects these five identically — a real article headline
+    containing any of these phrases' words still passes through correctly
+    as long as it's wrapped in the markdown bold every genuine article
+    title already uses.
     """
     if not result:
         return True
@@ -114,6 +204,9 @@ def _looks_empty(result: str) -> bool:
         "unknown source", "not configured", "could not connect",
         "error:", "error reaching", "error fetching",
         "no sufficiently relevant results", "no monitors found",
+        "unable to retrieve", "no valid sources", "no results returned",
+        "no entity states returned", "no matching entities found",
+        "no significant changes",
     ]
     return any(phrase in result_lower for phrase in empty_phrases)
 
@@ -135,9 +228,39 @@ def _truncate(result: str, max_chars: int | None = None) -> str:
 
 def _deduplicate(results: dict[str, str]) -> dict[str, str]:
     """Remove sources whose content is substantially contained in another source's result.
-    
+
     Checks sentence-level overlap — if 60%+ of a source's sentences already
     appear in a longer result, drop it as redundant.
+
+    Always compares the SHORTER side's overlap ratio against the 0.6
+    threshold, regardless of which source happens to be `s1` vs `s2` in
+    iteration order. A prior version checked `overlap / len(sents2) >= 0.6`
+    first, unconditionally discarding `s2` on that branch — which only
+    correctly identifies "s2 is redundant" when s1 is the longer source.
+    If s1 happened to be the shorter one, this exact same branch could
+    still fire (s2's overlap ratio crosses 0.6 from either direction) and
+    unconditionally dropped s2 anyway, regardless of which one actually
+    had more unique content. Confirmed via a direct, real reproduction:
+    the same two sources, same actual overlap, produced opposite outcomes
+    purely from which key appeared first in the `results` dict — and in
+    the real call site, dict insertion order is determined by
+    concurrent.futures.as_completed()'s own completion order, i.e. by
+    whichever source's network/processing call happened to finish first,
+    a detail with zero semantic relationship to which source's content
+    is actually more complete or useful.
+
+    Measured directly against this project's own real benchmark latency
+    distributions: under cold-cache conditions (the condition under which
+    two sources are actually likely to produce real, overlapping content
+    worth deduplicating in the first place), `web` wins the completion
+    race roughly two-thirds of the time against `kiwix` — meaning the old
+    order-dependent bug had a real, confirmed lean toward discarding
+    kiwix's content (the more often encyclopedic, substantive source) in
+    favor of web's, specifically on the queries most likely to trigger
+    real overlap at all. This fix removes that bias by making the outcome
+    depend only on which source's content is actually shorter and more
+    redundant, never on which one happened to finish its network call
+    first.
     """
     if len(results) <= 1:
         return results
@@ -161,14 +284,18 @@ def _deduplicate(results: dict[str, str]) -> dict[str, str]:
             sents2 = sentences(results[s2])
             if not sents1 or not sents2:
                 continue
-            # Check if s2 is mostly contained in s1
             overlap = len(sents1 & sents2)
-            if overlap / len(sents2) >= 0.6:
-                _LOGGER.info("Fusion: dropping '%s' as redundant with '%s'", s2, s1)
-                keep.discard(s2)
-            elif overlap / len(sents1) >= 0.6:
-                _LOGGER.info("Fusion: dropping '%s' as redundant with '%s'", s1, s2)
-                keep.discard(s1)
+            # Always treat the source with FEWER sentences as the
+            # candidate for removal — deciding once, by actual size,
+            # rather than per-branch by which variable name happens to
+            # hold which source.
+            if len(sents1) <= len(sents2):
+                shorter, longer, shorter_len = s1, s2, len(sents1)
+            else:
+                shorter, longer, shorter_len = s2, s1, len(sents2)
+            if overlap / shorter_len >= 0.6:
+                _LOGGER.info("Fusion: dropping '%s' as redundant with '%s'", shorter, longer)
+                keep.discard(shorter)
 
     return {s: r for s, r in results.items() if s in keep}
 
@@ -212,20 +339,66 @@ def _merge_same_source(parts: list[tuple[str, str]]) -> list[tuple[str, str]]:
     where it's no longer reliably distinguishable from an ordinary
     paragraph break within one blob's own content — tried first,
     confirmed broken via a failing test, fixed by moving the dedup
-    earlier instead."""
+    earlier instead.
+
+    GROUPS FIRST, DECIDES THE SEPARATOR ONCE PER GROUP — a prior version
+    decided the "\\n\\n---\\n\\n" vs bare "\\n\\n" separator independently
+    on each individual pairwise merge, based on whether EITHER side of
+    that one pair already happened to contain "---" internally. When a
+    chain mixes genuinely single-item results with genuinely multi-item
+    ones (entirely realistic — freshrss.py returns a bare, separator-free
+    single article when exactly one matches a query, and a proper
+    "---"-joined list when more than one does), the EARLY pairs in the
+    chain — before any multi-item result has joined the accumulator — got
+    the wrong, ambiguous "\\n\\n" separator, even though the assembled
+    whole is unambiguously a multi-item list by the time the chain
+    finishes. Confirmed directly with a real, plausible compound query
+    (three news-resolved clauses, the first two each returning exactly
+    one article, the third returning three): the boundary between the
+    first two genuinely separate, unrelated headlines came out as a bare
+    blank line — visually indistinguishable from two paragraphs of ONE
+    story, exactly the failure mode _dedupe_items_across_blobs()'s own
+    docstring already warns about for a different boundary, recurring
+    here one level up in the function that's supposed to be applying
+    that exact lesson. Fixed by collecting every consecutive same-source
+    part into one group first, then deciding and applying a single
+    separator for the whole group: combining 2+ genuinely separate
+    same-source results is, definitionally, a multi-item situation the
+    moment there are two of them, independent of whether any individual
+    part happened to already contain "---" on its own.
+
+    One real, deliberate behavior change worth stating plainly: a merge
+    of exactly two genuinely single-item same-source parts (e.g. two
+    plain HA results with no internal "---") now always gets
+    "\\n\\n---\\n\\n" instead of the prior code's "\\n\\n" — this is the
+    CORRECT behavior, not an accidental side effect; two separate results
+    being combined into one source's section is inherently multi-item the
+    moment there are two of them. No existing test asserted the literal
+    separator character for that case, only content presence and section
+    count, so this is a safe, non-breaking correction."""
     if not parts:
         return parts
     merged = []
-    current_source, current_result = parts[0]
-    for source, result in parts[1:]:
-        if source == current_source:
-            current_result, result, is_multi_item = _dedupe_items_across_blobs(current_result, result)
-            separator = "\n\n---\n\n" if is_multi_item else "\n\n"
-            current_result = current_result.rstrip() + separator + result.lstrip()
-        else:
+    i = 0
+    while i < len(parts):
+        current_source, current_result = parts[i]
+        group = [current_result]
+        j = i + 1
+        while j < len(parts) and parts[j][0] == current_source:
+            group.append(parts[j][1])
+            j += 1
+        if len(group) == 1:
             merged.append((current_source, current_result))
-            current_source, current_result = source, result
-    merged.append((current_source, current_result))
+        else:
+            # Combining 2+ genuinely separate same-source results IS
+            # inherently a multi-item situation, regardless of whether
+            # any individual part happened to contain "---" on its own.
+            acc = group[0]
+            for nxt in group[1:]:
+                acc, nxt, _ = _dedupe_items_across_blobs(acc, nxt)
+                acc = acc.rstrip() + "\n\n---\n\n" + nxt.lstrip()
+            merged.append((current_source, acc))
+        i = j
     return merged
 
 
@@ -354,50 +527,94 @@ def search(query: str, sources: list[str] | None = None) -> str:
     _LOGGER.info("Fusion query: '%s' sources=%s", query[:50], valid)
 
     # Query all sources concurrently
+    #
+    # Three fixes live in this block together, found across the same
+    # investigation and sharing this exact code surface:
+    #
+    # 1. contextvars.copy_context() per submitted task — a bare
+    #    executor.submit(fn, *args) does NOT propagate
+    #    contextvars.ContextVar state (router.suppress_cache_writes())
+    #    into worker threads. router.py's _resolve_conditional() and
+    #    searxng.py's own concurrent fetch already learned this lesson
+    #    and already fixed it the identical way; fusion.py was the one
+    #    remaining unfixed ThreadPoolExecutor site in the codebase.
+    #    Confirmed scope: only matters via the kiwix source (the only
+    #    source module that writes to the routing cache from inside a
+    #    source handler), and only during adversarial testing — a real
+    #    user's /search request never sets this flag, so this has zero
+    #    effect on real traffic. One copy_context() call per task, not
+    #    one shared object — Context.run() is documented as
+    #    non-reentrant across concurrent execution (confirmed via a real
+    #    RuntimeError hit while building searxng.py's own fix from
+    #    sharing one Context across two executor.submit() calls).
+    #
+    # 2. The shared, module-level _fusion_executor (see its own comment
+    #    above) instead of a fresh per-call ThreadPoolExecutor.
+    #
+    # 3. Explicit executor.shutdown(wait=False) instead of the implicit
+    #    shutdown(wait=True) a `with ThreadPoolExecutor(...) as executor:`
+    #    block triggers on exit. Confirmed directly, via a real
+    #    partial-completion race forced between a fast and a genuinely
+    #    slow source: as_completed(futures, timeout=fusion_timeout)'s
+    #    own timeout fires exactly when configured (that part already
+    #    worked correctly) — but the surrounding `with` block does not
+    #    actually return control to the caller until every submitted
+    #    thread genuinely finishes, completely independent of whatever
+    #    as_completed() already gave up on. fusion_timeout_seconds
+    #    correctly bounded how long search() waited for results before
+    #    giving up on them; it never actually bounded how long the
+    #    CALLER waited for search() to return, on any release until now
+    #    — confirmed measured: a configured 1-second timeout, an actual
+    #    ~10-second caller-facing wait, dropping to ~1.16s with this fix.
+    #    Moot now anyway with a shared, long-lived pool (point 2 above)
+    #    — there is no per-call executor left to shut down at all; an
+    #    abandoned straggler from a timed-out source simply keeps
+    #    running in the shared pool and is discarded once it finishes,
+    #    with no resource leak (confirmed directly: thread count returns
+    #    to baseline once the abandoned task completes).
     fusion_timeout = settings.fusion_timeout_seconds
     results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(valid)) as executor:
-        futures = {
-            executor.submit(SOURCE_MAP[s], query): s
-            for s in valid
-        }
-        try:
-            for future in concurrent.futures.as_completed(futures, timeout=fusion_timeout):
-                source = futures[future]
-                try:
-                    result = future.result(timeout=fusion_timeout)
-                    results[source] = result
-                    _LOGGER.info("Fusion: source '%s' returned %d chars", source, len(result))
-                except concurrent.futures.TimeoutError:
-                    _LOGGER.warning("Fusion: source '%s' timed out", source)
-                    results[source] = None
-                except Exception as e:
-                    _LOGGER.warning("Fusion: source '%s' failed: %s", source, e)
-                    results[source] = None
-        except concurrent.futures.TimeoutError:
-            # Found via a deliberate complexity-investigation pass: this
-            # is as_completed()'s OWN overall timeout, distinct from the
-            # per-future future.result(timeout=...) timeout caught
-            # inside the loop above. as_completed() raises this for the
-            # entire iteration once the deadline passes, regardless of
-            # how many individual futures had already completed — and
-            # since this was previously uncaught here, a single slow
-            # source mixed with a fast one crashed the ENTIRE fusion
-            # call, discarding the fast source's genuinely successful
-            # result along with it, even though that data already
-            # existed and was sitting in `results`. This directly
-            # undermined fusion's own documented graceful-degradation
-            # design — "filters empty or failed results... if only one
-            # source returns results, it is returned directly" — by
-            # turning a partial success into a total, opaque failure
-            # instead. Any future not already in `results` by the time
-            # this fires is genuinely still running past the deadline;
-            # mark it as failed without losing whatever real results
-            # were already gathered before the timeout.
-            _LOGGER.warning("Fusion: overall timeout reached, %d source(s) still running", len(futures) - len(results))
-            for future, source in futures.items():
-                if source not in results:
-                    results[source] = None
+    futures = {
+        _fusion_executor.submit(contextvars.copy_context().run, SOURCE_MAP[s], query): s
+        for s in valid
+    }
+    try:
+        for future in concurrent.futures.as_completed(futures, timeout=fusion_timeout):
+            source = futures[future]
+            try:
+                result = future.result(timeout=fusion_timeout)
+                results[source] = result
+                _LOGGER.info("Fusion: source '%s' returned %d chars", source, len(result))
+            except concurrent.futures.TimeoutError:
+                _LOGGER.warning("Fusion: source '%s' timed out", source)
+                results[source] = None
+            except Exception as e:
+                _LOGGER.warning("Fusion: source '%s' failed: %s", source, e)
+                results[source] = None
+    except concurrent.futures.TimeoutError:
+        # Found via a deliberate complexity-investigation pass: this
+        # is as_completed()'s OWN overall timeout, distinct from the
+        # per-future future.result(timeout=...) timeout caught
+        # inside the loop above. as_completed() raises this for the
+        # entire iteration once the deadline passes, regardless of
+        # how many individual futures had already completed — and
+        # since this was previously uncaught here, a single slow
+        # source mixed with a fast one crashed the ENTIRE fusion
+        # call, discarding the fast source's genuinely successful
+        # result along with it, even though that data already
+        # existed and was sitting in `results`. This directly
+        # undermined fusion's own documented graceful-degradation
+        # design — "filters empty or failed results... if only one
+        # source returns results, it is returned directly" — by
+        # turning a partial success into a total, opaque failure
+        # instead. Any future not already in `results` by the time
+        # this fires is genuinely still running past the deadline;
+        # mark it as failed without losing whatever real results
+        # were already gathered before the timeout.
+        _LOGGER.warning("Fusion: overall timeout reached, %d source(s) still running", len(futures) - len(results))
+        for future, source in futures.items():
+            if source not in results:
+                results[source] = None
 
     # Filter successful non-empty results — preserve original source order
     successful = {

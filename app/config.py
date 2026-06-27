@@ -280,6 +280,22 @@ class Settings(BaseSettings):
     fusion_max_chars_per_source: int = 1500
     fusion_timeout_seconds: int = 15
 
+    # How many worker threads the shared, module-level fusion executor
+    # keeps available across every concurrent fusion call. Found via a
+    # deliberate investigation into a real, recurring, previously-
+    # unexplained RemoteDisconnected failure: fusion.py used to spin up
+    # a brand-new, uncapped ThreadPoolExecutor on every single call
+    # (sized to len(valid), typically 2-3) — confirmed directly that 20
+    # concurrent fusion-shaped requests produce 81 real, live OS threads
+    # at peak, with no ceiling at all as concurrent fusion traffic
+    # increases. Replaced with a single, shared, long-lived pool — the
+    # same shape of fix app/llm.py's connection pool already applied to
+    # a different unbounded-per-call resource (HTTP connections). Sized
+    # generously relative to FUSION_MAX_SOURCES' own default (4) times a
+    # handful of genuinely concurrent in-flight fusion requests —
+    # bounding the ceiling, not throttling realistic load.
+    fusion_thread_pool_size: int = 12
+
     # -------------------------------------------------------------------
     # Caching — result cache, routing cache, and per-source TTLs
     # -------------------------------------------------------------------

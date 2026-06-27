@@ -2221,16 +2221,41 @@ def _dedupe_nested_fusion_sections(text: str) -> str:
     # a real, earlier duplicate. Fixed by moving the dedup here
     # instead — the same fix applied to fusion._merge_same_source()'s
     # own join, for the same real reason.
+    #
+    # Groups every piece by header FIRST, then decides the separator
+    # ONCE per header group — mirroring the identical fix applied to
+    # fusion._merge_same_source(). A prior version decided
+    # "\n\n---\n\n" vs bare "\n\n" independently on each individual
+    # pairwise merge, based on whether either side of that one pair
+    # already happened to contain "---" internally — meaning the EARLY
+    # pairs in a chain mixing single-item and multi-item content got
+    # the wrong, ambiguous "\n\n" separator even though the assembled
+    # whole is unambiguously multi-item by the time the chain finishes.
+    # Confirmed via the analogous reconstruction at the text-assembly
+    # level: three [NEWS — ...] sections among other real headers, the
+    # first two single-item, the third multi-item — the merged
+    # section's first two items got joined with a bare "\n\n", only the
+    # rest correctly getting "---". Combining 2+ genuinely separate
+    # pieces under the same header is, definitionally, a multi-item
+    # situation the moment there are two of them, independent of
+    # whether any individual piece happened to already contain "---"
+    # on its own.
+    groups = {}
+    for header, content in pieces:
+        groups.setdefault(header, []).append(content.strip("\n"))
+
     seen_order = []
     merged_content = {}
-    for header, content in pieces:
-        if header not in merged_content:
-            seen_order.append(header)
-            merged_content[header] = content.strip("\n")
+    for header, contents in groups.items():
+        seen_order.append(header)
+        if len(contents) == 1:
+            merged_content[header] = contents[0]
         else:
-            existing, new, is_multi_item = fusion._dedupe_items_across_blobs(merged_content[header], content.strip("\n"))
-            separator = "\n\n---\n\n" if is_multi_item else "\n\n"
-            merged_content[header] = existing.rstrip() + separator + new.lstrip()
+            acc = contents[0]
+            for nxt in contents[1:]:
+                acc, nxt, _ = fusion._dedupe_items_across_blobs(acc, nxt)
+                acc = acc.rstrip() + "\n\n---\n\n" + nxt.lstrip()
+            merged_content[header] = acc
 
     rebuilt = preamble + ("\n\n---\n\n".join(
         f"{header}\n{merged_content[header]}" for header in seen_order

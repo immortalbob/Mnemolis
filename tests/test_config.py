@@ -32,7 +32,7 @@ class TestDefaultValues:
             "FORECAST_PRECIP_THRESHOLD_PCT", "FORECAST_WIND_THRESHOLD_MPH",
             "FORECAST_TEMP_CHANGE_THRESHOLD", "BATTERY_LOW_THRESHOLD_PCT",
             "FUSION_MAX_SOURCES", "FUSION_MAX_CHARS_PER_SOURCE",
-            "FUSION_TIMEOUT_SECONDS", "CACHE_MAX_SIZE", "KIWIX_SEARCH_LIMIT",
+            "FUSION_TIMEOUT_SECONDS", "FUSION_THREAD_POOL_SIZE", "CACHE_MAX_SIZE", "KIWIX_SEARCH_LIMIT",
             "KIWIX_MAX_BOOKS", "WEB_NEWS_SCORE_THRESHOLD", "WEB_NEWS_TOP_N",
             "LLM_CONNECTION_POOL_SIZE", "LLM_KEEP_ALIVE", "SEARXNG_REQUEST_TIMEOUT_SECONDS",
         ]
@@ -165,6 +165,10 @@ class TestDefaultValues:
     def test_fusion_timeout_seconds_default(self):
         s = self._bare_settings()
         assert s.fusion_timeout_seconds == 15
+
+    def test_fusion_thread_pool_size_default(self):
+        s = self._bare_settings()
+        assert s.fusion_thread_pool_size == 12
 
     def test_cache_max_size_default(self):
         s = self._bare_settings()

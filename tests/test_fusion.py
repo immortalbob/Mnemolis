@@ -217,6 +217,72 @@ class TestFusionFailureHandling:
         assert "should never be seen" not in result
 
 
+class TestFusionSharedExecutor:
+    """Regression tests for replacing fusion.py's per-call
+    ThreadPoolExecutor with a single, shared, module-level pool — see
+    fusion.py's own module-level comment on _fusion_executor for the
+    full investigation (a real, recurring RemoteDisconnected failure
+    correlated with unbounded thread creation under concurrent load)."""
+
+    def test_concurrent_fusion_calls_reuse_the_shared_pool_not_create_unbounded_threads(self):
+        """Confirms multiple concurrent fusion.search() calls don't
+        each spin up their own fresh executor — the real, confirmed
+        bug this fix closes (20 concurrent fusion-shaped calls used to
+        produce 81 real OS threads at peak, scaling linearly with no
+        ceiling). Scaled down from the design doc's own 20-caller
+        reproduction for test speed, while still proving the same
+        property: thread count stays bounded by the shared pool's own
+        configured size, not by the number of concurrent callers."""
+        import threading
+        import time
+        from app.sources import fusion
+
+        def slow_source(q):
+            time.sleep(0.1)
+            return "Result content."
+
+        source_map = {"kiwix": slow_source, "web": slow_source}
+        baseline = threading.active_count()
+
+        threads = []
+        with patch("app.router.SOURCE_MAP", source_map):
+            for _ in range(8):
+                t = threading.Thread(target=fusion.search, args=("q", ["kiwix", "web"]))
+                threads.append(t)
+                t.start()
+            time.sleep(0.05)  # let everything get mid-flight
+            peak = threading.active_count()
+            for t in threads:
+                t.join()
+
+        # 8 concurrent "request" threads, each fanning out to 2 sources,
+        # would be 16+ fresh worker threads under the old per-call
+        # executor pattern, on top of the 8 request threads themselves
+        # (24+ total). With a shared pool capped at
+        # settings.fusion_thread_pool_size (12 by default), worker
+        # thread count itself is bounded regardless of how many
+        # concurrent callers there are — confirmed by checking the
+        # actual ceiling rather than asserting an exact number (real
+        # thread counts vary slightly by interpreter/test-runner
+        # baseline).
+        from app.config import settings
+        # 8 request threads + at most fusion_thread_pool_size shared
+        # workers + baseline — comfortably less than what 8 independent
+        # per-call executors (2-3 workers each) would have produced.
+        assert peak <= baseline + 8 + settings.fusion_thread_pool_size
+
+    def test_fusion_thread_pool_size_setting_is_read(self):
+        """Confirms the shared executor is actually sized from
+        settings.fusion_thread_pool_size, not a hardcoded value —
+        the module-level _fusion_executor reflects the configured max
+        worker count."""
+        from app.sources import fusion
+        from app.config import settings
+        assert fusion._fusion_executor._max_workers == settings.fusion_thread_pool_size
+
+
+
+
 class TestFusionCacheKey:
     """Tests for fusion cache key behavior in router."""
 
@@ -437,6 +503,65 @@ class TestFusionDeduplicate:
         deduped = self.deduplicate(results)
         assert "forecast" in deduped
 
+    def test_shorter_more_redundant_source_dropped_regardless_of_dict_order(self):
+        """Regression test for a real, order-dependent bug: a prior
+        version's first branch (overlap / len(sents2) >= 0.6) only
+        correctly identified "s2 is redundant" when s1 was the LONGER
+        source — if s1 happened to be the shorter one, that same branch
+        could still fire and unconditionally dropped s2 anyway,
+        regardless of which one actually had more unique content.
+        Confirmed directly: the same two pieces of content, same actual
+        overlap, produced opposite outcomes purely from which key
+        appeared first when Python iterates the dict — and in the real
+        call site, dict insertion order is determined by
+        as_completed()'s own completion order (whichever source's
+        network call happened to finish first), a detail with zero
+        semantic relationship to which source's content is more
+        complete. This test confirms the fix: the same, correct
+        (longer, more complete) source survives regardless of dict
+        ordering."""
+        short = " ".join(
+            f"Short overlapping sentence number {i} appears in both sources here." for i in range(5)
+        )
+        long_with_extra = short + " " + " ".join(
+            f"This additional unique sentence number {i} only appears in the longer source." for i in range(10)
+        )
+
+        # Order 1: shorter source first
+        deduped_a = self.deduplicate({"a": short, "b": long_with_extra})
+        # Order 2: identical content, reversed key order
+        deduped_b = self.deduplicate({"b": long_with_extra, "a": short})
+
+        # Both orderings must keep the LONGER, more complete source and
+        # drop the shorter, more redundant one — never the reverse, and
+        # never different outcomes depending on dict ordering.
+        assert "b" in deduped_a and "a" not in deduped_a
+        assert "b" in deduped_b and "a" not in deduped_b
+
+    def test_real_world_unequal_length_overlap_drops_the_shorter_side(self):
+        """A second, independent confirmation using meaningfully
+        different source content (not just one source padded with
+        extra sentences) — the case the existing test suite's only
+        prior overlap test (test_duplicate_content_one_dropped) never
+        covered, since that test used byte-for-byte identical content
+        for both sides, where "which one survives" is genuinely
+        immaterial and the test only asserted len(deduped) == 1."""
+        kiwix_long = " ".join([
+            "Nitrogen is a chemical element with the symbol N and atomic number seven.",
+            "It was first discovered and isolated by Scottish physician Daniel Rutherford in 1772.",
+            "Nitrogen is a member of the pnictogen group on the periodic table.",
+            "It is a common element in the universe, estimated at seventh in total abundance.",
+            "At standard temperature and pressure, two atoms bond to form nitrogen gas.",
+            "This colorless and mostly inert diatomic gas makes up about 78 percent of the atmosphere.",
+        ])
+        web_short = " ".join([
+            "Nitrogen is a chemical element with the symbol N and atomic number seven.",
+            "It was first discovered and isolated by Scottish physician Daniel Rutherford in 1772.",
+        ])
+        deduped = self.deduplicate({"web": web_short, "kiwix": kiwix_long})
+        assert "kiwix" in deduped
+        assert "web" not in deduped
+
 
 class TestFusionMergeSameSource:
     """Tests for _merge_same_source consecutive merging."""
@@ -594,15 +719,55 @@ class TestDedupeItemsAcrossBlobs:
         # items, not a bare double-newline.
         assert "Content B\n\n---\n\n**Headline C**" in result
 
-    def test_merge_same_source_still_uses_plain_join_for_non_multi_item_content(self):
-        """Confirms plain, non-list content (the pre-existing,
-        already-tested test_same_source_merged scenario above) still
-        uses the original bare "\\n\\n" join, unaffected by this fix."""
+    def test_merge_same_source_uses_list_separator_even_for_two_single_item_parts(self):
+        """Updated regression test reflecting a deliberate behavior
+        change from the per-group separator fix (see _merge_same_source's
+        own docstring): combining 2+ genuinely separate same-source
+        results is, definitionally, a multi-item situation the moment
+        there are two of them — independent of whether either individual
+        part happened to already contain "---" internally. A prior
+        version decided the separator per PAIR rather than once per
+        GROUP, which happened to produce a bare "\\n\\n" for exactly this
+        two-single-item case — but that was itself part of the same
+        underlying bug, just not visible until a third, genuinely
+        multi-item part joined the chain and exposed the inconsistency.
+        This is the corrected, intentional behavior, not a regression."""
         from app.sources.fusion import _merge_same_source
         parts = [("ha", "Indoor sensors result."), ("ha", "Door locks result.")]
         merged = _merge_same_source(parts)
-        assert merged[0][1] == "Indoor sensors result.\n\nDoor locks result."
-        assert "---" not in merged[0][1]
+        assert merged[0][1] == "Indoor sensors result.\n\n---\n\nDoor locks result."
+
+    def test_merge_same_source_mixed_single_and_multi_item_chain_gets_consistent_separator(self):
+        """Regression test for the real bug this fix closes: a chain
+        mixing single-item and multi-item same-source parts must get a
+        consistent "---" separator at EVERY boundary, not just the
+        boundary adjacent to the multi-item part. Mirrors the real,
+        plausible compound-query reconstruction from the design doc —
+        three news-resolved clauses, the first two each a single
+        article, the third a genuine multi-item list."""
+        from app.sources.fusion import _merge_same_source
+        parts = [
+            ("news", "**Bitcoin Hits New High** (CoinDesk)\nPrice surged today amid market optimism."),
+            ("news", "**Election Results Certified** (AP)\nOfficials confirmed the final vote count."),
+            ("news", (
+                "**Storm Approaches** (Weather.com)\nHeavy rain expected.\n\n---\n\n"
+                "**Flooding Reported** (Local News)\nSeveral roads closed.\n\n---\n\n"
+                "**Cleanup Underway** (City News)\nCrews are responding."
+            )),
+        ]
+        merged = _merge_same_source(parts)
+        assert len(merged) == 1
+        result = merged[0][1]
+        # Every boundary within the merged group must be the real item
+        # separator — including the one between Bitcoin and Election,
+        # which a prior, per-pair version left as a bare "\n\n" since
+        # neither side of that specific pair was multi-item on its own.
+        assert "Bitcoin Hits New High" in result
+        assert "Election Results Certified" in result
+        assert "Storm Approaches" in result
+        # The bare-newline boundary the bug produced — confirmed absent.
+        assert "optimism.\n\n**Election" not in result
+        assert "optimism.\n\n---\n\n**Election" in result
 
 
 class TestLooksEmpty:
@@ -711,4 +876,172 @@ class TestLooksEmpty:
         incorrectly treated it as real, successful content in a fusion
         query that includes `uptime` alongside other sources."""
         assert self.check("No monitors found in Uptime Kuma.") is True
+
+    def test_unable_to_retrieve_forecast_is_empty(self):
+        """Regression test for a real, second-pass phrase-list gap:
+        forecast.py's own exception handler returns
+        f"Unable to retrieve forecast: {e}" on ANY failure (a network
+        timeout, Open-Meteo briefly down, a malformed response). Before
+        this fix, router.py's _resolve_single_source() would cache this
+        error message as if it were a genuine, successful weather
+        result for cache_ttl_forecast_seconds (30 minutes by default) —
+        a single transient API hiccup leaving every subsequent forecast
+        query stale for up to half an hour instead of correctly
+        retrying on the next request."""
+        assert self.check("Unable to retrieve forecast: Connection timed out") is True
+
+    def test_no_valid_sources_for_fusion_is_empty(self):
+        """Regression test for fusion.py's own self-generated message
+        never being recognized by its own _looks_empty() — found
+        because this function previously only recognized every OTHER
+        module's failure output, never its own. Matters when
+        router.py's decomposition loop calls fusion.search() on an
+        individual decomposed sub-query and checks _looks_empty() on
+        the result before merging it in."""
+        assert self.check("No valid sources specified for fusion query.") is True
+
+    def test_no_results_returned_from_fusion_is_empty(self):
+        """The second of fusion.py's own two self-generated messages,
+        same root cause as the test above."""
+        assert self.check("No results returned from any source in fusion query.") is True
+
+    def test_no_entity_states_returned_is_empty(self):
+        """Regression test for a home_assistant.py phrase missed by
+        the first phrase-list pass."""
+        assert self.check("No entity states returned from Home Assistant.") is True
+
+    def test_no_matching_entities_found_is_empty(self):
+        """The second of home_assistant.py's two missed phrases."""
+        assert self.check("No matching entities found in Home Assistant for that query.") is True
+
+    def test_no_significant_changes_is_empty(self):
+        """Regression test for the snapshots.py phrase missed by the
+        first phrase-list pass."""
+        assert self.check("No significant changes detected in the last 24 hours.") is True
+
+    def test_new_phrases_still_protected_by_markdown_bold_gate(self):
+        """Confirms the same structural gate already protecting the
+        original phrase list (the "**" check, evaluated before any
+        phrase comparison) protects all five newly-added phrases
+        identically — a real article headline containing any of these
+        phrases' words must still pass through correctly as long as
+        it's wrapped in the markdown bold every genuine article title
+        already uses."""
+        assert self.check("**Scientists Unable To Retrieve Lost Satellite Data** (TechNews)") is False
+        assert self.check("**No Significant Changes Found in Annual Budget Review** (LocalNews)") is False
+        assert self.check("**Company Reports No Valid Sources For Rumor, Denies Claim** (BusinessWire)") is False
+        assert self.check("**No Entity States Returned in New Sci-Fi Show Finale** (Entertainment)") is False
+
+
+class TestFusionContextVarPropagation:
+    """Regression tests for the ContextVar propagation gap in
+    search()'s concurrent dispatch — see fusion.py's own module-level
+    comment on _fusion_executor for the full mechanism writeup.
+
+    A bare executor.submit(fn, *args) does NOT propagate
+    contextvars.ContextVar state (router.suppress_cache_writes()) into
+    worker threads. router.py's _resolve_conditional() and searxng.py's
+    own concurrent fetch already learned this lesson and already fixed
+    it the identical way (contextvars.copy_context().run(fn, *args));
+    fusion.py was the one remaining unfixed ThreadPoolExecutor site.
+    Modeled directly on the existing precedent:
+    TestConditionalRemainderConcurrency.test_suppress_cache_writes_propagates_into_both_worker_threads
+    in tests/test_router.py."""
+
+    def test_suppress_cache_writes_propagates_into_fusion_worker_threads(self):
+        """The actual regression test: a fake 'kiwix' handler makes a
+        real _set_routing() write from inside fusion.search()'s real
+        executor. With suppress_cache_writes() active in the calling
+        thread, that write must be suppressed even though it happens
+        inside a worker thread, not the calling thread itself — this
+        is the test that would have caught the gap before it shipped,
+        the same way the equivalent test already does for router.py's
+        and searxng.py's own fixed sites."""
+        import app.router as router_module
+        from app.sources import fusion
+
+        original_cache = dict(router_module._routing_cache)
+        router_module._routing_cache.clear()
+        try:
+            def fake_kiwix_with_real_cache_write(query):
+                router_module._set_routing(f"books:{query}", "some_decision")
+                return "Kiwix result content."
+
+            source_map = {
+                "kiwix": fake_kiwix_with_real_cache_write,
+                "web": lambda q: "Web result content.",
+            }
+            with patch("app.router.SOURCE_MAP", source_map):
+                with router_module.suppress_cache_writes():
+                    fusion.search("test query", ["kiwix", "web"])
+
+            assert len(router_module._routing_cache) == 0, (
+                "a write leaked through fusion's worker thread despite "
+                "suppress_cache_writes() being active in the calling thread"
+            )
+        finally:
+            router_module._routing_cache.clear()
+            router_module._routing_cache.update(original_cache)
+
+    def test_normal_unsuppressed_fusion_call_still_caches_correctly(self):
+        """The flip-side confirmation: the identical call WITHOUT
+        suppression active still caches normally — proving the fix
+        doesn't accidentally suppress writes unconditionally."""
+        import app.router as router_module
+        from app.sources import fusion
+
+        original_cache = dict(router_module._routing_cache)
+        router_module._routing_cache.clear()
+        try:
+            def fake_kiwix_with_real_cache_write(query):
+                router_module._set_routing(f"books:{query}", "some_decision")
+                return "Kiwix result content."
+
+            source_map = {
+                "kiwix": fake_kiwix_with_real_cache_write,
+                "web": lambda q: "Web result content.",
+            }
+            with patch("app.router.SOURCE_MAP", source_map):
+                fusion.search("test query", ["kiwix", "web"])
+
+            assert len(router_module._routing_cache) == 1
+        finally:
+            router_module._routing_cache.clear()
+            router_module._routing_cache.update(original_cache)
+
+    def test_path_c_reproduction_discourse_framing_no_conjunction(self):
+        """A direct reproduction of the specific, now-quantified-as-
+        common leak shape (Part 2's "Path C" in the design doc): a
+        discourse-framing phrase sharing a clause with a real keyword,
+        no conjunction, routed through the real, unmocked
+        route_with_source() under suppress_cache_writes(). Confirms
+        this concrete, common query shape — not just the synthetic
+        isolated-mechanism case above — is actually closed."""
+        import app.router as router_module
+
+        original_cache = dict(router_module._routing_cache)
+        router_module._routing_cache.clear()
+        try:
+            def fake_kiwix_with_real_cache_write(query):
+                router_module._set_routing(f"books:{query}", "some_decision")
+                return "Kiwix result content."
+
+            source_map = {
+                "kiwix": fake_kiwix_with_real_cache_write,
+                "news": lambda q: "**Headline** (AP)\nNews content.",
+            }
+            with patch("app.router.SOURCE_MAP", source_map):
+                with router_module.suppress_cache_writes():
+                    router_module.route_with_source(
+                        "everyone keeps talking about the news today", "auto"
+                    )
+
+            assert len(router_module._routing_cache) == 0, (
+                "Path C's discourse-framing-no-conjunction shape leaked "
+                "a routing-cache write despite suppress_cache_writes() "
+                "being active"
+            )
+        finally:
+            router_module._routing_cache.clear()
+            router_module._routing_cache.update(original_cache)
 
