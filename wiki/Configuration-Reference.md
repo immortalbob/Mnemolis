@@ -59,7 +59,8 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 |----------|---------|-------|
 | `FUSION_MAX_SOURCES` | `4` | Hard cap on how many sources one [fusion](Fusion) query can touch. Setting this to `0` correctly returns "no valid sources specified" rather than crashing |
 | `FUSION_MAX_CHARS_PER_SOURCE` | `1500` | Per-source truncation before merging |
-| `FUSION_TIMEOUT_SECONDS` | `15` | How long any single source gets before fusion moves on without it |
+| `FUSION_TIMEOUT_SECONDS` | `15` | How long any single source gets before fusion moves on without it — as of v3.50.18 this now genuinely bounds how long the *caller* waits too, not just how long the internal gather loop waits before giving up on a straggler |
+| `FUSION_THREAD_POOL_SIZE` | `12` | Worker threads in fusion's shared, long-lived thread pool — reused across every concurrent fusion call rather than a fresh pool spun up and torn down per call. See [Fusion](Fusion#concurrency-and-thread-pool-sizing) |
 
 ## Caching
 
