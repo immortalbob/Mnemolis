@@ -201,6 +201,62 @@ class Settings(BaseSettings):
     llm_model: str = "qwen3:8b"
     llm_api_type: str = "ollama"  # "ollama" (native) or "openai" (OpenAI-compatible)
 
+    # How many pooled HTTP connections app/llm.py's persistent Session
+    # keeps open to the LLM backend at once. requests' own library
+    # default (10) is sized for general-purpose use, not for this
+    # project's actual concurrency shape — Starlette's own default
+    # thread-pool limit for synchronous routes is 40 (confirmed
+    # directly: anyio.to_thread.current_default_thread_limiter().
+    # total_tokens), and a real 20-concurrent-user Locust benchmark can
+    # plausibly have several of those threads simultaneously mid-LLM-call
+    # at once. Sized at 20 — covers every concurrent Locust user being
+    # simultaneously mid-call (this benchmark's realistic worst case)
+    # without being wastefully large for a real single-household
+    # deployment, where this many genuinely simultaneous LLM calls would
+    # be unusual. Once concurrent calls exceed this size, requests
+    # itself transparently falls back to opening additional, unpooled
+    # connections rather than failing — this setting controls how many
+    # of those connections stay around for reuse, not a hard concurrency
+    # ceiling.
+    llm_connection_pool_size: int = 20
+
+    # How long Ollama keeps qwen3:8b resident in VRAM after Mnemolis's
+    # last call to it, passed as the `keep_alive` field on every Ollama
+    # native (/api/generate) call. Found missing while investigating why
+    # the v3.50.14 connection-pooling fix didn't move `auto`'s own
+    # benchmark plateau either: app/llm.py never sent this field at all,
+    # meaning every call relied entirely on Ollama's own server-side
+    # default (5 minutes) with zero application-level control — and this
+    # project's own deployment documents (see CHANGELOG.md's v3.50.11
+    # entry) that the same qwen3:8b instance is shared with an unrelated
+    # agentic-coding workflow on the same machine, which can plausibly
+    # evict the model from VRAM independent of anything Mnemolis does.
+    #
+    # Accepts exactly Ollama's own documented keep_alive formats, passed
+    # straight through rather than reinterpreted into a different shape
+    # — a duration string ("30m", "3h"), a plain number of seconds
+    # ("3600"), "-1" for "never unload," or "0" for "unload immediately
+    # after this call" (confirmed directly: Ollama's own FAQ documents
+    # all four as valid). A real, deliberate decision NOT to default
+    # this to "-1": pinning a model in VRAM indefinitely from Mnemolis's
+    # side would compete with whatever else the same GPU is doing
+    # between Mnemolis's own calls, for no benefit during real idle
+    # periods between actual user questions — left at a value close to
+    # Ollama's own default so Mnemolis's behavior doesn't surprise
+    # anyone who hasn't touched this setting, while still giving Mnemolis
+    # its own explicit say rather than depending entirely on whatever the
+    # server's ambient default happens to be.
+    #
+    # Only sent on the Ollama-native path. Confirmed NOT reliably honored
+    # by Ollama's own OpenAI-compatible endpoint (a real, externally
+    # reported gap — passing keep_alive through OpenAI-SDK-style calls
+    # is silently ignored, server falls back to its own default
+    # regardless of what's sent), so sending it there would be a false
+    # promise of control this setting can't actually deliver — see
+    # _complete_openai()'s own comment for why it's deliberately omitted
+    # there instead of sent anyway and hoped for.
+    llm_keep_alive: str = "5m"
+
     # -------------------------------------------------------------------
     # Fusion — concurrency, payload size, and timeout limits
     # -------------------------------------------------------------------

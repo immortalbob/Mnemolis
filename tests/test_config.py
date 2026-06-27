@@ -34,6 +34,7 @@ class TestDefaultValues:
             "FUSION_MAX_SOURCES", "FUSION_MAX_CHARS_PER_SOURCE",
             "FUSION_TIMEOUT_SECONDS", "CACHE_MAX_SIZE", "KIWIX_SEARCH_LIMIT",
             "KIWIX_MAX_BOOKS", "WEB_NEWS_SCORE_THRESHOLD", "WEB_NEWS_TOP_N",
+            "LLM_CONNECTION_POOL_SIZE", "LLM_KEEP_ALIVE",
         ]
         self._saved_env = {}
         for key in self._env_keys:
@@ -105,6 +106,14 @@ class TestDefaultValues:
     def test_llm_api_type_defaults_ollama(self):
         s = self._bare_settings()
         assert s.llm_api_type == "ollama"
+
+    def test_llm_connection_pool_size_default(self):
+        s = self._bare_settings()
+        assert s.llm_connection_pool_size == 20
+
+    def test_llm_keep_alive_default(self):
+        s = self._bare_settings()
+        assert s.llm_keep_alive == "5m"
 
     def test_morning_start_hour_default(self):
         s = self._bare_settings()

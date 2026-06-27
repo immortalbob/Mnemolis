@@ -150,6 +150,8 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `LLM_URL` | LLM backend URL for intelligent routing | _(blank — disables LLM routing)_ |
 | `LLM_MODEL` | Model to use for source and book selection | `qwen3:8b` |
 | `LLM_API_TYPE` | API format: `ollama` or `openai` | `ollama` |
+| `LLM_CONNECTION_POOL_SIZE` | How many pooled HTTP connections to keep open to the LLM backend at once, for reuse across calls. Raise this if you run with significantly more than 20 concurrent users/requests | `20` |
+| `LLM_KEEP_ALIVE` | How long Ollama keeps the model resident in VRAM after Mnemolis's last call (Ollama-native backend only — see below). Accepts Ollama's own formats: a duration string (`30m`, `3h`), plain seconds, `-1` (never unload), or `0` (unload immediately) | `5m` |
 | `MORNING_START_HOUR` | Reference hour (0-23, local time) for resolving "this morning" in changes queries | `6` |
 | `WORK_START_HOUR` | Reference hour (0-23, local time) for resolving "while at work" in changes queries | `9` |
 | `API_KEYS` | Comma-separated list of valid API keys. Protects `POST /search` and `GET /changes`. | _(blank — auth disabled)_ |
@@ -234,6 +236,10 @@ Query decomposition and conditional detection (see [Query Decomposition](#query-
 **Supported backends** via `LLM_API_TYPE`:
 - `ollama` — Ollama native API (default)
 - `openai` — OpenAI-compatible API (llama-server, LM Studio, etc.)
+
+All LLM calls go through a single, persistent HTTP connection pool (`LLM_CONNECTION_POOL_SIZE`, default 20) rather than opening a fresh connection per call — matters most if your LLM backend runs on separate hardware from Mnemolis itself, where each fresh connection pays a real, avoidable network round-trip on top of inference time.
+
+On the Ollama-native backend, every call also sends `keep_alive` (`LLM_KEEP_ALIVE`, default `5m`, matching Ollama's own server-side default) so Mnemolis has its own explicit say in how long the model stays resident in VRAM, rather than depending entirely on whatever else might be sharing the same Ollama instance. Set this higher (`30m`, `3h`, or `-1` for never-unload) if your LLM backend is dedicated to Mnemolis or otherwise idle between requests for longer than 5 minutes. Not sent on the OpenAI-compatible path — Ollama's own OpenAI-compatible endpoint is confirmed to ignore it, and other OpenAI-compatible backends (llama-server, LM Studio) have no equivalent.
 
 The book list is built dynamically from your Kiwix catalog at startup — see [Kiwix Catalog & Article Fetching](https://github.com/immortalbob/Mnemolis/wiki/Kiwix-Catalog-and-Article-Fetching) for the actual discovery mechanism. To force a refresh after adding ZIMs:
 

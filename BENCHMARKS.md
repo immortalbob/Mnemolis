@@ -680,6 +680,272 @@ Three genuinely independent Locust invocations, each its own real cold+warm pair
 
 **`cache_hit`'s cold cost was real and high in Run 1 (3600ms) but landed under 1000ms in both Runs 2 and 3 (940ms, 810ms)** — consistent with the Ollama-queue-contention explanation already confirmed (queue depth varies run to run independent of anything Mnemolis controls), not evidence the mechanism itself changed.
 
+### 20 Users — Cold vs Warm Cache (v3.50.13, validating the singleflight fix — and the investigation that followed when it didn't move `auto`'s plateau)
+
+Run against the real v3.50.13 codebase on MiniDock. Three full cold/warm pairs, the same confirmation discipline the v3.50.11 entry above established, since `auto`'s own history at this pool size has shown real run-to-run noise before.
+
+**Cold cache, Run 1** — both caches explicitly cleared immediately before this run.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 24ms | 990ms | 1800ms | 5100ms | 6400ms | 84 |
+| `/search [kiwix_disambiguation]` | 23ms | 1600ms | 2500ms | 6200ms | 6200ms | 38 |
+| `/search [web]` | 24ms | 33ms | 1800ms | 1800ms | 2300ms | 52 |
+| `/search [conditional]` | 44ms | 1400ms | 1500ms | 1500ms | 1500ms | 40 |
+| `/search [conditional_remainder]` | 110ms | 990ms | 1300ms | 1300ms | 1300ms | 16 |
+| `/search [discourse_framing]` | 27ms | 51ms | 1200ms | 1500ms | 1500ms | 41 |
+| `/search [forecast]` | 24ms | 32ms | 38ms | 110ms | 710ms | 53 |
+| `/search [news]` | 21ms | 32ms | 33ms | 59ms | 59ms | 30 |
+| `/search [uptime]` | 23ms | 28ms | 54ms | 120ms | 120ms | 23 |
+| `/search [ha]` | 34ms | 49ms | 50ms | 51ms | 51ms | 26 |
+| `/search [auto]` | 34ms | 710ms | 720ms | 950ms | 2500ms | 66 |
+| `/search [fusion_explicit]` | 22ms | 28ms | 45ms | 710ms | 730ms | 158 |
+| `/search [fusion_auto]` | 24ms | 33ms | 110ms | 2200ms | 2300ms | 121 |
+| `/search [fusion_triple]` | 22ms | 30ms | 110ms | 200ms | 710ms | 51 |
+| `/search [cache_hit]` | 23ms | 28ms | 28ms | 4400ms | 4400ms | 21 |
+
+**Warm cache, Run 1** — identical run immediately afterward, no clearing in between. One real failure: `POST /search [fusion_explicit]: RemoteDisconnected('Remote end closed connection without response')` — the same unexplained, non-recurring class already flagged in the v3.50.9 entry above (didn't recur in v3.50.11, recurred once here, didn't recur again in Runs 2/3 below). Still genuinely unexplained, still not attributed to anything in this release's actual changes.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 23ms | 28ms | 31ms | 40ms | 47ms | 96 |
+| `/search [kiwix_disambiguation]` | 23ms | 27ms | 41ms | 41ms | 41ms | 38 |
+| `/search [web]` | 24ms | 33ms | 34ms | 40ms | 45ms | 69 |
+| `/search [conditional]` | 36ms | 72ms | 720ms | 1400ms | 1400ms | 42 |
+| `/search [conditional_remainder]` | 60ms | 740ms | 1300ms | 10000ms | 10000ms | 25 |
+| `/search [discourse_framing]` | 29ms | 35ms | 36ms | 44ms | 44ms | 45 |
+| `/search [forecast]` | 23ms | 30ms | 30ms | 36ms | 36ms | 45 |
+| `/search [news]` | 23ms | 30ms | 32ms | 40ms | 40ms | 48 |
+| `/search [uptime]` | 23ms | 59ms | 110ms | 110ms | 110ms | 15 |
+| `/search [ha]` | 28ms | 51ms | 52ms | 54ms | 54ms | 30 |
+| `/search [auto]` | 26ms | 60ms | 62ms | 64ms | 65ms | 66 |
+| `/search [fusion_explicit]` | 21ms | 27ms | 32ms | 33ms | 41ms | 153 (1 failure) |
+| `/search [fusion_auto]` | 25ms | 33ms | 38ms | 48ms | 72ms | 121 |
+| `/search [fusion_triple]` | 22ms | 25ms | 28ms | 28ms | 36ms | 60 |
+| `/search [cache_hit]` | 23ms | 26ms | 32ms | 32ms | 32ms | 14 |
+
+**`auto`'s cold p99 (2500ms) landed squarely inside the same 2300-2700ms band three of the four pre-fix runs already showed — singleflight, on this first run, did not move the plateau.** Not waved off as a single noisy sample — see the two confirmation runs below, which settled the question.
+
+**`conditional_remainder`'s warm p98/p99 hit 10000ms — the single worst sample either conditional endpoint has produced, warm or cold, in this project's entire benchmark history.** Flagged honestly as an anomaly, not investigated further in this entry since the two confirmation runs below (1800ms, 1800ms) show it did not recur at anything close to this magnitude — consistent with ordinary single-run noise on a small-n metric (n=25), not a regression.
+
+#### Two confirmation runs (same v3.50.13 codebase, no code changes between any of these three runs)
+
+**Cold cache, Run 2**
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 24ms | 130ms | 1400ms | 1900ms | 3900ms | 94 |
+| `/search [kiwix_disambiguation]` | 23ms | 81ms | 1800ms | 2900ms | 2900ms | 42 |
+| `/search [web]` | 24ms | 34ms | 730ms | 910ms | 2700ms | 74 |
+| `/search [conditional]` | 43ms | 1200ms | 1300ms | 1600ms | 1600ms | 46 |
+| `/search [conditional_remainder]` | 710ms | 1400ms | 2100ms | 2100ms | 2100ms | 19 |
+| `/search [discourse_framing]` | 30ms | 820ms | 1500ms | 1900ms | 1900ms | 39 |
+| `/search [forecast]` | 23ms | 34ms | 220ms | 700ms | 700ms | 35 |
+| `/search [news]` | 23ms | 33ms | 49ms | 65ms | 65ms | 43 |
+| `/search [uptime]` | 24ms | 37ms | 68ms | 70ms | 70ms | 24 |
+| `/search [ha]` | 37ms | 51ms | 55ms | 580ms | 580ms | 27 |
+| `/search [auto]` | 40ms | 710ms | 720ms | 1200ms | 2300ms | 60 |
+| `/search [fusion_explicit]` | 22ms | 33ms | 80ms | 830ms | 850ms | 158 |
+| `/search [fusion_auto]` | 25ms | 42ms | 67ms | 170ms | 180ms | 113 |
+| `/search [fusion_triple]` | 23ms | 31ms | 79ms | 110ms | 720ms | 55 |
+| `/search [cache_hit]` | 23ms | 34ms | 35ms | 1100ms | 1100ms | 24 |
+
+**Warm cache, Run 2** — zero failures.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 23ms | 28ms | 32ms | 36ms | 40ms | 98 |
+| `/search [kiwix_disambiguation]` | 24ms | 33ms | 36ms | 41ms | 41ms | 49 |
+| `/search [web]` | 24ms | 29ms | 34ms | 38ms | 44ms | 74 |
+| `/search [conditional]` | 40ms | 530ms | 1400ms | 1700ms | 1700ms | 39 |
+| `/search [conditional_remainder]` | 51ms | 610ms | 740ms | 2200ms | 2200ms | 27 |
+| `/search [discourse_framing]` | 29ms | 37ms | 46ms | 47ms | 47ms | 37 |
+| `/search [forecast]` | 24ms | 29ms | 31ms | 42ms | 42ms | 50 |
+| `/search [news]` | 24ms | 32ms | 36ms | 100ms | 100ms | 50 |
+| `/search [uptime]` | 24ms | 30ms | 61ms | 65ms | 65ms | 22 |
+| `/search [ha]` | 41ms | 51ms | 52ms | 52ms | 52ms | 19 |
+| `/search [auto]` | 27ms | 65ms | 67ms | 68ms | 69ms | 51 |
+| `/search [fusion_explicit]` | 22ms | 30ms | 34ms | 36ms | 37ms | 155 |
+| `/search [fusion_auto]` | 25ms | 32ms | 37ms | 53ms | 56ms | 117 |
+| `/search [fusion_triple]` | 22ms | 26ms | 26ms | 27ms | 29ms | 56 |
+| `/search [cache_hit]` | 23ms | 28ms | 30ms | 33ms | 33ms | 25 |
+
+**Cold cache, Run 3**
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 23ms | 840ms | 1200ms | 1600ms | 1600ms | 81 |
+| `/search [kiwix_disambiguation]` | 23ms | 34ms | 1800ms | 2000ms | 2900ms | 54 |
+| `/search [web]` | 23ms | 190ms | 770ms | 900ms | 1100ms | 53 |
+| `/search [conditional]` | 41ms | 1200ms | 1400ms | 3500ms | 3500ms | 37 |
+| `/search [conditional_remainder]` | 290ms | 1400ms | 3400ms | 3400ms | 3400ms | 18 |
+| `/search [discourse_framing]` | 29ms | 45ms | 1100ms | 1700ms | 1700ms | 42 |
+| `/search [forecast]` | 24ms | 40ms | 59ms | 790ms | 790ms | 41 |
+| `/search [news]` | 22ms | 29ms | 31ms | 58ms | 58ms | 49 |
+| `/search [uptime]` | 24ms | 49ms | 59ms | 59ms | 59ms | 19 |
+| `/search [ha]` | 39ms | 46ms | 61ms | 72ms | 72ms | 21 |
+| `/search [auto]` | 30ms | 91ms | 720ms | 1200ms | 2300ms | 81 |
+| `/search [fusion_explicit]` | 21ms | 27ms | 32ms | 180ms | 710ms | 165 |
+| `/search [fusion_auto]` | 25ms | 32ms | 41ms | 160ms | 250ms | 112 |
+| `/search [fusion_triple]` | 22ms | 26ms | 28ms | 31ms | 680ms | 58 |
+| `/search [cache_hit]` | 22ms | 28ms | 1100ms | 1100ms | 1100ms | 17 |
+
+**Warm cache, Run 3** — zero failures.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 23ms | 27ms | 30ms | 39ms | 58ms | 97 |
+| `/search [kiwix_disambiguation]` | 24ms | 30ms | 34ms | 34ms | 34ms | 39 |
+| `/search [web]` | 23ms | 27ms | 30ms | 33ms | 44ms | 64 |
+| `/search [conditional]` | 30ms | 440ms | 1300ms | 1500ms | 1500ms | 49 |
+| `/search [conditional_remainder]` | 50ms | 1000ms | 1200ms | 1800ms | 1800ms | 22 |
+| `/search [discourse_framing]` | 29ms | 38ms | 44ms | 59ms | 59ms | 38 |
+| `/search [forecast]` | 23ms | 28ms | 34ms | 42ms | 42ms | 41 |
+| `/search [news]` | 23ms | 26ms | 27ms | 34ms | 34ms | 45 |
+| `/search [uptime]` | 22ms | 27ms | 60ms | 80ms | 80ms | 27 |
+| `/search [ha]` | 35ms | 49ms | 50ms | 71ms | 71ms | 26 |
+| `/search [auto]` | 25ms | 64ms | 65ms | 67ms | 710ms | 67 |
+| `/search [fusion_explicit]` | 21ms | 27ms | 31ms | 43ms | 46ms | 167 |
+| `/search [fusion_auto]` | 25ms | 32ms | 34ms | 35ms | 37ms | 115 |
+| `/search [fusion_triple]` | 22ms | 25ms | 26ms | 28ms | 35ms | 52 |
+| `/search [cache_hit]` | 24ms | 28ms | 29ms | 29ms | 29ms | 18 |
+
+**`auto`'s cold p99 across all three v3.50.13 runs: 2500ms, 2300ms, 2300ms.** This settles the question Run 1 alone couldn't: singleflight's own fix did not move `auto`'s plateau. Compared against the pre-fix v3.50.11-era runs at the identical pool size (990ms, 2300ms, 2400ms), the post-fix numbers land in essentially the same band — if anything clustering slightly tighter toward the worse end, never reproducing the pre-fix run's own 990ms favorable outlier.
+
+**The asymmetry that ruled out "just a noisy session" as the explanation: `kiwix`/`kiwix_disambiguation`/`cache_hit` all dropped substantially run over run while `auto` stayed flat.** `kiwix` cold p99: 6400ms → 3900ms → 1600ms. `cache_hit` cold p99: 4400ms → 1100ms → 1100ms. `kiwix_disambiguation` cold p99: 6200ms → 2900ms → 2900ms. A shared-contention story (one session under heavier-than-usual load on the LLM backend) predicts every LLM-touching endpoint moving together — these did, while `auto` conspicuously didn't, which is what motivated checking `app/llm.py` directly rather than re-running a fourth time hoping for a better draw.
+
+**That investigation found a real, separate, previously-unexamined cost: zero HTTP connection reuse in `app/llm.py`.** Every call into `complete()` used the bare `requests.post()` module function rather than a persistent `requests.Session`, opening and tearing down a fresh TCP connection on every single LLM call — confirmed directly against a real local server (10 sequential calls through the old pattern opened 10 distinct connections; the identical 10 calls through a persistent session opened exactly 1). The identical class of bug Thread 1 of [The Benchmark Investigation Log](https://github.com/immortalbob/Mnemolis/wiki/The-Benchmark-Investigation-Log#thread-1-uptimes-warm-cache-tail-five-releases-to-a-real-root-cause) already found and fixed for Uptime Kuma's own connection, just never checked for here. Fixed in v3.50.14 — see that changelog entry and [Caching](https://github.com/immortalbob/Mnemolis/wiki/Caching#llm-connection-pooling-and-keep-alive) for the mechanism. Not yet re-benchmarked at the time of this entry; whether it actually closes `auto`'s plateau is the next thing to confirm, not something to assume from the mechanism alone.
+
+### 20 Users — Cold vs Warm Cache (v3.50.14, validating the connection-pooling fix — and the re-analysis that followed when it didn't move `auto`'s plateau either)
+
+Run against the real v3.50.14 codebase on MiniDock. Three confirmed-fresh-rebuild cold/warm pairs. A fourth pair was run earlier in the same session but its build provenance couldn't be confirmed (possibly still v3.50.13) — deliberately excluded from the comparison below rather than counted as a fourth data point; its own `auto` cold p99 was 2400ms, which would not have changed any conclusion either way.
+
+**Cold cache, Run 1**
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 24ms | 1100ms | 1600ms | 1800ms | 1900ms | 80 |
+| `/search [kiwix_disambiguation]` | 23ms | 1600ms | 2500ms | 2600ms | 3200ms | 51 |
+| `/search [web]` | 23ms | 140ms | 750ms | 1000ms | 1600ms | 60 |
+| `/search [conditional]` | 45ms | 1200ms | 1600ms | 2200ms | 2200ms | 40 |
+| `/search [conditional_remainder]` | 51ms | 1000ms | 1100ms | 2100ms | 2100ms | 24 |
+| `/search [discourse_framing]` | 30ms | 150ms | 1700ms | 1700ms | 1700ms | 40 |
+| `/search [forecast]` | 24ms | 34ms | 150ms | 700ms | 700ms | 33 |
+| `/search [news]` | 23ms | 44ms | 110ms | 130ms | 130ms | 35 |
+| `/search [uptime]` | 23ms | 26ms | 46ms | 62ms | 62ms | 25 |
+| `/search [ha]` | 40ms | 60ms | 70ms | 70ms | 70ms | 20 |
+| `/search [auto]` | 29ms | 720ms | 730ms | 2200ms | 3400ms | 65 |
+| `/search [fusion_explicit]` | 22ms | 31ms | 61ms | 710ms | 750ms | 162 |
+| `/search [fusion_auto]` | 25ms | 37ms | 56ms | 160ms | 190ms | 117 |
+| `/search [fusion_triple]` | 22ms | 45ms | 140ms | 770ms | 770ms | 44 |
+| `/search [cache_hit]` | 23ms | 33ms | 43ms | 830ms | 830ms | 22 |
+
+**Warm cache, Run 1**
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 23ms | 28ms | 32ms | 32ms | 59ms | 94 |
+| `/search [kiwix_disambiguation]` | 23ms | 26ms | 27ms | 40ms | 40ms | 45 |
+| `/search [web]` | 24ms | 27ms | 33ms | 42ms | 72ms | 54 |
+| `/search [conditional]` | 42ms | 460ms | 780ms | 1100ms | 1300ms | 58 |
+| `/search [conditional_remainder]` | 35ms | 90ms | 390ms | 390ms | 390ms | 16 |
+| `/search [discourse_framing]` | 29ms | 36ms | 40ms | 42ms | 52ms | 52 |
+| `/search [forecast]` | 24ms | 27ms | 33ms | 37ms | 37ms | 42 |
+| `/search [news]` | 24ms | 29ms | 31ms | 37ms | 37ms | 48 |
+| `/search [uptime]` | 24ms | 56ms | 61ms | 61ms | 61ms | 20 |
+| `/search [ha]` | 39ms | 49ms | 56ms | 56ms | 56ms | 17 |
+| `/search [auto]` | 26ms | 63ms | 66ms | 67ms | 720ms | 59 |
+| `/search [fusion_explicit]` | 23ms | 27ms | 30ms | 33ms | 34ms | 167 |
+| `/search [fusion_auto]` | 25ms | 33ms | 36ms | 39ms | 46ms | 113 |
+| `/search [fusion_triple]` | 22ms | 33ms | 35ms | 43ms | 70ms | 58 |
+| `/search [cache_hit]` | 25ms | 31ms | 33ms | 35ms | 35ms | 29 |
+
+**Cold cache, Run 2**
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 24ms | 880ms | 1300ms | 1900ms | 2300ms | 92 |
+| `/search [kiwix_disambiguation]` | 23ms | 1600ms | 2200ms | 2500ms | 2500ms | 39 |
+| `/search [web]` | 23ms | 38ms | 710ms | 1200ms | 1600ms | 67 |
+| `/search [conditional]` | 55ms | 1300ms | 1300ms | 1400ms | 1400ms | 28 |
+| `/search [conditional_remainder]` | 69ms | 1500ms | 1600ms | 1600ms | 1600ms | 19 |
+| `/search [discourse_framing]` | 29ms | 1100ms | 1300ms | 1400ms | 1400ms | 40 |
+| `/search [forecast]` | 23ms | 32ms | 720ms | 790ms | 880ms | 54 |
+| `/search [news]` | 23ms | 27ms | 34ms | 77ms | 77ms | 44 |
+| `/search [uptime]` | 25ms | 57ms | 150ms | 150ms | 150ms | 18 |
+| `/search [ha]` | 36ms | 47ms | 50ms | 50ms | 50ms | 20 |
+| `/search [auto]` | 33ms | 720ms | 730ms | 950ms | 2300ms | 64 |
+| `/search [fusion_explicit]` | 22ms | 29ms | 45ms | 740ms | 810ms | 172 |
+| `/search [fusion_auto]` | 24ms | 33ms | 39ms | 120ms | 200ms | 117 |
+| `/search [fusion_triple]` | 21ms | 26ms | 30ms | 740ms | 740ms | 50 |
+| `/search [cache_hit]` | 24ms | 46ms | 61ms | 740ms | 740ms | 28 |
+
+**Warm cache, Run 2**
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 23ms | 30ms | 35ms | 42ms | 44ms | 80 |
+| `/search [kiwix_disambiguation]` | 24ms | 27ms | 31ms | 99ms | 99ms | 47 |
+| `/search [web]` | 24ms | 32ms | 35ms | 38ms | 39ms | 80 |
+| `/search [conditional]` | 38ms | 64ms | 490ms | 1300ms | 1300ms | 42 |
+| `/search [conditional_remainder]` | 53ms | 1100ms | 1200ms | 1500ms | 1500ms | 23 |
+| `/search [discourse_framing]` | 28ms | 39ms | 46ms | 48ms | 48ms | 39 |
+| `/search [forecast]` | 23ms | 27ms | 29ms | 34ms | 34ms | 51 |
+| `/search [news]` | 24ms | 30ms | 30ms | 38ms | 38ms | 43 |
+| `/search [uptime]` | 23ms | 63ms | 63ms | 63ms | 63ms | 19 |
+| `/search [ha]` | 35ms | 53ms | 68ms | 68ms | 68ms | 20 |
+| `/search [auto]` | 25ms | 63ms | 64ms | 72ms | 72ms | 69 |
+| `/search [fusion_explicit]` | 21ms | 27ms | 34ms | 39ms | 44ms | 172 |
+| `/search [fusion_auto]` | 24ms | 33ms | 33ms | 43ms | 51ms | 90 |
+| `/search [fusion_triple]` | 22ms | 25ms | 31ms | 35ms | 45ms | 74 |
+| `/search [cache_hit]` | 23ms | 27ms | 37ms | 45ms | 45ms | 21 |
+
+**Cold cache, Run 3** — two real anomalies in this run, neither attributed to anything in this release: `POST /search [fusion_auto]: RemoteDisconnected('Remote end closed connection without response')` (the same unexplained, non-recurring class flagged in earlier entries), and `/health`/`conditional`/`web` all showing the single worst samples this project's benchmark history has ever recorded (3000ms, 11000ms, 10000ms respectively). `/health` having zero LLM dependency and still spiking this run is itself informative — this looks like a genuine, separate infrastructure event (container or host contention) sitting on top of whatever's actually driving `auto`'s own number, not evidence about the connection-pooling fix either way.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 24ms | 860ms | 1100ms | 1700ms | 1900ms | 73 |
+| `/search [kiwix_disambiguation]` | 22ms | 1400ms | 2000ms | 2200ms | 2200ms | 39 |
+| `/search [web]` | 24ms | 360ms | 1700ms | 10000ms | 10000ms | 61 |
+| `/search [conditional]` | 62ms | 1300ms | 1400ms | 11000ms | 11000ms | 40 |
+| `/search [conditional_remainder]` | 78ms | 750ms | 980ms | 1900ms | 1900ms | 21 |
+| `/search [discourse_framing]` | 29ms | 69ms | 1200ms | 1900ms | 1900ms | 45 |
+| `/search [forecast]` | 22ms | 29ms | 58ms | 730ms | 730ms | 38 |
+| `/search [news]` | 23ms | 32ms | 35ms | 110ms | 110ms | 49 |
+| `/search [uptime]` | 22ms | 62ms | 63ms | 63ms | 63ms | 20 |
+| `/search [ha]` | 39ms | 50ms | 63ms | 63ms | 63ms | 14 |
+| `/search [auto]` | 27ms | 700ms | 740ms | 1100ms | 2200ms | 82 |
+| `/search [fusion_explicit]` | 22ms | 30ms | 48ms | 850ms | 1700ms | 162 |
+| `/search [fusion_auto]` | 24ms | 32ms | 73ms | 140ms | 180ms | 115 (1 failure) |
+| `/search [fusion_triple]` | 21ms | 31ms | 34ms | 39ms | 750ms | 57 |
+| `/search [cache_hit]` | 23ms | 90ms | 1400ms | 1400ms | 1400ms | 20 |
+
+**Warm cache, Run 3** — zero failures, no recurrence of Run 3's cold-pass anomalies.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n |
+|----------|--------|-----|-----|-----|-----|---|
+| `/search [kiwix]` | 23ms | 27ms | 33ms | 37ms | 37ms | 106 |
+| `/search [kiwix_disambiguation]` | 23ms | 29ms | 37ms | 54ms | 54ms | 37 |
+| `/search [web]` | 24ms | 29ms | 32ms | 40ms | 40ms | 69 |
+| `/search [conditional]` | 36ms | 250ms | 770ms | 850ms | 850ms | 34 |
+| `/search [conditional_remainder]` | 56ms | 64ms | 72ms | 72ms | 72ms | 15 |
+| `/search [discourse_framing]` | 29ms | 34ms | 41ms | 49ms | 49ms | 43 |
+| `/search [forecast]` | 23ms | 34ms | 43ms | 45ms | 99ms | 60 |
+| `/search [news]` | 23ms | 29ms | 32ms | 42ms | 42ms | 40 |
+| `/search [uptime]` | 24ms | 30ms | 65ms | 110ms | 110ms | 21 |
+| `/search [ha]` | 41ms | 51ms | 85ms | 97ms | 97ms | 25 |
+| `/search [auto]` | 25ms | 64ms | 65ms | 77ms | 110ms | 63 |
+| `/search [fusion_explicit]` | 22ms | 28ms | 32ms | 46ms | 55ms | 179 |
+| `/search [fusion_auto]` | 25ms | 31ms | 36ms | 43ms | 44ms | 101 |
+| `/search [fusion_triple]` | 23ms | 29ms | 33ms | 43ms | 43ms | 50 |
+| `/search [cache_hit]` | 25ms | 31ms | 34ms | 45ms | 45ms | 22 |
+
+**`auto`'s cold p99 across all three confirmed v3.50.14 runs: 3400ms, 2300ms, 2200ms.** The connection-pooling fix, like singleflight before it, did not close the plateau — if anything this set of runs clusters slightly toward the worse end of the historical range, never reproducing the original v3.50.11 run's own 990ms favorable outlier.
+
+**Re-reading `auto`'s own p90 across every release this project has ever benchmarked, rather than continuing to chase p99, surfaced the more useful signal**: 710ms (v3.50.9) → 720/740/720ms (v3.50.11's three runs) → 710/710/91ms (v3.50.13's three runs, the 91ms being the one genuine outlier in the whole series) → 720/720/700ms (these three confirmed v3.50.14 runs). At this benchmark's real sample sizes (`auto` draws roughly 60-80 total picks per run, with only 2 of 24 pool entries genuinely LLM-dependent), p99 sits at rank 1-2 from the top — effectively reporting the single slowest request in the run, not a stable, repeatable statistic. p90's consistency across every release suggests ~700-740ms is close to the genuine, ordinary cost of one real, unqueued LLM call on this hardware, and that neither singleflight nor connection pooling was ever positioned to move a number that was mostly being driven by single-sample noise at the tail rather than a fixable property of the routing code. See [The Benchmark Investigation Log](https://github.com/immortalbob/Mnemolis/wiki/The-Benchmark-Investigation-Log#thread-2-the-autoconditional-thundering-herd-including-a-real-mistake-caught-by-the-next-benchmark) for the full analysis.
+
+**One real, concrete fix shipped from this investigation regardless: `app/llm.py` never sent Ollama's `keep_alive` field**, relying entirely on the server's own ambient 5-minute default. This project's own deployment shares the same `qwen3:8b` instance with an unrelated agentic-coding workflow (see the v3.50.11 changelog entry's VRAM math) — a real, plausible way for the model to be evicted from VRAM independent of anything Mnemolis does between its own calls. Fixed in v3.50.15 via the new `LLM_KEEP_ALIVE` setting — see that changelog entry and [Caching](https://github.com/immortalbob/Mnemolis/wiki/Caching#llm-connection-pooling-and-keep-alive). Recorded honestly: this closes one plausible, low-risk-to-fix contributor, not a confirmed explanation for the plateau — there's no direct evidence the other workflow was active during any of these specific runs, and the p90/p99 analysis above suggests the plateau may simply be irreducible single-sample noise at this benchmark's sample size regardless of what fixes it.
+
 ## Running benchmarks
 
 Replace `192.168.1.50` below with your actual Mnemolis host's real IP or hostname — not a placeholder. `--host` silently accepts anything that looks like a URL, so a leftover example value doesn't fail loudly; it fails much later as a DNS error (`Temporary failure in name resolution`) on every single request, which doesn't obviously point back to `--host` as the cause.
