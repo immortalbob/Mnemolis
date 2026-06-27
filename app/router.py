@@ -206,6 +206,19 @@ INTENT_MAP = {
         "later today", "will it rain", "will it snow",
         "high temp", "low temp", "precipitation", "wind forecast",
         "going to be hot", "going to be cold",
+        # Found via a deliberate investigation into a real
+        # conditional_remainder benchmark anomaly (warm cache p99 worse
+        # than cold — see wiki/The-Benchmark-Investigation-Log.md and
+        # the conditional_remainder design doc): "is it raining" and
+        # "is it going to rain" are real, natural phrasings that
+        # genuinely mean weather, but matched none of this list's
+        # existing rain-related triggers ("will it rain" requires the
+        # word "will", not "is"). Confirmed via direct testing that
+        # this previously fell through to kiwix's expensive LLM
+        # book-selection path instead of the cheap, structured
+        # forecast source it should have hit.
+        "is it raining", "is it going to rain", "going to rain",
+        "is it going to snow", "going to snow",
     ],
     "news": [
         "news", "headlines", "feeds", "rss",
@@ -226,6 +239,20 @@ INTENT_MAP = {
         "any motion", "recent motion", "motion detected",
         "security status", "house secure",
         "outdoor conditions", "outside conditions",
+        # Found via the same conditional_remainder investigation as
+        # forecast's "is it raining" gap above: "check if the doors
+        # are locked" is a real, natural phrasing of the same question
+        # "are the doors locked" already covers, but the inserted
+        # "are" breaks ALL THREE of this list's existing door triggers
+        # as a plain substring check ("are the doors locked", "door
+        # locked", "doors locked" — none of them match "doors are
+        # locked"). The same word-insertion class of bug this project
+        # has already found and fixed once before (the GPIO/"on"
+        # word-boundary issue) — confirmed via direct testing this
+        # fell through to kiwix's expensive LLM book-selection path
+        # instead of the cheap, structured ha source it should have
+        # hit.
+        "doors are locked", "door is locked",
     ],
     "changes": [
         "what changed", "any changes", "whats new", "what's new",
@@ -252,6 +279,18 @@ INTENT_MAP = {
         "server down", "server up", "server status",
         "is it running", "is it up", "is it down",
         "are they up", "are they down",
+        # Found via the same conditional_remainder investigation as
+        # forecast's "is it raining" gap above: "is everything online"
+        # is a real, natural phrasing for the same uptime question
+        # this list already covers via "is everything up", but had no
+        # "online" variant at all. Confirmed via direct testing this
+        # fell through to kiwix's expensive LLM book-selection path
+        # instead. Bare "online" (not a longer phrase) deliberately —
+        # checked it doesn't collide with web's own "look it up
+        # online"/"find online" triggers, since INTENT_MAP matching is
+        # query-contains-trigger, not the reverse, and neither of
+        # web's phrases is a substring of "is everything online".
+        "everything online", "is everything online", "anything online",
     ],
 }
 

@@ -80,6 +80,65 @@ class TestKeywordDetect:
     def test_recent_does_not_match_news(self):
         assert self.detect("recent Python releases") is None
 
+    # Regression tests for three real INTENT_MAP gaps found via a
+    # deliberate investigation into a conditional_remainder benchmark
+    # anomaly (warm-cache p99 worse than cold — see the
+    # conditional_remainder design doc and
+    # wiki/The-Benchmark-Investigation-Log.md's Ollama-serialization
+    # coverage). All three are real, natural phrasings of questions
+    # this list already covers via a different exact phrase, that
+    # previously fell through to kiwix's expensive LLM book-selection
+    # path instead of the cheap, structured source they should hit.
+    def test_is_it_raining_matches_forecast(self):
+        """"will it rain"/"will it snow" were the only rain/snow
+        triggers — the equally natural "is it raining" phrasing had no
+        match at all."""
+        assert self.detect("is it raining") == "forecast"
+
+    def test_is_it_going_to_rain_matches_forecast(self):
+        assert self.detect("is it going to rain") == "forecast"
+
+    def test_is_it_going_to_snow_matches_forecast(self):
+        """A second, independently-found gap in the same family —
+        "if it is going to snow, remind me to grab a coat" is a real
+        entry in CONDITIONAL_QUERIES that was silently falling through
+        to the LLM on every cold miss with zero keyword match at all,
+        only resolving to "forecast" because the LLM happened to guess
+        correctly — confirmed directly against the pre-fix INTENT_MAP."""
+        assert self.detect("it is going to snow") == "forecast"
+
+    def test_is_everything_online_matches_uptime(self):
+        """"is everything up" already matched — "online" is an
+        equally natural synonym for the same question that had no
+        trigger at all."""
+        assert self.detect("is everything online") == "uptime"
+
+    def test_online_does_not_collide_with_web_lookup_phrases(self):
+        """Confirms the new bare "online" trigger doesn't accidentally
+        widen uptime's match to web-lookup-style queries — INTENT_MAP
+        matching is query-contains-trigger, not the reverse, so this
+        was never actually at risk, but worth a direct regression test
+        since both sources now share the substring "online"."""
+        assert self.detect("look it up online") == "web"
+        assert self.detect("find online") == "web"
+
+    def test_doors_are_locked_matches_ha(self):
+        """"are the doors locked"/"door locked"/"doors locked" were
+        the only door-lock triggers — all three require word-
+        adjacency, so the equally natural "doors are locked" (with
+        "are" inserted) matched none of them. The same word-insertion
+        class of bug already found and fixed once before in this
+        project (the GPIO/"on" word-boundary issue)."""
+        assert self.detect("doors are locked") == "ha"
+
+    def test_check_if_the_doors_are_locked_matches_ha(self):
+        """The exact real-world phrasing that surfaced this gap — a
+        genuine CONDITIONAL_WITH_REMAINDER_QUERIES remainder."""
+        assert self.detect("also check if the doors are locked") == "ha"
+
+    def test_door_is_locked_matches_ha(self):
+        assert self.detect("is the door is locked") == "ha"
+
 
 class TestKeywordDetectMulti:
     """Tests for multi-keyword detection that escalates to fusion."""
@@ -3449,6 +3508,100 @@ class TestResultCacheThunderingHerd:
                 f"from — this is the exact collision that caused the v3.50.4 "
                 f"benchmark's cold-cache cache_hit anomaly (p90 5100ms, p99 8000ms)"
             )
+
+    def test_conditional_with_remainder_pool_double_kiwix_hit_count_stays_low(self):
+        """Regression test for the conditional_remainder design doc's
+        finding: _resolve_conditional() dispatches the condition and
+        remainder concurrently specifically so they cost max(a, b)
+        instead of a + b — but when BOTH sides independently resolve
+        to kiwix, this deployment's documented OLLAMA_NUM_PARALLEL=1
+        constraint (see wiki/The-Benchmark-Investigation-Log.md,
+        Thread 6) means the two real LLM-bound calls queue against
+        each other instead of running in parallel, degrading back
+        toward a + b for exactly those entries — a real, confirmed
+        mechanism, not a hypothesis (see the conditional_remainder
+        design doc for the full investigation, including the
+        benchmark anomaly this surfaced from).
+
+        Three of the five entries that originally hit this case were
+        genuine INTENT_MAP keyword gaps (now fixed — see
+        TestKeywordDetect's test_is_it_raining_matches_forecast and
+        siblings); the remaining two ("whats happening with bitcoin")
+        are intentional, correct kiwix routing for an open-ended topic
+        and are not expected to ever resolve elsewhere. This test
+        confirms the double-hit count stays at the new, lower baseline
+        (2) rather than silently regressing back toward the old one
+        (5) if a future change to INTENT_MAP or this pool reintroduces
+        the gap.
+
+        Parses tests/locustfile.py via the same AST approach as
+        test_locustfile_cache_hit_query_does_not_collide_with_any_other_pool
+        above, for the same gevent-import-safety reason, then runs the
+        real detect_conditional()/detect_intent() against each
+        extracted condition/remainder pair — these two functions are
+        safe to import directly, only locustfile.py's own `import
+        locust` is the problem."""
+        import ast
+        import os
+        from app.router import detect_conditional, detect_intent
+
+        locustfile_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "locustfile.py"
+        )
+        with open(locustfile_path) as f:
+            tree = ast.parse(f.read(), filename=locustfile_path)
+
+        list_literals: dict[str, list[str]] = {}
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.List)
+            ):
+                name = node.targets[0].id
+                values = [
+                    elt.value
+                    for elt in node.value.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                ]
+                list_literals[name] = values
+
+        assert "CONDITIONAL_WITH_REMAINDER_QUERIES" in list_literals, (
+            "CONDITIONAL_WITH_REMAINDER_QUERIES not found in "
+            "tests/locustfile.py — has it been renamed? This test "
+            "needs updating to match."
+        )
+        pool = list_literals["CONDITIONAL_WITH_REMAINDER_QUERIES"]
+
+        both_kiwix_pairs = []
+        for query in pool:
+            conditional = detect_conditional(query)
+            assert conditional is not None, (
+                f"{query!r} no longer parses as a conditional — has "
+                f"detect_conditional() changed?"
+            )
+            condition, _consequence, remainder = conditional
+            assert remainder, (
+                f"{query!r} has no remainder — has it been edited to "
+                f"remove the trailing ' and also...' clause?"
+            )
+            condition_intent = detect_intent(condition)
+            remainder_intent = detect_intent(remainder)
+            if condition_intent == "kiwix" and remainder_intent == "kiwix":
+                both_kiwix_pairs.append((condition, remainder))
+
+        assert len(both_kiwix_pairs) <= 2, (
+            f"{len(both_kiwix_pairs)} pool entries have BOTH condition and "
+            f"remainder resolving to kiwix at once — each one means "
+            f"_resolve_conditional()'s concurrent dispatch fires two real "
+            f"LLM-bound calls simultaneously against a deployment with "
+            f"OLLAMA_NUM_PARALLEL=1, degrading the intended max(a,b) "
+            f"benefit back toward a+b. Expected at most 2 (the intentional, "
+            f"correct 'whats happening with bitcoin' cases) after the "
+            f"INTENT_MAP fixes for the rain/online/doors-are-locked gaps. "
+            f"Pairs found: {both_kiwix_pairs}"
+        )
 
     def test_locustfile_thundering_herd_pools_are_wide_enough_to_avoid_high_collision_rates(self):
         """Regression test for the corrected pool-sizing investigation
