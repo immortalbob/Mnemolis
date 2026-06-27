@@ -894,6 +894,41 @@ class TestBuildFilter:
         f = _build_filter("are the doors locked")
         assert "lock" in f["domains"]
 
+    def test_garage_door_query_returns_cover_domain_not_lock(self):
+        """Regression test for a real, two-file gap found while
+        researching whether conditional_remainder's kiwix-double-hit
+        pairs were genuinely intentional kiwix routing (see the
+        conditional_remainder design doc): "garage door"/"garage" is
+        a deliberately SEPARATE _QUERY_MAP entry from "door"/"lock"
+        above, not a widening of them — a garage door's open/closed
+        state is a genuinely different question from a lock's
+        locked/unlocked state (most garage doors have no lock entity
+        of their own), and test_door_query_returns_lock_domain above
+        already pins "are the doors locked" to stay lock-domain-only,
+        so this needed its own trigger rather than touching that
+        one."""
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("the garage door is open")
+        assert "cover" in f["domains"]
+        assert "lock" not in f["domains"]
+
+    def test_garage_device_classes_cover_both_real_ha_naming_conventions(self):
+        """Confirms the filter covers BOTH real Home Assistant
+        device_class strings for the same physical entity — a `cover`
+        entity uses "garage" (confirmed via Home Assistant's own
+        developer docs and CoverDeviceClass enum), while a plain
+        `binary_sensor` reporting the same door uses "garage_door"
+        instead (confirmed via a live, filed Home Assistant core
+        issue, home-assistant/core#91131, describing the naming
+        inconsistency directly). Without both, this fix would only
+        work for half of Mike's possible real hardware/integration
+        shape, which can't be verified directly from outside the
+        actual deployment."""
+        from app.sources.home_assistant import _build_filter
+        f = _build_filter("garage status")
+        assert "garage" in f["device_classes"]
+        assert "garage_door" in f["device_classes"]
+
     def test_word_boundary_on_does_not_match_inside_front(self):
         """Regression test for a real, severe bug found via a deliberate
         "bulletproofing" pass: naive substring matching (no word-boundary
@@ -1033,3 +1068,104 @@ class TestBinarySensorMotionSupport:
         with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)):
             result = home_assistant.search("are the doors locked")
         assert "**Door Sensors:**" in result
+
+
+class TestGarageDoorSupport:
+    """Regression tests for a real, two-file gap found while
+    researching whether conditional_remainder's kiwix-double-hit pool
+    entries (see the conditional_remainder design doc and
+    app/router.py's own INTENT_MAP comment on the same investigation)
+    were genuinely intentional kiwix routing or a real gap. "the
+    garage door is open" is a question about OPEN/CLOSED state — a
+    different question from every existing door trigger in this file,
+    which are all locked/unlocked phrasing (most garage doors have no
+    lock entity of their own).
+
+    Two coordinated fixes were needed, in two different files:
+    router.py's INTENT_MAP needed a new "garage door"/"garage" trigger
+    so the query reaches the ha handler at all (see
+    TestKeywordDetect.test_garage_door_is_open_matches_ha in
+    test_router.py — routing was failing BEFORE this entity-level fix
+    even had a chance to matter), and this file's own _QUERY_MAP needed
+    a matching "garage" entry, since neither a real `cover` domain
+    entity nor a `binary_sensor` with device_class "garage_door" was
+    reachable here either, even once routing worked.
+
+    Covers both real Home Assistant naming conventions for the same
+    physical entity, confirmed via Home Assistant's own developer docs
+    (CoverDeviceClass.GARAGE = "garage") and a live, filed core issue
+    (home-assistant/core#91131) describing the cover-vs-binary_sensor
+    naming inconsistency directly."""
+
+    def setup_method(self):
+        from app.config import settings
+        settings.ha_url = "http://homeassistant:8123"
+        settings.ha_token = "fake-token"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.ha_url = ""
+        settings.ha_token = ""
+
+    def _mock_states(self, entities):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = entities
+        mock_resp.raise_for_status.return_value = None
+        return mock_resp
+
+    def test_real_cover_entity_matches_and_is_labeled_garage_doors(self):
+        """The `cover` domain shape — the dedicated, purpose-built HA
+        domain for openings (garage doors, blinds, gates), confirmed
+        via Home Assistant's own developer documentation."""
+        from app.sources import home_assistant
+        states = [_make_entity("cover.garage_door", "open", device_class="garage", friendly_name="Garage Door")]
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)):
+            result = home_assistant.search("is the garage door open")
+        assert "**Garage Doors:**" in result
+        assert "Garage Door: open" in result
+
+    def test_binary_sensor_garage_door_variant_also_matches(self):
+        """The simpler, common alternate shape — a plain binary_sensor
+        with device_class "garage_door" (NOT "garage" — confirmed via
+        a live, filed Home Assistant core issue describing this exact
+        naming inconsistency between the cover and binary_sensor
+        domains for the same physical entity type), the integration
+        shape a basic reed-switch sensor with no remote-control
+        capability typically uses."""
+        from app.sources import home_assistant
+        states = [_make_entity("binary_sensor.garage_door", "on", device_class="garage_door", friendly_name="Garage Door")]
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)):
+            result = home_assistant.search("garage door status")
+        assert "Garage Door: on" in result
+
+    def test_garage_door_query_does_not_pull_in_unrelated_locks(self):
+        """Confirms the new "garage door" trigger stays scoped to
+        cover/garage entities and doesn't also widen to pull in
+        unrelated lock entities — a genuinely different question
+        (open/closed vs locked/unlocked) should get a genuinely
+        separate answer."""
+        from app.sources import home_assistant
+        states = [
+            _make_entity("cover.garage_door", "closed", device_class="garage", friendly_name="Garage Door"),
+            _make_entity("lock.front_door", "locked", friendly_name="Front Door"),
+        ]
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)):
+            result = home_assistant.search("the garage door is open")
+        assert "Garage Door" in result
+        assert "Front Door" not in result
+
+    def test_existing_door_lock_query_unaffected_by_garage_addition(self):
+        """The flip side of the test above — confirms "are the doors
+        locked" still stays lock-domain-only and doesn't accidentally
+        widen to pull in a garage door's cover entity, now that both
+        share the word "door"."""
+        from app.sources import home_assistant
+        states = [
+            _make_entity("cover.garage_door", "closed", device_class="garage", friendly_name="Garage Door"),
+            _make_entity("lock.front_door", "locked", friendly_name="Front Door"),
+        ]
+        with patch("app.sources.home_assistant.requests.get", return_value=self._mock_states(states)):
+            result = home_assistant.search("are the doors locked")
+        assert "Front Door" in result
+        assert "Garage Door" not in result

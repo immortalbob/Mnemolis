@@ -4,6 +4,23 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.20]
+
+### Fixed — A Real, Two-File Garage-Door Gap, Found While Re-Checking Whether v3.50.19's "Intentional" Bitcoin Pairs Actually Were
+Pushed back on v3.50.19's own claim that the two remaining `CONDITIONAL_WITH_REMAINDER_QUERIES` double-kiwix-hit pairs (`"the garage door is open"` / `"any cameras go offline"`, each paired with a `"whats happening with bitcoin"` remainder) were intentional kiwix routing on both sides. They weren't — only the bitcoin **remainder** half of each pair was ever a genuine, considered design choice. Checked the **condition** half of each pair directly and found two different things:
+
+- **`"the garage door is open"` was a real, fixable, two-file gap.** `router.py`'s `INTENT_MAP["ha"]` had no trigger for open/closed garage-door phrasing at all — a genuinely different question from the existing locked/unlocked door triggers, since most garage doors have no lock entity of their own. Added `"garage door"`/`"garage"`. Routing alone wasn't the whole fix: even with correct routing, `home_assistant.py`'s own `_QUERY_MAP` had no entry that could find a real garage-door entity once inside the `ha` handler. Added a new `"garage door"`/`"garage"` entry covering **both** real Home Assistant naming conventions for this entity, confirmed via Home Assistant's own developer docs and a live, filed core issue (`home-assistant/core#91131`): a `cover` domain entity (the dedicated HA domain for openings) uses `device_class: "garage"`, while a plain `binary_sensor` reporting the same physical door uses `"garage_door"` instead — same real-world thing, two different device_class strings depending on integration shape, and there's no way to know from outside the deployment which one Mike's actual hardware uses, so both are covered. Also added a dedicated `"Garage Doors"` label (previously would have fallen through to a generic `"Cover"` label) and confirmed via direct, deliberate testing that this stays correctly separate from the existing, pinned `"are the doors locked"` lock-domain behavior in both directions — a garage-door query doesn't pull in unrelated locks, and a lock query doesn't pull in the garage door.
+- **`"any cameras go offline"` is genuinely not fixable, and was correctly left alone.** Checked `home_assistant.py`'s existing `"camera"` `_QUERY_MAP` entry directly — it answers motion-*detection* questions (`domains: ["event"], device_classes: ["motion"]`), not camera reachability/connectivity. There is no real Home Assistant concept in this codebase that answers "is my camera reachable," and Uptime Kuma (the other structured-status source) monitors services/hosts, not individual HA entities. `kiwix` remains the least-wrong available destination for this one — a real capability gap, not a routing bug, and out of scope for a keyword-list fix.
+
+`CONDITIONAL_WITH_REMAINDER_QUERIES`'s double-kiwix-hit count drops from 2/30 (v3.50.19's number) to 1/30 as a direct result — the one remaining hit is the genuine `"any cameras go offline"` case, not a gap.
+
+### Tests
+- `tests/test_router.py` — `TestKeywordDetect` extended with 3 new tests for the `"garage door"`/`"garage"` trigger, including a direct negative check that `"any cameras go offline"` correctly remains unmatched (confirming this fix is deliberately narrow); `test_conditional_with_remainder_pool_double_kiwix_hit_count_stays_low`'s threshold tightened from `<= 2` to `<= 1` and its docstring updated to explain why the camera case is excluded from the fix rather than just lowering the number
+- `tests/test_home_assistant.py` — `TestBuildFilter` extended with 2 new tests confirming the new `"garage door"`/`"garage"` `_QUERY_MAP` entry resolves to the `cover` domain (not `lock`) and covers both real device_class naming conventions; new `TestGarageDoorSupport` class with 4 end-to-end `search()` tests covering both real entity shapes (`cover`/`garage` and `binary_sensor`/`garage_door`) and confirming bidirectional non-interference with existing lock-domain queries
+- Version bumped to 3.50.20
+
+---
+
 ## [3.50.19]
 
 ### Investigated, Not Fixed — `conditional_remainder`'s Warm-Cache-Worse-Than-Cold Benchmark Anomaly

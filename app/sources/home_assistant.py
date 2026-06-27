@@ -54,6 +54,32 @@ _QUERY_MAP: dict[str, dict] = {
     "secure": {"domains": ["lock"], "device_classes": ["door"]},
     "security status": {"domains": ["lock"], "device_classes": ["door", "motion", "occupancy"], "include_motion": True},
     "security": {"domains": ["lock"], "device_classes": ["door", "motion", "occupancy"]},
+    # Garage door — open/closed state, NOT locked/unlocked. A genuinely
+    # different question from the lock-domain "door" entries above (a
+    # garage door typically has no lock entity of its own), so this is
+    # deliberately a separate key rather than widened "door"/"secure"
+    # specs — confirmed via direct testing that widening "door" itself
+    # would have been the wrong fix anyway, since router.py's own
+    # INTENT_MAP keeps "are the doors locked"-style routing genuinely
+    # separate from this new "garage door" trigger (see that file's
+    # own comment on the same investigation).
+    #
+    # Covers BOTH real HA naming conventions for this entity, confirmed
+    # via Home Assistant's own documentation and a live, filed core
+    # issue (home-assistant/core#91131) describing the inconsistency
+    # directly: a `cover` entity (the dedicated domain for openings —
+    # garage doors, blinds, gates) uses device_class "garage", while a
+    # plain `binary_sensor` reporting the same physical door (a common,
+    # simpler integration shape, e.g. a basic reed-switch sensor with
+    # no remote control capability) uses "garage_door" instead — same
+    # real-world thing, two different device_class strings depending
+    # on which integration shape was used to expose it. Domain "cover"
+    # itself is also included directly (not just via device_class) so
+    # a cover entity that for any reason lacks a device_class
+    # attribute (the None/generic cover case HA's own docs describe)
+    # still matches.
+    "garage door": {"domains": ["cover"], "device_classes": ["garage", "garage_door"]},
+    "garage": {"domains": ["cover"], "device_classes": ["garage", "garage_door"]},
     # Motion
     # Motion — both "event" domain (newer HA motion integrations that
     # report discrete motion EVENTS, e.g. "motion detected at 3:42pm")
@@ -577,6 +603,13 @@ def search(query: str) -> str:
                 "sensor": "Sensors",
                 "event": "Motion",
                 "switch": "Switches",
+                # Found alongside the new "garage door"/"garage"
+                # _QUERY_MAP entries above — without this, a real
+                # cover.* entity would fall through to the generic
+                # domain.replace("_", " ").title() fallback ("Cover"),
+                # technically correct but less clear than every other
+                # domain's dedicated, purpose-built label.
+                "cover": "Garage Doors",
             }.get(domain, domain.replace("_", " ").title())
 
         if label not in groups:

@@ -253,6 +253,26 @@ INTENT_MAP = {
         # instead of the cheap, structured ha source it should have
         # hit.
         "doors are locked", "door is locked",
+        # Found while researching whether the "garage door"/"camera
+        # offline" kiwix-double-hit pairs (see the conditional_remainder
+        # design doc) were genuinely intentional kiwix routing or a real
+        # gap — confirmed it's a real, two-file gap, not intentional:
+        # "the garage door is open" is asking about OPEN/CLOSED state,
+        # a question this list's existing door triggers never covered
+        # at all (they're all locked/unlocked phrasing, a semantically
+        # different question — a garage door has no lock state of its
+        # own in most installations). Deliberately a SEPARATE trigger
+        # from "door"/"doors locked" rather than widening those, since
+        # "are the doors locked" has its own pinned test
+        # (test_door_query_returns_lock_domain in
+        # tests/test_home_assistant.py) confirming it stays lock-only —
+        # this needed a new trigger, not a wider old one. Routing alone
+        # isn't the whole fix: home_assistant.py's own _QUERY_MAP needed
+        # a matching "garage" entry too, since a real cover/garage_door
+        # entity wasn't reachable there either — see that file's own
+        # comment on the new "garage" key for the second half of this
+        # fix.
+        "garage door", "garage",
     ],
     "changes": [
         "what changed", "any changes", "whats new", "what's new",

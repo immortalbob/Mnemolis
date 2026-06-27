@@ -139,6 +139,39 @@ class TestKeywordDetect:
     def test_door_is_locked_matches_ha(self):
         assert self.detect("is the door is locked") == "ha"
 
+    def test_garage_door_is_open_matches_ha(self):
+        """Regression test for a real, two-file gap found while
+        researching whether conditional_remainder's kiwix-double-hit
+        pairs were genuinely intentional kiwix routing (see the
+        conditional_remainder design doc): "the garage door is open"
+        is a question about OPEN/CLOSED state, not LOCKED/UNLOCKED —
+        a real, existing CONDITIONAL_QUERIES/CONDITIONAL_WITH_REMAINDER_
+        QUERIES entry that had zero match against this list's existing
+        door triggers (all locked/unlocked phrasing) and fell through
+        to kiwix. Deliberately a separate trigger from "door"/"doors
+        locked" rather than widening those — see
+        test_door_query_returns_lock_domain in test_home_assistant.py,
+        which pins "are the doors locked" to stay lock-only. The other
+        half of this fix is in home_assistant.py's own _QUERY_MAP, new
+        "garage"/"garage door" entries — routing alone doesn't help if
+        the entity itself still can't be found once inside the ha
+        handler."""
+        assert self.detect("the garage door is open") == "ha"
+
+    def test_garage_alone_matches_ha(self):
+        assert self.detect("garage status") == "ha"
+
+    def test_camera_offline_does_not_match_ha(self):
+        """Confirms this fix is deliberately narrow: "any cameras go
+        offline" is a different, NOT-fixed question — there is no
+        real Home Assistant concept in this codebase for camera
+        reachability/connectivity (the existing "camera" _QUERY_MAP
+        entry answers motion-DETECTION questions, a different thing
+        entirely), so this correctly continues to fall through rather
+        than silently routing somewhere that can't actually answer
+        it."""
+        assert self.detect("any cameras go offline") is None
+
 
 class TestKeywordDetectMulti:
     """Tests for multi-keyword detection that escalates to fusion."""
@@ -3523,16 +3556,30 @@ class TestResultCacheThunderingHerd:
         design doc for the full investigation, including the
         benchmark anomaly this surfaced from).
 
-        Three of the five entries that originally hit this case were
-        genuine INTENT_MAP keyword gaps (now fixed — see
-        TestKeywordDetect's test_is_it_raining_matches_forecast and
-        siblings); the remaining two ("whats happening with bitcoin")
-        are intentional, correct kiwix routing for an open-ended topic
-        and are not expected to ever resolve elsewhere. This test
-        confirms the double-hit count stays at the new, lower baseline
-        (2) rather than silently regressing back toward the old one
-        (5) if a future change to INTENT_MAP or this pool reintroduces
-        the gap.
+        Of the five entries that originally hit this case, three were
+        genuine INTENT_MAP keyword gaps (rain/online/doors-are-locked,
+        now fixed — see TestKeywordDetect's
+        test_is_it_raining_matches_forecast and siblings) and a
+        fourth ("the garage door is open") turned out to be a real,
+        separate, TWO-FILE gap once investigated further: router.py's
+        INTENT_MAP had no trigger for open/closed garage-door
+        phrasing at all (a genuinely different question from the
+        existing locked/unlocked door triggers), AND
+        home_assistant.py's own _QUERY_MAP had no entry for a real
+        cover/garage_door entity even once routing worked correctly —
+        see test_garage_door_is_open_matches_ha (this file) and
+        TestGarageDoorSupport (test_home_assistant.py) for both
+        halves of that fix. The remaining entry ("any cameras go
+        offline") is NOT a bug — this codebase has no real Home
+        Assistant capability for camera reachability/connectivity at
+        all (the existing "camera" entry answers motion-DETECTION
+        questions, a different thing), so kiwix is correctly the
+        least-wrong available destination, not a gap to close.
+
+        This test confirms the double-hit count stays at the new,
+        tightened baseline (1) rather than silently regressing back
+        toward any of the prior ones (5, then 2) if a future change
+        to INTENT_MAP, _QUERY_MAP, or this pool reintroduces a gap.
 
         Parses tests/locustfile.py via the same AST approach as
         test_locustfile_cache_hit_query_does_not_collide_with_any_other_pool
@@ -3591,16 +3638,17 @@ class TestResultCacheThunderingHerd:
             if condition_intent == "kiwix" and remainder_intent == "kiwix":
                 both_kiwix_pairs.append((condition, remainder))
 
-        assert len(both_kiwix_pairs) <= 2, (
+        assert len(both_kiwix_pairs) <= 1, (
             f"{len(both_kiwix_pairs)} pool entries have BOTH condition and "
             f"remainder resolving to kiwix at once — each one means "
             f"_resolve_conditional()'s concurrent dispatch fires two real "
             f"LLM-bound calls simultaneously against a deployment with "
             f"OLLAMA_NUM_PARALLEL=1, degrading the intended max(a,b) "
-            f"benefit back toward a+b. Expected at most 2 (the intentional, "
-            f"correct 'whats happening with bitcoin' cases) after the "
-            f"INTENT_MAP fixes for the rain/online/doors-are-locked gaps. "
-            f"Pairs found: {both_kiwix_pairs}"
+            f"benefit back toward a+b. Expected at most 1 (the genuine "
+            f"'any cameras go offline' case, which has no real HA backend "
+            f"capability to route to instead) after the INTENT_MAP/"
+            f"_QUERY_MAP fixes for the rain/online/doors-are-locked/garage-"
+            f"door gaps. Pairs found: {both_kiwix_pairs}"
         )
 
     def test_locustfile_thundering_herd_pools_are_wide_enough_to_avoid_high_collision_rates(self):
