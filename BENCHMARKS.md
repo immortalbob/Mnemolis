@@ -653,6 +653,33 @@ Run against the real v3.50.10 codebase on MiniDock. Zero exceptions, zero failur
 
 **`auto`'s warm p98/p99 (740ms/2500ms) is noticeably worse than the v3.50.9 run's near-perfect result (72ms/80ms), despite zero code changes to `AUTO_QUERIES` between the two runs.** Reading the distribution: roughly 3-4 of 64 requests landed in a real collision this run, versus a near-zero collision rate last time. `AUTO_QUERIES` sits at a real, nonzero modeled collision rate (~55%), so this kind of run-to-run swing is expected noise at this pool size, not a regression — the v3.50.9 run simply drew favorably.
 
+#### Two further confirmation runs (same v3.50.11 codebase, no code changes between any of these three runs)
+
+Two more cold/warm pairs were run against the identical v3.50.11 codebase to check whether the results above held up or were a single favorable draw. Zero exceptions, zero failures across all three runs — no `RemoteDisconnected` recurrence across any of them.
+
+| Endpoint | Metric | Run 1 (above) | Run 2 | Run 3 |
+|---|---|---|---|---|
+| `uptime` | cold p99 | 62ms | 140ms | 63ms |
+| `uptime` | warm p99 | 73ms | 59ms | 61ms |
+| `conditional` | cold p99 | 5300ms | 2500ms | 2500ms |
+| `conditional` | warm p99 | 1400ms | 1500ms | 1100ms |
+| `conditional_remainder` | cold p99 | 1500ms | 1800ms | 2900ms |
+| `conditional_remainder` | warm p99 | 1400ms | 1400ms | 1800ms |
+| `cache_hit` | cold p99 | 3600ms | 940ms | 810ms |
+| `cache_hit` | warm p99 | 34ms | 34ms | 47ms |
+| `auto` | cold p99 | 990ms | 2300ms | 2400ms |
+| `auto` | warm p99 | 2500ms | 100ms | 70ms |
+
+Three genuinely independent Locust invocations, each its own real cold+warm pair — none of these rows are the same run reported twice.
+
+**`conditional` is now confirmed real and repeatable, not a one-off — but Run 1's cold result (5300ms) is itself a reminder that this metric stays noisy.** Runs 2 and 3 landed at the identical 2500ms, both real improvements over Run 1's own 5300ms — three runs on the identical codebase producing three different cold p99 values (5300/2500/2500) is consistent with the design doc's own "inherently noisier metric" caution, not evidence anything regressed between Run 1 and the other two. `conditional_remainder` shows the same pattern, bouncing between 1500-2900ms across the three — genuinely noisy, but never approaching the pre-correction 4200ms in any of them.
+
+**`uptime` is fully confirmed across all three** — cold p99 62/140/63ms, warm 73/59/61ms — tightly clustered, no remaining caveats.
+
+**`auto`'s cold p99 shows the opposite pattern: tightly clustered at 2300-2400ms in Runs 2 and 3, with Run 1's own 990ms standing out as the better-than-usual draw** (consistent with the same per-pick, small-expensive-subset collision mechanism investigated directly — see the v3.50.12 changelog entry for the full root-cause analysis; the application-layer fix this pointed to shipped in v3.50.13, see that changelog entry, not yet reflected in any benchmark run recorded on this page). `auto`'s warm side is the most volatile metric across all three runs (2500/100/70ms) — Run 1's 2500ms warm result is the real outlier here, not Runs 2/3's near-identical low results, consistent with `AUTO_QUERIES`'s own modeled ~55% collision rate producing real, expected swings run to run.
+
+**`cache_hit`'s cold cost was real and high in Run 1 (3600ms) but landed under 1000ms in both Runs 2 and 3 (940ms, 810ms)** — consistent with the Ollama-queue-contention explanation already confirmed (queue depth varies run to run independent of anything Mnemolis controls), not evidence the mechanism itself changed.
+
 ## Running benchmarks
 
 Replace `192.168.1.50` below with your actual Mnemolis host's real IP or hostname — not a placeholder. `--host` silently accepts anything that looks like a URL, so a leftover example value doesn't fail loudly; it fails much later as a DNS error (`Temporary failure in name resolution`) on every single request, which doesn't obviously point back to `--host` as the cause.

@@ -36,21 +36,37 @@ future. A test that already manages this state correctly itself (most
 do, with their own proper setup_method/teardown_method pairs) is
 unaffected — this fixture's own save/restore is idempotent and simply a
 second, redundant safety net in that case.
+
+_inflight_locks (the per-key singleflight lock registry added alongside
+_llm_detect()/_llm_pick_fusion_sources()/kiwix.py's two LLM-routing
+functions) is the same shape of risk as _cache/_routing_cache above —
+another plain module-level dict, shared process-wide — so it gets the
+identical snapshot/restore treatment here rather than a second,
+separate fixture. Unlike the other two caches, a well-behaved test
+should always leave this one empty on its own (every acquire has a
+matching release in a finally block), so restoring a prior snapshot is
+mostly a safety net against a test that crashed mid-acquire rather than
+an expected steady-state need — but a real leak from one test silently
+holding a lock that a later, unrelated test then blocks on forever is a
+strictly worse failure mode (a hang, not a clear assertion failure)
+than the cache-leak class this fixture was originally built for, so
+covering it here costs nothing and forecloses a much uglier failure.
 """
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def _isolate_router_module_caches():
-    """Snapshot app.router._cache and _routing_cache before each test,
-    restore them after — regardless of what the test itself does to
-    either dict. Runs for every test in the suite automatically; no
-    test needs to opt in.
+    """Snapshot app.router._cache, _routing_cache, and _inflight_locks
+    before each test, restore them after — regardless of what the test
+    itself does to any of the three. Runs for every test in the suite
+    automatically; no test needs to opt in.
     """
     import app.router as router_module
 
     original_cache = dict(router_module._cache)
     original_routing_cache = dict(router_module._routing_cache)
+    original_inflight_locks = dict(router_module._inflight_locks)
 
     yield
 
@@ -58,3 +74,6 @@ def _isolate_router_module_caches():
     router_module._cache.update(original_cache)
     router_module._routing_cache.clear()
     router_module._routing_cache.update(original_routing_cache)
+    router_module._inflight_locks.clear()
+    router_module._inflight_locks.update(original_inflight_locks)
+

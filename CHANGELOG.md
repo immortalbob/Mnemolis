@@ -4,6 +4,62 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.13]
+
+### Added — Per-Key In-Flight Deduplication ("Singleflight") for the Routing Cache
+Built the application-layer fix the v3.50.12 design proposal named: a per-key lock registry (`router._singleflight()`, backed by a refcounted lock dict, `_inflight_locks`) wrapping the check-then-call-then-write sequence at all four real call sites that shared the identical unprotected structure — `_llm_detect()` (the `auto`-routing path the original investigation traced this to), `_llm_pick_fusion_sources()`, and Kiwix's own `_pick_books_with_llm()`/`_get_disambiguation_candidates()`. A second concurrent caller for an identical, never-yet-cached key now blocks on the first caller's resolution and reuses its result, rather than independently paying the full LLM cost — confirmed directly: 8 concurrent callers for the same uncached query now produce exactly 1 real LLM call, not 8, with total elapsed time matching one call's cost. Per-key, not a single global lock, so unrelated queries (a `forecast` lookup and a `kiwix` lookup, say) still proceed fully concurrently — only callers racing for the *identical* key actually queue.
+
+The proposal's own "real risks and open questions" section is resolved, not skipped:
+- **Lock-cleanup correctness under genuine concurrent load** — the original "delete if not locked" sketch had a real, named race (a stale lock reference outliving its own deletion from the registry). Replaced with a `_RefCountedLock` wrapper: every mutation of `_inflight_locks` (create-or-get, increment, decrement-and-maybe-delete) happens under one guard lock, so a key is only ever removed once its refcount is provably zero. Verified with a dedicated concurrency stress test (12 threads, 200 rounds each, hammering one shared key) plus a targeted repeated-repro test for the exact release/reacquire race the original sketch named — the same stress-test discipline this project's `_atomic_write_json()` fix already established, not a claim shipped on inspection alone.
+- **Interaction with `suppress_cache_writes()`** — checked directly rather than assumed safe: because the suppression check lives inside `_set_routing()`/`_set_cached()` at write time (not inside the lock itself), a suppressed in-flight resolver's write is silently dropped regardless of lock ordering, and a real caller arriving after it correctly re-checks the (still-empty) cache and pays the cost itself. Confirmed empirically in both arrival orders — no cross-contamination either direction.
+- **Sharing the registry across `router.py`/`kiwix.py`** — done via the same lazy-import pattern `kiwix.py` already used for `_get_routing`/`_set_routing` (`_get_singleflight_fn()`, mirroring `_get_routing_fns()`). One shared registry, confirmed directly (`kiwix._get_singleflight_fn() is router._singleflight`).
+- **Timeout behavior** — left as the proposal's own accepted tradeoff: a queued caller waits for the in-flight resolution to finish (success or failure), then re-checks cache and proceeds with its own call if the first caller's attempt failed. Strictly better than the pre-fix behavior in the success case; no worse in the failing case.
+
+The narrower pre-warming fallback the proposal documented was not needed — the real fix was judged tractable as scoped.
+
+**Deliberately scoped to the routing cache only**, matching the original proposal — the plain result cache's identical, structurally-equivalent gap (proven to still exist by `TestResultCacheThunderingHerd` in `tests/test_router.py`, written for `cache_hit`'s own collision history) is untouched by this release.
+
+**Not yet re-benchmarked against a real Locust run.** The design rationale predicts this should close `auto`'s 2300-2700ms cold p99 plateau outright, and plausibly improve `kiwix_disambiguation`'s own large cold-tail outliers (6800-7000ms in recent runs) if those share the same root cause — both are predictions to confirm against the next real benchmark, not results to record as settled.
+
+### Found, not fixed — `fusion.py`'s Concurrent Dispatch Doesn't Propagate `suppress_cache_writes()`
+While verifying the singleflight fix's interaction with synthetic-traffic suppression, found that `fusion.py`'s `search()` submits each fanned-out source call to its `ThreadPoolExecutor` directly (`executor.submit(SOURCE_MAP[s], query)`), without the `contextvars.copy_context().run(...)` wrapping `router.py`'s `_resolve_conditional()` and `searxng.py`'s own concurrent fetch both already use for the identical reason. A synthetic Adversarial Self-Testing query that resolves to fusion, with one of its fanned-out sources making its own uncached routing-cache write inside that worker thread, would have that write land for real rather than respecting suppression — the same class of leak `suppress_cache_writes()` was built to close, reachable through a path that fix didn't cover. Not yet confirmed how reachable this is in practice, and deliberately not patched here without a failing test first — see `wiki/Roadmap.md`'s "Still tracked, lower priority" section; tracked for its own design doc.
+
+### Tests
+- `tests/test_router.py` — `TestInflightLockRegistryPrimitives` (registry refcounting, including the dedicated stress test and race-repro test above), `TestSingleflightContextManager` (mutual exclusion per key, independence across keys, lock release on exception), and per-call-site regression classes (`TestLlmDetectSingleflight`, `TestLlmPickFusionSourcesSingleflight`, `TestKiwixPickBooksSingleflight`, `TestKiwixDisambiguationCandidatesSingleflight`) proving each of the four call sites collapses N concurrent callers to 1 real LLM call, never blocks on an already-warm key, never blocks across different keys, and still preserves each function's own existing failure-fallback-isn't-cached behavior under concurrency.
+- `tests/conftest.py`'s autouse cache-isolation fixture extended to snapshot/restore `_inflight_locks` alongside the existing `_cache`/`_routing_cache` handling — the same plain-module-level-dict-shared-across-the-test-process risk, with a worse failure mode if missed (a hang from a leaked lock, not a clear assertion failure).
+
+### Changed
+- `wiki/Caching.md` — new Development Notes entry plus a reference-level paragraph in the main Routing cache section describing the singleflight mechanism and its scope
+- `wiki/The-Benchmark-Investigation-Log.md` — Thread 2's closing entry updated to describe the fix as built rather than proposed
+- `wiki/Roadmap.md` — singleflight entry removed from "Still tracked, lower priority" (shipped); the `fusion.py` propagation gap found along the way added in its place
+- Version bumped to 3.50.13
+
+---
+
+## [3.50.12]
+
+### Confirmed — Two Further Re-Benchmarks Show a Real, if Noisy, Improvement From the v3.50.9 Pool-Sizing Correction
+Two further real Locust runs against the v3.50.11 codebase, on top of the one already recorded in `BENCHMARKS.md`'s v3.50.11 entry — three genuinely independent cold/warm pairs total at this pool size. `conditional`'s cold p99 across the three: 5300ms, 2500ms, 2500ms — real, substantial improvement from the original 9800ms in every single run, but landing on a different number each time rather than settling, consistent with the design doc's own "inherently noisier metric" caution. `conditional_remainder` showed the same shape (1500ms, 1800ms, 2900ms) — always well below the pre-correction 4200ms, never fully quiet. `uptime` stayed tightly clustered across all three (cold p99 62ms/140ms/63ms, warm 73ms/59ms/61ms) — the one genuinely fully-confirmed, no-caveats result of the three. Zero exceptions/failures recurred on any of the three runs — the `RemoteDisconnected` from the v3.50.9 warm run has now not reappeared across three further attempts.
+
+### Investigated — Why `auto`'s Cold-Path Tail Keeps Landing in the Same Range Despite Three Pool Widenings
+`auto`'s cold p99 across four total runs at the current pool size (v3.50.9, plus the three just-described v3.50.11-era runs): 2700ms, 990ms, 2300ms, 2400ms. Three of the four cluster tightly at 2300-2700ms; one (990ms) is a real, favorable outlier — consistent with, not contrary to, a probabilistic collision mechanism that doesn't fire on every single run. `AUTO_QUERIES` has been widened three separate times across this project's history (6→12→24), each pass measurably reducing the worst-case spike (10000ms → 3800/3000ms → the current range) but none touching this specific recurring cost.
+
+Traced to a real, previously-unconnected fact: of `AUTO_QUERIES`'s 24 entries, only **2** (`"what is nitrogen"`, `"whats the temperature outside right now"`) fail keyword matching and require an LLM call at all — confirmed directly by running every entry through the real `_keyword_detect()`. This ratio was discovered once before (the v3.50.9 correction's source-mix analysis), but only as context for why `AUTO_QUERIES`'s widening was lower-risk than `CONDITIONAL_QUERIES`'s — never connected to why the pool's *own* tail had stopped responding to further widening. The absolute count of LLM-dependent entries has never changed across any of the three widenings; only the cheap, keyword-resolved entries multiplied. With `auto_routing` weighted 3 and drawn repeatedly across a 120-second run (51-69 total picks observed per run), a uniform 2/24 draw rate puts a computed 4-6 picks on just those 2 entries in a typical run — a same-entry collision between two of those picks is likely on most runs, though not guaranteed on every one, regardless of total pool size. Modeled directly: even widening the expensive subset itself from 2 to 10 distinct entries only drops per-pick collision risk on that subset from ~100% to ~87% — the real constraint is total pick volume against a small slot count, and no further realistic pool-sizing pass closes this gap.
+
+### Added — Design Doc: Per-Key In-Flight Deduplication for the Routing/Result Caches
+Rather than propose a fourth pool-widening pass against a lever that's now demonstrably exhausted, `docs/design/singleflight-routing-cache-deduplication.md` proposes the actual application-layer fix: a per-key lock ("singleflight" / request-coalescing, the standard pattern for exactly this problem) wrapping the check-then-call-then-write sequence in `_llm_detect()`, `_llm_pick_fusion_sources()`, and both of `kiwix.py`'s own routing-cache checks (`_pick_books_with_llm()`, `_get_disambiguation_candidates()`) — all four share the identical unprotected structure, confirmed by reading each one directly. Concurrent callers for the same uncached key would queue behind the first resolver rather than each independently paying the full LLM cost, closing the actual collision mechanism rather than diluting its odds.
+
+This is a real, foundational change to shared caching code used by every source, not a narrow `auto`-specific patch — proposed, not built. The design doc names its own open risks honestly: lock-cleanup correctness under genuine concurrent load needs a real stress test before shipping; whether a synthetic Adversarial Self-Testing query's in-flight lock could cross-contaminate a real concurrent user request needs a dedicated check against `suppress_cache_writes()`'s existing isolation; and queued-caller timeout behavior in the genuinely-failing case needs a deliberate decision, not an assumption. A narrower, lower-risk fallback (pre-warming `AUTO_QUERIES`'s 2 known-expensive entries at startup) is documented as the weaker alternative if the shared-cache-layer change is judged too invasive to take on.
+
+### Changed
+- `BENCHMARKS.md` and [The Benchmark Investigation Log](https://github.com/immortalbob/Mnemolis/wiki/The-Benchmark-Investigation-Log) updated with the two further re-benchmark results and a pointer to the new design doc
+- `wiki/Roadmap.md` — added the singleflight proposal to "Still tracked, lower priority," with the real root-cause summary and the open risks the design doc names
+- Version bumped to 3.50.12 — no application code changed this release; investigation, benchmark records, and a new design doc only
+
+**Total test count: 1268** (unchanged)
+
+---
+
 ## [3.50.11]
 
 ### Investigated — `cache_hit`'s Remaining Cold-Run Cost: Ollama Queue Contention, Not a Mnemolis Bug

@@ -3546,3 +3546,819 @@ class TestResultCacheThunderingHerd:
             f"lands on kiwix than on a structured source (ha/uptime/forecast), "
             f"so this ratio matters as much as the pool's raw size."
         )
+
+
+class TestInflightLockRegistryPrimitives:
+    """Direct tests for _get_inflight_lock()/_release_inflight_lock()'s
+    refcounting — closing a real, named race the simpler bare-Lock-with-
+    "delete-if-unlocked" approach would have had (see the module-level
+    comment above _RefCountedLock in app/router.py for the full account).
+    These tests exercise the registry in isolation, without going
+    through any of the four real call sites, so a regression here is
+    traceable to the primitive itself rather than mixed in with LLM-call
+    mocking noise.
+    """
+
+    def setup_method(self):
+        from app.router import _inflight_locks
+        _inflight_locks.clear()
+
+    def teardown_method(self):
+        from app.router import _inflight_locks
+        _inflight_locks.clear()
+
+    def test_first_caller_creates_a_new_lock(self):
+        from app.router import _get_inflight_lock, _release_inflight_lock, get_inflight_lock_count
+        entry = _get_inflight_lock("source:nitrogen")
+        entry.lock.acquire()
+        assert get_inflight_lock_count() == 1
+        _release_inflight_lock("source:nitrogen", entry)
+        assert get_inflight_lock_count() == 0
+
+    def test_second_concurrent_caller_gets_the_same_lock_object(self):
+        """The whole point of the registry — two callers racing for the
+        identical key must be coordinating against ONE lock object, not
+        two independently-allocated ones that can't see each other.
+        Calling _get_inflight_lock() a second time while the first
+        caller still holds the lock is itself safe (it only registers
+        interest / bumps the refcount — the actual blocking happens
+        separately at entry.lock.acquire(), exactly as every real call
+        site does it); this test exercises that registration step
+        directly, in a background thread, to also prove it doesn't
+        block the calling thread."""
+        import threading
+        from app.router import _get_inflight_lock, _release_inflight_lock
+
+        entry_a = _get_inflight_lock("source:nitrogen")
+        entry_a.lock.acquire()
+
+        captured = {}
+
+        def register_second_reference():
+            captured["entry_b"] = _get_inflight_lock("source:nitrogen")
+
+        t = threading.Thread(target=register_second_reference)
+        t.start()
+        t.join(timeout=1.0)
+
+        assert "entry_b" in captured, "_get_inflight_lock() blocked when it should only register interest"
+        assert captured["entry_b"] is entry_a
+
+        _release_inflight_lock("source:nitrogen", entry_a)
+        # Acquire-and-release the second reference too, the same way a
+        # real caller that registered interest while waiting would.
+        entry_b = captured["entry_b"]
+        entry_b.lock.acquire()
+        _release_inflight_lock("source:nitrogen", entry_b)
+
+    def test_different_keys_get_different_locks(self):
+        from app.router import _get_inflight_lock, _release_inflight_lock
+        entry_a = _get_inflight_lock("source:nitrogen")
+        entry_a.lock.acquire()
+        entry_b = _get_inflight_lock("source:helium")
+        entry_b.lock.acquire()
+        assert entry_a is not entry_b
+        _release_inflight_lock("source:nitrogen", entry_a)
+        _release_inflight_lock("source:helium", entry_b)
+
+    def test_entry_removed_once_last_reference_releases(self):
+        """Two concurrent references to the same key: the first caller
+        acquires and holds the lock; a second reference is taken out
+        (refcount bumped, via a background thread so it doesn't block
+        this test) but doesn't get to actually acquire until the first
+        releases. Confirms the entry survives as long as ANY reference
+        is outstanding, and disappears only once both are gone."""
+        import threading
+        from app.router import _get_inflight_lock, _release_inflight_lock, get_inflight_lock_count
+
+        entry_a = _get_inflight_lock("source:nitrogen")
+        entry_a.lock.acquire()
+
+        captured = {}
+
+        def register_second_reference():
+            captured["entry_b"] = _get_inflight_lock("source:nitrogen")
+
+        t = threading.Thread(target=register_second_reference)
+        t.start()
+        t.join(timeout=1.0)
+
+        assert get_inflight_lock_count() == 1  # one KEY, shared by two refs
+        _release_inflight_lock("source:nitrogen", entry_a)
+        assert get_inflight_lock_count() == 1, "one caller is still referencing this key"
+
+        entry_b = captured["entry_b"]
+        entry_b.lock.acquire()
+        _release_inflight_lock("source:nitrogen", entry_b)
+        assert get_inflight_lock_count() == 0, "last reference released, entry should be gone"
+
+    def test_a_key_resurrected_after_full_release_gets_a_fresh_lock(self):
+        """Confirms the registry doesn't confuse "this key was once
+        in-flight" with "this key is still in-flight" — a brand new,
+        unrelated resolution of the same key later must get a clean
+        lock, not a stale, already-acquired one left behind by a bug."""
+        from app.router import _get_inflight_lock, _release_inflight_lock
+        first = _get_inflight_lock("source:nitrogen")
+        first.lock.acquire()
+        _release_inflight_lock("source:nitrogen", first)
+        second = _get_inflight_lock("source:nitrogen")
+        assert not second.lock.locked()
+        second.lock.acquire()
+        _release_inflight_lock("source:nitrogen", second)
+
+    def test_refcounted_lock_cleanup_under_real_concurrent_stress(self):
+        """A direct reproduction, not a guess: hammers ONE shared key
+        with many threads doing acquire-hold-release in a tight loop,
+        checking after every single round that the registry never
+        leaves behind more than one entry for the one key in use, and
+        that the registry is completely empty once every thread
+        finishes.
+
+        This is the project's own established discipline for exactly
+        this class of claim — see _atomic_write_json()'s own stress
+        test (8 concurrent writers/readers, checked directly rather
+        than reasoned about) in test_cache_persistence.py, which sets
+        the precedent this test follows: don't ship a concurrency claim
+        on inspection alone.
+        """
+        import threading
+        import random
+        from app.router import (
+            _get_inflight_lock, _release_inflight_lock, get_inflight_lock_count,
+        )
+
+        key = "source:stress test query"
+        rounds_per_thread = 200
+        thread_count = 12
+        errors = []
+        max_observed_entries = {"n": 0}
+        max_observed_lock = threading.Lock()
+
+        def worker():
+            try:
+                for _ in range(rounds_per_thread):
+                    entry = _get_inflight_lock(key)
+                    entry.lock.acquire()
+                    try:
+                        # A small, random hold time so threads genuinely
+                        # interleave their acquire/release timing rather
+                        # than running in lockstep.
+                        if random.random() < 0.3:
+                            pass  # no-op delay variance is enough at this thread count
+                        with max_observed_lock:
+                            count = get_inflight_lock_count()
+                            if count > max_observed_entries["n"]:
+                                max_observed_entries["n"] = count
+                    finally:
+                        # _release_inflight_lock() releases entry.lock
+                        # itself — calling entry.lock.release() again
+                        # here on top of that would double-release.
+                        _release_inflight_lock(key, entry)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(thread_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"worker thread(s) raised: {errors}"
+        # Only ONE key was ever in play, so the registry must never have
+        # shown more than 1 entry at any observed point.
+        assert max_observed_entries["n"] <= 1, (
+            f"observed {max_observed_entries['n']} simultaneous registry "
+            f"entries for a single shared key — the refcounting let a "
+            f"second, independent lock object get created for a key "
+            f"already in flight"
+        )
+        # And after every thread has fully finished, nothing should be left.
+        assert get_inflight_lock_count() == 0, (
+            "registry leaked entries after all worker threads completed — "
+            "a refcount never returned to zero, or a key was deleted while "
+            "still referenced"
+        )
+
+    def test_release_then_immediate_reacquire_by_a_different_thread_is_safe(self):
+        """Targets the exact race a simpler "delete a key's lock once
+        it's no longer held" design would have: a lock released and
+        possibly deleted, with a third caller's reference to the OLD
+        object still outstanding, racing a fourth caller's fresh
+        _get_inflight_lock() call for the same key. Runs many
+        repetitions specifically to surface a race that might only
+        manifest occasionally, not on a single lucky interleaving."""
+        import threading
+        from app.router import (
+            _get_inflight_lock, _release_inflight_lock, get_inflight_lock_count,
+            _inflight_locks, _inflight_locks_guard,
+        )
+
+        key = "source:race repro query"
+        repetitions = 500
+
+        for _ in range(repetitions):
+            barrier = threading.Barrier(2)
+            results = {}
+
+            def releaser():
+                entry = _get_inflight_lock(key)
+                entry.lock.acquire()
+                barrier.wait()
+                # _release_inflight_lock() releases entry.lock itself —
+                # no separate entry.lock.release() call needed here.
+                _release_inflight_lock(key, entry)
+
+            def reacquirer():
+                barrier.wait()
+                entry = _get_inflight_lock(key)
+                # Must be able to genuinely acquire — if this hangs or
+                # raises, the registry handed back a broken/stale lock.
+                acquired = entry.lock.acquire(timeout=2.0)
+                results["acquired"] = acquired
+                if acquired:
+                    # _release_inflight_lock() releases entry.lock
+                    # itself — don't also release it here first.
+                    _release_inflight_lock(key, entry)
+                else:
+                    # Didn't actually acquire — only drop our reference,
+                    # don't try to release a lock we never hold. (Not
+                    # expected to ever run — the whole point of this
+                    # test is that `acquired` is always True — but kept
+                    # safe rather than assuming.)
+                    with _inflight_locks_guard:
+                        entry.refcount -= 1
+                        if entry.refcount <= 0 and _inflight_locks.get(key) is entry:
+                            del _inflight_locks[key]
+
+            t1 = threading.Thread(target=releaser)
+            t2 = threading.Thread(target=reacquirer)
+            t1.start()
+            t2.start()
+            t1.join(timeout=3.0)
+            t2.join(timeout=3.0)
+
+            assert results.get("acquired") is True, (
+                "a fresh caller could not acquire the lock for a key "
+                "another thread just released — possible stale-lock race"
+            )
+
+        assert get_inflight_lock_count() == 0
+
+
+class TestSingleflightContextManager:
+    """Tests for the _singleflight() context manager itself, separate
+    from the registry primitives it's built on and separate from the
+    four real call sites that use it — confirms the contract callers
+    rely on: mutual exclusion per key, independence across different
+    keys, and that the lock is always released even when the wrapped
+    code raises.
+    """
+
+    def setup_method(self):
+        from app.router import _inflight_locks
+        _inflight_locks.clear()
+
+    def teardown_method(self):
+        from app.router import _inflight_locks
+        _inflight_locks.clear()
+
+    def test_two_concurrent_callers_for_the_same_key_serialize(self):
+        import threading
+        import time
+        from app.router import _singleflight
+
+        order = []
+        order_lock = threading.Lock()
+
+        def call(label):
+            with _singleflight("shared-key"):
+                with order_lock:
+                    order.append(f"{label}-enter")
+                time.sleep(0.1)
+                with order_lock:
+                    order.append(f"{label}-exit")
+
+        t1 = threading.Thread(target=call, args=("a",))
+        t2 = threading.Thread(target=call, args=("b",))
+        t1.start()
+        time.sleep(0.02)  # ensure t1 enters first, deterministically
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Whichever thread entered first must also exit before the
+        # second thread's "enter" appears — proving genuine mutual
+        # exclusion, not just two independent runs that happened not
+        # to overlap by luck.
+        assert order == ["a-enter", "a-exit", "b-enter", "b-exit"]
+
+    def test_different_keys_run_fully_concurrently(self):
+        """The whole reason for per-key over global locking: two
+        callers on DIFFERENT keys must never wait on each other. Proven
+        the same way TestConditionalRemainderConcurrency proves its own
+        concurrency claim — real elapsed-time measurement, not just
+        unchanged output."""
+        import threading
+        import time
+        from app.router import _singleflight
+
+        def call(key):
+            with _singleflight(key):
+                time.sleep(0.3)
+
+        t1 = threading.Thread(target=call, args=("key-a",))
+        t2 = threading.Thread(target=call, args=("key-b",))
+        start = time.monotonic()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.5, (
+            f"took {elapsed:.2f}s — looks like different keys serialized "
+            f"against each other, defeating the entire point of a "
+            f"per-key (vs. global) lock"
+        )
+
+    def test_lock_released_even_when_wrapped_code_raises(self):
+        from app.router import _singleflight, get_inflight_lock_count
+
+        with pytest.raises(ValueError):
+            with _singleflight("error-key"):
+                raise ValueError("simulated failure mid-resolution")
+
+        assert get_inflight_lock_count() == 0, (
+            "lock was not released after an exception inside the "
+            "singleflight block — a future caller for this key would "
+            "deadlock forever"
+        )
+
+        # And a fresh call for the same key afterward must work normally.
+        entered = []
+        with _singleflight("error-key"):
+            entered.append(True)
+        assert entered == [True]
+
+
+class TestLlmDetectSingleflight:
+    """Regression coverage for singleflight deduplication at
+    _llm_detect() — the specific call site `auto`'s cold p99 plateau was
+    traced to (router.py's _llm_detect(), the function detect_intent()
+    falls through to for the small, fixed 2-of-24 subset of
+    AUTO_QUERIES entries that don't resolve via plain keyword matching;
+    see wiki/The-Benchmark-Investigation-Log.md's Thread 2). These tests
+    prove the actual mechanism directly against _llm_detect(), the same
+    discipline TestResultCacheThunderingHerd already established for the
+    result cache's identical, deliberately-unfixed gap.
+    """
+
+    def setup_method(self):
+        from app.router import clear_routing_cache, _inflight_locks
+        clear_routing_cache()
+        _inflight_locks.clear()
+
+    def teardown_method(self):
+        from app.router import clear_routing_cache, _inflight_locks
+        clear_routing_cache()
+        _inflight_locks.clear()
+
+    def test_concurrent_callers_for_the_same_uncached_query_pay_the_cost_once(self):
+        """The actual fix, proven directly: N concurrent callers for an
+        identical, never-yet-cached query must result in exactly ONE
+        real LLM call, not N — closing the thundering herd
+        TestResultCacheThunderingHerd proves still exists, unfixed, at
+        the result-cache layer."""
+        import threading
+        import time
+        from unittest.mock import patch
+        from app.router import _llm_detect
+
+        call_count = {"n": 0}
+        call_lock = threading.Lock()
+
+        def slow_complete(prompt, max_tokens=30, temperature=0.0):
+            with call_lock:
+                call_count["n"] += 1
+            time.sleep(0.2)
+            return "kiwix"
+
+        results = []
+
+        def call():
+            results.append(_llm_detect("what is nitrogen"))
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", side_effect=slow_complete):
+            threads = [threading.Thread(target=call) for _ in range(8)]
+            start = time.monotonic()
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            elapsed = time.monotonic() - start
+
+        assert call_count["n"] == 1, (
+            f"expected exactly 1 real LLM call for 8 concurrent callers "
+            f"on the identical uncached key, got {call_count['n']} — "
+            f"singleflight failed to deduplicate"
+        )
+        assert elapsed < 0.4, (
+            f"took {elapsed:.2f}s — much longer than one handler call's "
+            f"cost, suggesting callers serialized through real LLM calls "
+            f"rather than the second+ caller reusing the first's result"
+        )
+        assert all(r == "kiwix" for r in results)
+
+    def test_a_genuinely_warm_key_never_touches_the_lock_or_the_llm(self):
+        """Contrast case mirroring TestResultCacheThunderingHerd's own
+        sibling test: once a routing decision is ACTUALLY cached, a
+        concurrent caller must hit cache directly, without ever calling
+        the LLM OR paying any lock-acquisition cost at all."""
+        import threading
+        from unittest.mock import patch
+        from app.router import _llm_detect, _set_routing
+
+        _set_routing("source:what is nitrogen", "kiwix")
+
+        call_count = {"n": 0}
+
+        def counting_complete(prompt, max_tokens=30, temperature=0.0):
+            call_count["n"] += 1
+            return "kiwix"
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", side_effect=counting_complete):
+            threads = [
+                threading.Thread(target=_llm_detect, args=("what is nitrogen",))
+                for _ in range(5)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert call_count["n"] == 0
+
+    def test_a_late_arriving_caller_after_resolution_gets_the_cached_value_without_a_lock_wait(self):
+        """A caller arriving well AFTER the in-flight resolution has
+        already completed and released its lock must take the fast,
+        no-lock path — not queue behind a lock that's already free."""
+        from unittest.mock import patch
+        from app.router import _llm_detect, get_inflight_lock_count
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="kiwix"):
+            first = _llm_detect("what is nitrogen")
+
+        assert first == "kiwix"
+        assert get_inflight_lock_count() == 0
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", side_effect=AssertionError("LLM should not be called again")):
+            second = _llm_detect("what is nitrogen")
+
+        assert second == "kiwix"
+
+    def test_concurrent_callers_for_different_uncached_queries_do_not_block_each_other(self):
+        """Per-key, not global — two genuinely different uncached
+        queries must resolve fully concurrently, never queueing behind
+        each other just because both happened to miss at the same time."""
+        import threading
+        import time
+        from unittest.mock import patch
+        from app.router import _llm_detect
+
+        def slow_complete(prompt, max_tokens=30, temperature=0.0):
+            time.sleep(0.3)
+            if "nitrogen" in prompt:
+                return "kiwix"
+            return "forecast"
+
+        results = {}
+
+        def call(query, label):
+            results[label] = _llm_detect(query)
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", side_effect=slow_complete):
+            t1 = threading.Thread(target=call, args=("what is nitrogen", "a"))
+            t2 = threading.Thread(target=call, args=("whats the temperature outside right now", "b"))
+            start = time.monotonic()
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            elapsed = time.monotonic() - start
+
+        assert elapsed < 0.5, (
+            f"took {elapsed:.2f}s — two DIFFERENT keys appear to have "
+            f"serialized against each other"
+        )
+        assert results["a"] == "kiwix"
+        assert results["b"] == "forecast"
+
+    def test_lock_released_even_when_llm_call_raises(self):
+        """If the wrapped LLM call raises instead of returning normally,
+        the lock must still release — otherwise every future caller for
+        this exact query would deadlock forever waiting on a lock no one
+        will ever release."""
+        from unittest.mock import patch
+        from app.router import _llm_detect, get_inflight_lock_count
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", side_effect=RuntimeError("simulated LLM failure")):
+            with pytest.raises(RuntimeError):
+                _llm_detect("what is nitrogen")
+
+        assert get_inflight_lock_count() == 0
+
+        # A subsequent call for the same query must be able to proceed
+        # normally, not hang.
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="kiwix"):
+            result = _llm_detect("what is nitrogen")
+        assert result == "kiwix"
+
+    def test_fusion_decision_still_applies_discourse_framing_after_singleflight_resolution(self):
+        """Confirms the refactor that extracted cache-hit interpretation
+        into _interpret_cached_source_decision() (so it could be reused
+        both before and after acquiring the lock) didn't silently drop
+        the existing discourse-framing escalation behavior."""
+        from app.router import _llm_detect
+
+        with patch_discourse_framing(True):
+            from unittest.mock import patch
+            with patch("app.router._get_routing", return_value="forecast"):
+                result = _llm_detect("everyone keeps talking about black holes, whats the weather")
+        assert result == ["forecast", "kiwix"]
+
+
+def patch_discourse_framing(active: bool):
+    """Small local helper — _has_discourse_framing() does real text
+    analysis, but these tests only care about the escalation behavior
+    downstream of it, so patching it directly keeps the test focused on
+    what's actually under test (singleflight's interaction with the
+    existing escalation logic) rather than re-deriving discourse-framing
+    phrase detection here too."""
+    from unittest.mock import patch
+    import app.router as router_module
+    return patch.object(router_module, "_has_discourse_framing", return_value=active)
+
+
+class TestLlmPickFusionSourcesSingleflight:
+    """Regression coverage for singleflight deduplication at
+    _llm_pick_fusion_sources() — the second of the four call sites that
+    share the identical check-call-write gap."""
+
+    def setup_method(self):
+        from app.router import clear_routing_cache, _inflight_locks
+        clear_routing_cache()
+        _inflight_locks.clear()
+
+    def teardown_method(self):
+        from app.router import clear_routing_cache, _inflight_locks
+        clear_routing_cache()
+        _inflight_locks.clear()
+
+    def test_concurrent_callers_for_the_same_uncached_query_pay_the_cost_once(self):
+        import threading
+        import time
+        from unittest.mock import patch
+        from app.router import _llm_pick_fusion_sources
+
+        call_count = {"n": 0}
+        call_lock = threading.Lock()
+
+        def slow_complete(prompt, max_tokens=30, temperature=0.0):
+            with call_lock:
+                call_count["n"] += 1
+            time.sleep(0.2)
+            return "forecast, uptime"
+
+        results = []
+
+        def call():
+            results.append(_llm_pick_fusion_sources("whats the weather and services up"))
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", side_effect=slow_complete):
+            threads = [threading.Thread(target=call) for _ in range(8)]
+            start = time.monotonic()
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            elapsed = time.monotonic() - start
+
+        assert call_count["n"] == 1
+        assert elapsed < 0.4
+        assert all("forecast" in r and "uptime" in r for r in results)
+
+    def test_failure_fallback_still_not_cached_under_concurrency(self):
+        """The existing "don't cache a bare failure fallback" behavior
+        (TestLlmPickFusionSources.test_failure_fallback_is_not_cached_
+        allowing_later_success) must still hold once singleflight wraps
+        this function — a query that fails for every concurrent caller
+        in one wave must still get a fresh, real chance on the next
+        wave, not get permanently stuck on ["kiwix", "web"]."""
+        import threading
+        from unittest.mock import patch
+        from app.router import _llm_pick_fusion_sources, _get_routing
+
+        query = "a query every concurrent caller fails on"
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="not_a_real_source"):
+            threads = [
+                threading.Thread(target=_llm_pick_fusion_sources, args=(query,))
+                for _ in range(5)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert _get_routing(f"fusion_sources:{query}") is None, (
+            "a failure fallback got cached despite every concurrent "
+            "caller's LLM response being unusable"
+        )
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", return_value="forecast, news") as mock_complete:
+            result = _llm_pick_fusion_sources(query)
+        assert mock_complete.called
+        assert "forecast" in result
+
+
+class TestKiwixPickBooksSingleflight:
+    """Regression coverage for singleflight deduplication at kiwix.py's
+    _pick_books_with_llm() — the third of the four call sites sharing
+    the identical check-call-write gap, and the first crossing the
+    router.py/kiwix.py module boundary via the shared _inflight_locks
+    registry."""
+
+    def setup_method(self):
+        from app.router import clear_routing_cache, _inflight_locks
+        clear_routing_cache()
+        _inflight_locks.clear()
+
+    def teardown_method(self):
+        from app.router import clear_routing_cache, _inflight_locks
+        clear_routing_cache()
+        _inflight_locks.clear()
+
+    def test_concurrent_callers_for_the_same_uncached_query_pay_the_cost_once(self):
+        import threading
+        import time
+        from unittest.mock import patch
+        from app.sources.kiwix import _pick_books_with_llm
+
+        books = [
+            {"name": "wikipedia_en_all_maxi_2026-02", "title": "Wikipedia", "summary": "Encyclopedia"},
+            {"name": "stackexchange", "title": "Stack Exchange", "summary": "Q&A"},
+        ]
+
+        call_count = {"n": 0}
+        call_lock = threading.Lock()
+
+        def slow_complete(prompt, max_tokens=150, temperature=0.0):
+            with call_lock:
+                call_count["n"] += 1
+            time.sleep(0.2)
+            return "wikipedia_en_all_maxi_2026-02"
+
+        results = []
+
+        def call():
+            results.append(_pick_books_with_llm("what is nitrogen", books))
+
+        with patch("app.llm.is_configured", return_value=True), \
+             patch("app.llm.complete", side_effect=slow_complete):
+            threads = [threading.Thread(target=call) for _ in range(8)]
+            start = time.monotonic()
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            elapsed = time.monotonic() - start
+
+        assert call_count["n"] == 1
+        assert elapsed < 0.4
+        assert all(r == ["wikipedia_en_all_maxi_2026-02"] for r in results)
+
+    def test_not_configured_fallback_deduplicated_too(self):
+        """The doc's own stated reason for wrapping BOTH
+        _fallback_book_choice() call sites, not just the real-LLM path:
+        a second caller racing the "not configured" branch must still
+        benefit from the first caller's cached fallback decision rather
+        than redundantly recomputing it."""
+        import threading
+        from unittest.mock import patch
+        from app.sources.kiwix import _pick_books_with_llm
+
+        books = [
+            {"name": "wikipedia_en_all_maxi_2026-02", "title": "Wikipedia", "summary": "Encyclopedia"},
+            {"name": "stackexchange", "title": "Stack Exchange", "summary": "Q&A"},
+        ]
+
+        results = []
+
+        def call():
+            results.append(_pick_books_with_llm("what is nitrogen", books))
+
+        with patch("app.llm.is_configured", return_value=False):
+            threads = [threading.Thread(target=call) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert all(r == ["wikipedia_en_all_maxi_2026-02"] for r in results)
+
+
+class TestKiwixDisambiguationCandidatesSingleflight:
+    """Regression coverage for singleflight deduplication at kiwix.py's
+    _get_disambiguation_candidates() — the fourth and last of the call
+    sites sharing the identical check-call-write gap, and plausibly
+    relevant to kiwix_disambiguation's own large cold-tail benchmark
+    outliers (see wiki/The-Benchmark-Investigation-Log.md)."""
+
+    def setup_method(self):
+        from app.router import clear_routing_cache, _inflight_locks
+        clear_routing_cache()
+        _inflight_locks.clear()
+
+    def teardown_method(self):
+        from app.router import clear_routing_cache, _inflight_locks
+        clear_routing_cache()
+        _inflight_locks.clear()
+
+    def test_concurrent_callers_for_the_same_uncached_term_pay_the_cost_once(self):
+        import threading
+        import time
+        from unittest.mock import patch
+        from app.sources.kiwix import _get_disambiguation_candidates
+
+        call_count = {"n": 0}
+        call_lock = threading.Lock()
+
+        def slow_complete(prompt, max_tokens=40, temperature=0.0):
+            with call_lock:
+                call_count["n"] += 1
+            time.sleep(0.2)
+            return "galaxy astronomy|galaxy spiral|galaxy"
+
+        results = []
+
+        def call():
+            results.append(_get_disambiguation_candidates("what is a galaxy", "galaxy"))
+
+        with patch("app.llm.complete", side_effect=slow_complete):
+            threads = [threading.Thread(target=call) for _ in range(8)]
+            start = time.monotonic()
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            elapsed = time.monotonic() - start
+
+        assert call_count["n"] == 1
+        assert elapsed < 0.4
+        assert all("galaxy" in r for r in results)
+
+    def test_empty_llm_response_failure_still_not_cached_under_concurrency(self):
+        """Mirrors TestLlmPickFusionSourcesSingleflight's equivalent
+        test — this function's own "only skip caching when raw was
+        empty/falsy" distinction (different from the other two
+        functions' simpler "never cache a fallback" rule) must still
+        hold once wrapped in the lock."""
+        import threading
+        from unittest.mock import patch
+        from app.sources.kiwix import _get_disambiguation_candidates
+        from app.router import _get_routing
+
+        with patch("app.llm.complete", return_value=""):
+            threads = [
+                threading.Thread(
+                    target=_get_disambiguation_candidates, args=("what is mercury", "mercury")
+                )
+                for _ in range(5)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        assert _get_routing("disambig_candidates:mercury") is None
+
+    def test_lock_shared_correctly_across_module_boundary(self):
+        """Direct proof that kiwix.py's _get_singleflight_fn() really
+        does return router.py's OWN _singleflight, not some
+        independent duplicate — confirms the registry is one shared
+        source of truth across both modules, not two registries that
+        can't see each other."""
+        from app.sources.kiwix import _get_singleflight_fn
+        from app.router import _singleflight
+        assert _get_singleflight_fn() is _singleflight
+

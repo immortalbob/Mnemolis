@@ -12,6 +12,27 @@ def _get_routing_fns():
     from app.router import _get_routing, _set_routing
     return _get_routing, _set_routing
 
+
+def _get_singleflight_fn():
+    """Lazy-imported accessor for router.py's _singleflight() context
+    manager, mirroring _get_routing_fns()'s existing pattern.
+
+    Deliberately the SAME registry router.py's own _llm_detect()/
+    _llm_pick_fusion_sources() use (_inflight_locks lives in router.py,
+    not duplicated here) — a query that happens to share a cache key
+    shape across modules should still genuinely coordinate against one
+    lock, not two independent ones that can't see each other. In
+    practice the cache key PREFIXES this module uses ("books:",
+    "disambig_candidates:") never collide with router.py's own
+    ("source:", "fusion_sources:"), so today this is more about having
+    one obviously-correct shared registry than about a key collision
+    that's actually possible right now — but a single source of truth
+    is the right shape regardless,
+    and costs nothing extra to set up.
+    """
+    from app.router import _singleflight
+    return _singleflight
+
 # ---------------------------------------------------------------------------
 # Dynamic book discovery
 # ---------------------------------------------------------------------------
@@ -126,98 +147,129 @@ def _fallback_book_choice(books: list[dict], cache_key: str, set_routing) -> lis
 def _pick_books_with_llm(query: str, books: list[dict], max_books: int | None = None) -> list[str]:
     """Ask Ollama to pick the best books for the query. Returns ranked list of book names.
     Checks routing cache first to avoid redundant Ollama calls.
-    Defaults to settings.kiwix_max_books when max_books is not specified."""
+    Defaults to settings.kiwix_max_books when max_books is not specified.
+
+    Singleflight: see router.py's _llm_detect() docstring and the
+    module-level comment above router.py's _RefCountedLock/
+    _inflight_locks for the full mechanism — this is the third of four
+    call sites sharing the identical check-call-write gap (the others
+    are router.py's _llm_detect()/_llm_pick_fusion_sources() and this
+    module's own _get_disambiguation_candidates()). Both of
+    _fallback_book_choice()'s call sites below (no LLM configured; LLM
+    responded but nothing usable) sit inside the lock too, not just the
+    real LLM-call path — a second caller racing the "not configured"
+    branch would otherwise still skip the cache re-check and redundantly
+    recompute the same cheap, but not free, fallback.
+    """
     if max_books is None:
         max_books = settings.kiwix_max_books
     if not books:
         return []
 
-    # Check routing cache
     get_routing, set_routing = _get_routing_fns()
+    singleflight = _get_singleflight_fn()
     cache_key = f"books:{query}"
-    cached = get_routing(cache_key)
-    if cached:
+    book_names = {b["name"] for b in books}
+
+    def _interpret_cached_books(cached: str) -> list[str] | None:
         # Stored as comma-separated book names
         cached_books = [b.strip() for b in cached.split(",") if b.strip()]
-        book_names = {b["name"] for b in books}
         valid = [b for b in cached_books if b in book_names]
         if valid:
             _LOGGER.info("Routing cache hit for book selection: '%s' -> %s", query[:50], valid)
             return valid
+        return None
+
+    # Check routing cache first — cheap read, stays outside any lock so
+    # a warm hit never pays any lock overhead at all.
+    cached = get_routing(cache_key)
+    if cached:
+        result = _interpret_cached_books(cached)
+        if result is not None:
+            return result
 
     from app.llm import complete, is_configured
 
-    if not is_configured():
+    with singleflight(cache_key):
+        # Re-check now that we hold the lock — a concurrent caller may
+        # have already resolved and cached this exact query (via either
+        # the real LLM path or a fallback) while we were waiting.
+        cached = get_routing(cache_key)
+        if cached:
+            result = _interpret_cached_books(cached)
+            if result is not None:
+                return result
+
+        if not is_configured():
+            return _fallback_book_choice(books, cache_key, set_routing)
+
+        is_definitional = _is_definitional_query(query)
+        intent_hint = (
+            "This is a definitional or overview query — prefer encyclopedic sources like Wikipedia over Q&A threads."
+            if is_definitional else
+            "This is a specific or technical query — Stack Exchange and technical references may be appropriate."
+        )
+
+        book_list = "\n".join(
+            f"- {b['name']}: {b['title']} — {b['summary'][:100]}"
+            for b in books
+        )
+
+        prompt = (
+            f"You are a search router. Given a user query and a list of available Kiwix offline "
+            f"knowledge bases, return up to {max_books} book names that best match the query, "
+            f"ranked by relevance, as a comma-separated list. "
+            f"Return ONLY the exact book names separated by commas. No explanation, no punctuation other than commas.\n\n"
+            f"Query: {query}\n\n"
+            f"Intent: {intent_hint}\n\n"
+            f"Available books:\n{book_list}\n\n"
+            f"Best book names (comma-separated, most relevant first):"
+        )
+
+        raw = complete(prompt, max_tokens=150) or ""
+
+        chosen = []
+
+        for candidate in raw.split(","):
+            candidate = candidate.strip().strip(".")
+            if not candidate:
+                continue
+            if candidate in book_names:
+                chosen.append(candidate)
+            else:
+                # Found via a deliberate "bulletproofing" pass: book_names
+                # is a set, and Python's set iteration order is not
+                # guaranteed to be stable across different process runs
+                # (depends on hash randomization, which this project never
+                # pins via PYTHONHASHSEED). When an LLM's response is
+                # ambiguous enough to fuzzy-match more than one real book
+                # (e.g. a truncated "wikipedia_en_all" matching both
+                # "wikipedia_en_all_maxi" and "wikipedia_en_all_nopic"),
+                # the SAME query could resolve to a DIFFERENT real book
+                # purely due to container restart timing — a real,
+                # reproducibility-breaking gap, even though the practical
+                # harm is mild (both candidates are genuinely
+                # Wikipedia-related, not a wrong-topic book). Sorting
+                # before iterating makes the choice deterministic and
+                # reproducible across restarts, even for a genuinely
+                # ambiguous candidate.
+                for name in sorted(book_names):
+                    if candidate in name or name in candidate:
+                        if name not in chosen:
+                            chosen.append(name)
+                        break
+
+        chosen = chosen[:max_books]
+        if chosen:
+            _LOGGER.info("LLM selected books: %s", chosen)
+            set_routing(cache_key, ",".join(chosen))
+            return chosen
+
+        if raw:
+            _LOGGER.warning("LLM returned no valid books from '%s', falling back", raw)
+
+        # Fallback — Wikipedia first
         return _fallback_book_choice(books, cache_key, set_routing)
-
-    is_definitional = _is_definitional_query(query)
-    intent_hint = (
-        "This is a definitional or overview query — prefer encyclopedic sources like Wikipedia over Q&A threads."
-        if is_definitional else
-        "This is a specific or technical query — Stack Exchange and technical references may be appropriate."
-    )
-
-    book_list = "\n".join(
-        f"- {b['name']}: {b['title']} — {b['summary'][:100]}"
-        for b in books
-    )
-
-    prompt = (
-        f"You are a search router. Given a user query and a list of available Kiwix offline "
-        f"knowledge bases, return up to {max_books} book names that best match the query, "
-        f"ranked by relevance, as a comma-separated list. "
-        f"Return ONLY the exact book names separated by commas. No explanation, no punctuation other than commas.\n\n"
-        f"Query: {query}\n\n"
-        f"Intent: {intent_hint}\n\n"
-        f"Available books:\n{book_list}\n\n"
-        f"Best book names (comma-separated, most relevant first):"
-    )
-
-    raw = complete(prompt, max_tokens=150) or ""
-
-    book_names = {b["name"] for b in books}
-    chosen = []
-
-    for candidate in raw.split(","):
-        candidate = candidate.strip().strip(".")
-        if not candidate:
-            continue
-        if candidate in book_names:
-            chosen.append(candidate)
-        else:
-            # Found via a deliberate "bulletproofing" pass: book_names
-            # is a set, and Python's set iteration order is not
-            # guaranteed to be stable across different process runs
-            # (depends on hash randomization, which this project never
-            # pins via PYTHONHASHSEED). When an LLM's response is
-            # ambiguous enough to fuzzy-match more than one real book
-            # (e.g. a truncated "wikipedia_en_all" matching both
-            # "wikipedia_en_all_maxi" and "wikipedia_en_all_nopic"),
-            # the SAME query could resolve to a DIFFERENT real book
-            # purely due to container restart timing — a real,
-            # reproducibility-breaking gap, even though the practical
-            # harm is mild (both candidates are genuinely
-            # Wikipedia-related, not a wrong-topic book). Sorting
-            # before iterating makes the choice deterministic and
-            # reproducible across restarts, even for a genuinely
-            # ambiguous candidate.
-            for name in sorted(book_names):
-                if candidate in name or name in candidate:
-                    if name not in chosen:
-                        chosen.append(name)
-                    break
-
-    chosen = chosen[:max_books]
-    if chosen:
-        _LOGGER.info("LLM selected books: %s", chosen)
-        set_routing(cache_key, ",".join(chosen))
-        return chosen
-
-    if raw:
-        _LOGGER.warning("LLM returned no valid books from '%s', falling back", raw)
-
-    # Fallback — Wikipedia first
-    return _fallback_book_choice(books, cache_key, set_routing)
 
 
 # ---------------------------------------------------------------------------
@@ -541,92 +593,118 @@ def _get_disambiguation_candidates(query: str, search_terms: str) -> list[str]:
     pages, narrow terms can collide with completely different topics).
 
     Result is cached in the routing cache so repeated queries skip the LLM call.
+
+    Singleflight: see router.py's _llm_detect() docstring and the
+    module-level comment above router.py's _RefCountedLock/
+    _inflight_locks for the full mechanism — this is the fourth and
+    last of the four call sites sharing the identical check-call-write
+    gap. Plausibly relevant to kiwix_disambiguation's own large
+    cold-tail outliers noted in recent benchmark runs (see
+    wiki/The-Benchmark-Investigation-Log.md) — worth re-checking once
+    this fix is benchmarked, not assumed in advance.
     """
     from app.llm import complete
 
     get_routing, set_routing = _get_routing_fns()
+    singleflight = _get_singleflight_fn()
     cache_key = f"disambig_candidates:{search_terms}"
-    cached = get_routing(cache_key)
-    if cached:
+
+    def _interpret_cached_candidates(cached: str) -> list[str] | None:
         candidates = [c.strip() for c in cached.split("|") if c.strip()]
         if candidates:
             _LOGGER.info("Routing cache hit for disambiguation candidates: '%s' -> %s", search_terms, candidates)
             return candidates
+        return None
 
-    prompt = (
-        f"The word '{search_terms}' could refer to multiple unrelated things. "
-        f"Given the full question \"{query}\", list 3 different candidate search "
-        f"phrases that might find the article the user actually means — each "
-        f"phrase should be the original word plus ONE additional clarifying word, "
-        f"and the 3 candidates should try genuinely different angles (e.g. a broad "
-        f"field name, a more specific synonym, and the word alone with no qualifier). "
-        f"Respond with ONLY the 3 phrases separated by '|', no explanation. "
-        f"Example for 'galaxy': 'galaxy astronomy|galaxy spiral|galaxy'\n\n"
-        f"Candidates for '{search_terms}':"
-    )
+    cached = get_routing(cache_key)
+    if cached:
+        result = _interpret_cached_candidates(cached)
+        if result is not None:
+            return result
 
-    raw = complete(prompt, max_tokens=40) or ""
-    candidates = [c.strip().strip(".").strip('"') for c in raw.split("|") if c.strip()]
+    with singleflight(cache_key):
+        # Re-check now that we hold the lock — see _llm_detect()'s
+        # identical re-check for why this is necessary, not redundant.
+        cached = get_routing(cache_key)
+        if cached:
+            result = _interpret_cached_candidates(cached)
+            if result is not None:
+                return result
 
-    # Always include the bare original term as a guaranteed fallback candidate
-    if search_terms not in candidates:
-        candidates.append(search_terms)
+        prompt = (
+            f"The word '{search_terms}' could refer to multiple unrelated things. "
+            f"Given the full question \"{query}\", list 3 different candidate search "
+            f"phrases that might find the article the user actually means — each "
+            f"phrase should be the original word plus ONE additional clarifying word, "
+            f"and the 3 candidates should try genuinely different angles (e.g. a broad "
+            f"field name, a more specific synonym, and the word alone with no qualifier). "
+            f"Respond with ONLY the 3 phrases separated by '|', no explanation. "
+            f"Example for 'galaxy': 'galaxy astronomy|galaxy spiral|galaxy'\n\n"
+            f"Candidates for '{search_terms}':"
+        )
 
-    # Sanity filter — drop any candidate that's empty, too long, or doesn't
-    # contain the original word at all
-    #
-    # Found while verifying this filter's behavior for single-character
-    # search terms (e.g. "c," now genuinely reachable through
-    # _should_disambiguate after fixing _build_search_terms() to stop
-    # dropping single alphanumeric characters): a bare substring check
-    # is far too loose for a one-character original word, since almost
-    # any English phrase coincidentally contains the letter "c"
-    # somewhere — the filter would provide meaningfully less protection
-    # for short search terms than it does for longer ones. Word-boundary
-    # matching (the same discipline already applied to
-    # home_assistant.py's keyword matching) makes the check genuinely
-    # meaningful regardless of how short the original word is.
-    original_word = search_terms.lower()
-    original_pattern = r"\b" + re.escape(original_word) + r"\b"
-    valid_candidates = []
-    for c in candidates:
-        if not c or len(c.split()) > 3:
-            continue
-        if not re.search(original_pattern, c.lower()):
-            continue
-        valid_candidates.append(c)
+        raw = complete(prompt, max_tokens=40) or ""
+        candidates = [c.strip().strip(".").strip('"') for c in raw.split("|") if c.strip()]
 
-    if not valid_candidates:
-        valid_candidates = [search_terms]
+        # Always include the bare original term as a guaranteed fallback candidate
+        if search_terms not in candidates:
+            candidates.append(search_terms)
 
-    # Cap at 3 candidates to bound the number of extra Kiwix searches
-    valid_candidates = valid_candidates[:3]
+        # Sanity filter — drop any candidate that's empty, too long, or doesn't
+        # contain the original word at all
+        #
+        # Found while verifying this filter's behavior for single-character
+        # search terms (e.g. "c," now genuinely reachable through
+        # _should_disambiguate after fixing _build_search_terms() to stop
+        # dropping single alphanumeric characters): a bare substring check
+        # is far too loose for a one-character original word, since almost
+        # any English phrase coincidentally contains the letter "c"
+        # somewhere — the filter would provide meaningfully less protection
+        # for short search terms than it does for longer ones. Word-boundary
+        # matching (the same discipline already applied to
+        # home_assistant.py's keyword matching) makes the check genuinely
+        # meaningful regardless of how short the original word is.
+        original_word = search_terms.lower()
+        original_pattern = r"\b" + re.escape(original_word) + r"\b"
+        valid_candidates = []
+        for c in candidates:
+            if not c or len(c.split()) > 3:
+                continue
+            if not re.search(original_pattern, c.lower()):
+                continue
+            valid_candidates.append(c)
 
-    # Found via a deliberate complexity-investigation pass — the same
-    # bug already found and fixed in _llm_pick_fusion_sources() and
-    # _llm_detect(): caching a pure-fallback result under the same key
-    # a genuine success would use means a single transient LLM hiccup
-    # permanently locks the query into the bare, unhelpful fallback
-    # (just the original ambiguous word, no real disambiguation at all)
-    # for the full routing cache TTL. Confirmed directly via the same
-    # test pattern used for the other two fixes.
-    #
-    # A real, deliberate distinction from those two fixes: this
-    # function can reach the same bare-fallback OUTCOME for two
-    # genuinely different REASONS — `raw` itself being empty/falsy (a
-    # real call failure, where a retry is likely to succeed) versus the
-    # LLM genuinely responding with something that simply didn't
-    # survive the sanity filter (e.g. none of its 3 phrases contained
-    # the original word at all). The second case isn't really a
-    # transient hiccup — the same prompt would likely produce a
-    # similarly unusable answer again, so caching that outcome is the
-    # more sensible default rather than re-querying the LLM on every
-    # repeat of a query it has already genuinely struggled with. Only
-    # skip caching when `raw` was empty/falsy specifically.
-    if raw:
-        set_routing(cache_key, "|".join(valid_candidates))
-    _LOGGER.info("Disambiguation candidates for '%s': %s", search_terms, valid_candidates)
-    return valid_candidates
+        if not valid_candidates:
+            valid_candidates = [search_terms]
+
+        # Cap at 3 candidates to bound the number of extra Kiwix searches
+        valid_candidates = valid_candidates[:3]
+
+        # Found via a deliberate complexity-investigation pass — the same
+        # bug already found and fixed in _llm_pick_fusion_sources() and
+        # _llm_detect(): caching a pure-fallback result under the same key
+        # a genuine success would use means a single transient LLM hiccup
+        # permanently locks the query into the bare, unhelpful fallback
+        # (just the original ambiguous word, no real disambiguation at all)
+        # for the full routing cache TTL. Confirmed directly via the same
+        # test pattern used for the other two fixes.
+        #
+        # A real, deliberate distinction from those two fixes: this
+        # function can reach the same bare-fallback OUTCOME for two
+        # genuinely different REASONS — `raw` itself being empty/falsy (a
+        # real call failure, where a retry is likely to succeed) versus the
+        # LLM genuinely responding with something that simply didn't
+        # survive the sanity filter (e.g. none of its 3 phrases contained
+        # the original word at all). The second case isn't really a
+        # transient hiccup — the same prompt would likely produce a
+        # similarly unusable answer again, so caching that outcome is the
+        # more sensible default rather than re-querying the LLM on every
+        # repeat of a query it has already genuinely struggled with. Only
+        # skip caching when `raw` was empty/falsy specifically.
+        if raw:
+            set_routing(cache_key, "|".join(valid_candidates))
+        _LOGGER.info("Disambiguation candidates for '%s': %s", search_terms, valid_candidates)
+        return valid_candidates
 
 
 def _should_disambiguate(query: str, search_terms: str, selected_books: list[str]) -> bool:

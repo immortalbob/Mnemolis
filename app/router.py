@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import contextvars
 import tempfile
 import concurrent.futures
@@ -609,6 +610,134 @@ def clear_routing_cache() -> int:
     return count
 
 
+# ---------------------------------------------------------------------------
+# Per-key in-flight deduplication ("singleflight") for the routing cache
+# ---------------------------------------------------------------------------
+#
+# Closes a real, confirmed thundering-herd gap: _get_routing()'s read and
+# the matching _set_routing() write that follows a cold LLM call have no
+# protection between them, so two concurrent callers for the identical
+# uncached key (e.g. two of 20 Locust users both drawing "what is
+# nitrogen" before either's routing decision has been cached) both miss,
+# both pay the full ~700-1000ms LLM cost, and both eventually write the
+# same decision. See wiki/Caching.md's "Routing cache" section for the
+# mechanism this implements and wiki/The-Benchmark-Investigation-Log.md's
+# Thread 2 for the benchmark history this addresses — confirmed directly
+# against this codebase, not assumed.
+#
+# A _RefCountedLock wrapper, not a bare threading.Lock, because the
+# simpler "delete a key's lock from the registry once it's no longer
+# held" approach has a real, named race: thread C could fetch a
+# reference to a key's lock between thread B's release() and the
+# dict-cleanup check, then thread D calls _get_inflight_lock() after
+# that cleanup deletes the entry, creating a FRESH lock object for the
+# same key — C and D would then hold two different lock objects for one
+# logical key and neither would ever see the other. Refcounting closes
+# this: every mutation of _inflight_locks (create-or-get, increment,
+# decrement-and-maybe-delete) happens while holding
+# _inflight_locks_guard, so "is anyone else still referencing this key's
+# lock" is always answered atomically with whatever action is about to
+# be taken on the dict, never as a separate, racy follow-up check on a
+# dict that could have changed in between.
+class _RefCountedLock:
+    """A threading.Lock plus a count of how many callers currently hold
+    a reference to it (whether or not they've actually called acquire()
+    yet) — used so _release_inflight_lock() can tell, atomically, whether
+    it's safe to remove this key's entry from _inflight_locks or whether
+    a concurrent caller is still relying on this exact object.
+    """
+    __slots__ = ("lock", "refcount")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.refcount = 0
+
+
+_inflight_locks: dict[str, _RefCountedLock] = {}
+_inflight_locks_guard = threading.Lock()  # protects _inflight_locks itself
+
+
+def _get_inflight_lock(key: str) -> _RefCountedLock:
+    """Return the (possibly newly-created) _RefCountedLock for `key`,
+    incrementing its refcount under the same guard that creates it — so
+    a caller is guaranteed the entry can't be cleaned up out from under
+    it between this call and the matching _release_inflight_lock() call.
+
+    Every caller of this function MUST call _release_inflight_lock()
+    exactly once when done, in a finally block, regardless of whether
+    the work in between succeeded, failed, or raised.
+    """
+    with _inflight_locks_guard:
+        entry = _inflight_locks.get(key)
+        if entry is None:
+            entry = _RefCountedLock()
+            _inflight_locks[key] = entry
+        entry.refcount += 1
+        return entry
+
+
+def _release_inflight_lock(key: str, entry: _RefCountedLock) -> None:
+    """Release the lock acquired via _get_inflight_lock(), and remove
+    `key`'s entry from _inflight_locks if this was the last caller still
+    referencing it.
+
+    The refcount decrement and the removal check happen under the same
+    _inflight_locks_guard acquisition specifically so no other thread can
+    call _get_inflight_lock() for this key in between (which would
+    otherwise either resurrect a key that's about to be deleted, or read
+    a refcount this function is mid-update on) — eliminating the race a
+    simpler "delete if not locked" approach would have left open.
+    """
+    entry.lock.release()
+    with _inflight_locks_guard:
+        entry.refcount -= 1
+        if entry.refcount <= 0 and _inflight_locks.get(key) is entry:
+            del _inflight_locks[key]
+
+
+def get_inflight_lock_count() -> int:
+    """Return the number of routing-cache keys currently mid-resolution.
+
+    Exposed for tests and /health-style introspection — should be 0 in
+    steady state between requests; a persistently nonzero count would
+    indicate a real leak (a caller that acquired but never released).
+    """
+    with _inflight_locks_guard:
+        return len(_inflight_locks)
+
+
+@contextmanager
+def _singleflight(key: str):
+    """Block until no other caller is resolving `key`, then hold the
+    in-flight lock for the duration of the `with` block.
+
+    Callers must re-check the routing cache immediately after entering
+    this context — a concurrent caller may have already resolved and
+    cached `key` while this one was waiting to acquire the lock, in
+    which case the right move is to use that cached value, not pay the
+    LLM cost a second time. This context manager only provides mutual
+    exclusion; it deliberately doesn't do the re-check itself, since
+    each of the four call sites' "what does a cache hit look like"
+    logic is genuinely different (plain source string vs comma-joined
+    fusion list vs pipe-joined disambiguation candidates) and trying to
+    generalize that here would either need a callback parameter at every
+    call site or silently assume one shape — re-checking inline at each
+    site, the same few lines already used for the FIRST check, is both
+    simpler and clearly correct by inspection.
+
+    Per-key, not a single global lock: a `forecast` query and an
+    unrelated `kiwix` disambiguation lookup never compete for the same
+    routing-cache key, so they must never block each other either. Only
+    callers racing for the IDENTICAL key actually queue.
+    """
+    entry = _get_inflight_lock(key)
+    entry.lock.acquire()
+    try:
+        yield
+    finally:
+        _release_inflight_lock(key, entry)
+
+
 # In-memory cache: key -> (result, timestamp)
 _cache: dict[str, tuple[str, float]] = {}
 _cache_dirty_count: int = 0
@@ -903,6 +1032,49 @@ def _escalate_single_source_for_discourse_framing(query: str, source: str) -> li
     return None
 
 
+def _interpret_cached_source_decision(query: str, cached: str) -> str | list[str] | None:
+    """Interpret a routing-cache hit for `source:{query}` into the same
+    shape _llm_detect() returns, applying the discourse-framing bias the
+    same way a fresh decision would get it. Returns None if `cached`
+    doesn't actually resolve to anything usable (a malformed or stale
+    entry), in which case the caller should treat this as a miss.
+
+    Extracted so _llm_detect() can call this identically both before
+    acquiring the in-flight lock (the fast, common-case path) and again
+    immediately after acquiring it (the re-check a concurrent caller
+    that finished resolving this key while we were waiting needs) —
+    without duplicating the discourse-framing escalation logic at both
+    call sites, which would otherwise be exactly the kind of
+    byte-for-byte duplication this project's own complexity-reduction
+    passes have repeatedly found and fixed real drift in elsewhere
+    (e.g. _fallback_book_choice() in kiwix.py).
+    """
+    if "," in cached:
+        # A cached fusion decision
+        sources = [s.strip() for s in cached.split(",") if s.strip() in SOURCE_MAP and s.strip() != "fusion"]
+        if sources:
+            sources = _escalate_multi_source_for_discourse_framing(query, sources)
+            _LOGGER.info("Routing cache hit (fusion): '%s' -> %s", query[:50], sources)
+            return sources
+        return None
+    if cached in SOURCE_MAP:
+        # Apply the same discourse-framing bias to a cached decision —
+        # otherwise a routing cache entry written before this fix
+        # existed (or before kiwix was added) would silently bypass it
+        # for up to its full TTL, since the cache check above returns
+        # before the bias logic further down ever runs.
+        escalated = _escalate_single_source_for_discourse_framing(query, cached)
+        if escalated is not None:
+            _LOGGER.info(
+                "Routing cache hit but discourse-framing detected — escalating '%s' to fusion: %s",
+                query[:50], escalated
+            )
+            return escalated
+        _LOGGER.info("Routing cache hit: '%s' -> %s", query[:50], cached)
+        return cached
+    return None
+
+
 def _llm_detect(query: str) -> str | list[str]:
     """Ask LLM to pick the best source(s) for the query.
 
@@ -914,162 +1086,186 @@ def _llm_detect(query: str) -> str | list[str]:
 
     Checks routing cache first to avoid redundant LLM calls.
     Falls back to 'kiwix' if LLM is not configured or returns invalid sources.
+
+    Singleflight: a second concurrent caller for the same uncached query
+    blocks on _singleflight() rather than also paying the LLM cost — see
+    the module-level comment above _RefCountedLock/_inflight_locks for
+    the full mechanism and why a per-key lock (not a global one) is the
+    right shape here.
     """
     from app.llm import complete, is_configured
 
-    # Check routing cache first
-    cached = _get_routing(f"source:{query}")
+    cache_key = f"source:{query}"
+
+    # Check routing cache first — cheap read, stays outside any lock so
+    # a warm hit (the overwhelming majority of real traffic) never pays
+    # any lock overhead at all.
+    cached = _get_routing(cache_key)
     if cached:
-        # If cached value contains a comma it was a fusion decision
-        if "," in cached:
-            sources = [s.strip() for s in cached.split(",") if s.strip() in SOURCE_MAP and s.strip() != "fusion"]
-            if sources:
+        result = _interpret_cached_source_decision(query, cached)
+        if result is not None:
+            return result
+
+    with _singleflight(cache_key):
+        # Re-check now that we hold the lock — a concurrent caller may
+        # have already resolved and cached this exact query while we
+        # were waiting to acquire it, in which case use that instead of
+        # paying for a second, redundant LLM call.
+        cached = _get_routing(cache_key)
+        if cached:
+            result = _interpret_cached_source_decision(query, cached)
+            if result is not None:
+                return result
+
+        if not is_configured():
+            return "kiwix"
+
+        source_list = "\n".join(
+            f"- {name}: {desc}"
+            for name, desc in SOURCE_DESCRIPTIONS.items()
+            if name != "fusion"
+        )
+
+        prompt = (
+            f"You are a search router. Given a user query and a list of available search sources, "
+            f"return the best source or sources.\n\n"
+            f"Rules:\n"
+            f"- For a focused single-topic query: return ONLY one source name\n"
+            f"- For a complex or multi-topic query that needs multiple sources: return 2-3 source names separated by commas\n"
+            f"- No explanation, no punctuation except commas between source names\n\n"
+            f"Query: {query}\n\n"
+            f"Available sources:\n{source_list}\n\n"
+            f"Best source name(s):"
+        )
+
+        raw = (complete(prompt, max_tokens=30) or "").lower().strip()
+
+        # Multi-source response — trigger fusion
+        if "," in raw:
+            sources = []
+            for candidate in raw.split(","):
+                candidate = candidate.strip().strip(".")
+                if candidate in SOURCE_MAP and candidate != "fusion" and candidate not in sources:
+                    sources.append(candidate)
+            if len(sources) >= 2:
                 sources = _escalate_multi_source_for_discourse_framing(query, sources)
-                _LOGGER.info("Routing cache hit (fusion): '%s' -> %s", query[:50], sources)
+                _LOGGER.info("LLM escalated to fusion: '%s' -> %s", query[:50], sources)
+                _set_routing(cache_key, ",".join(sources))
                 return sources
-        elif cached in SOURCE_MAP:
-            # Apply the same discourse-framing bias to a cached decision —
-            # otherwise a routing cache entry written before this fix
-            # existed (or before kiwix was added) would silently bypass it
-            # for up to its full TTL, since the cache check above returns
-            # before the bias logic further down ever runs.
-            escalated = _escalate_single_source_for_discourse_framing(query, cached)
+            _LOGGER.warning("LLM returned multi-source but too few valid: '%s'", raw)
+
+        # Single source response
+        chosen = raw.strip(".").strip()
+        if chosen in SOURCE_MAP and chosen != "fusion":
+            escalated = _escalate_single_source_for_discourse_framing(query, chosen)
             if escalated is not None:
                 _LOGGER.info(
-                    "Routing cache hit but discourse-framing detected — escalating '%s' to fusion: %s",
+                    "Discourse-framing detected — escalating '%s' to fusion: %s",
                     query[:50], escalated
                 )
+                _set_routing(cache_key, ",".join(escalated))
                 return escalated
-            _LOGGER.info("Routing cache hit: '%s' -> %s", query[:50], cached)
-            return cached
+            _LOGGER.info("LLM intent: '%s' -> %s", query[:50], chosen)
+            _set_routing(cache_key, chosen)
+            return chosen
 
-    if not is_configured():
+        if raw:
+            _LOGGER.warning("LLM returned unknown source '%s', falling back to kiwix", raw)
+
+        # Found alongside the same real bug in _llm_pick_fusion_sources(),
+        # via the same complexity-investigation pass: this used to cache
+        # the kiwix fallback under the same key a genuine success would
+        # use, permanently locking a query into kiwix for the full routing
+        # cache TTL after a single transient LLM hiccup — even though a
+        # retry moments later would likely have succeeded with the actual,
+        # correct source. Not caching the fallback gives every subsequent
+        # identical query a fresh, real chance at a correct decision.
         return "kiwix"
-
-    source_list = "\n".join(
-        f"- {name}: {desc}"
-        for name, desc in SOURCE_DESCRIPTIONS.items()
-        if name != "fusion"
-    )
-
-    prompt = (
-        f"You are a search router. Given a user query and a list of available search sources, "
-        f"return the best source or sources.\n\n"
-        f"Rules:\n"
-        f"- For a focused single-topic query: return ONLY one source name\n"
-        f"- For a complex or multi-topic query that needs multiple sources: return 2-3 source names separated by commas\n"
-        f"- No explanation, no punctuation except commas between source names\n\n"
-        f"Query: {query}\n\n"
-        f"Available sources:\n{source_list}\n\n"
-        f"Best source name(s):"
-    )
-
-    raw = (complete(prompt, max_tokens=30) or "").lower().strip()
-
-    # Multi-source response — trigger fusion
-    if "," in raw:
-        sources = []
-        for candidate in raw.split(","):
-            candidate = candidate.strip().strip(".")
-            if candidate in SOURCE_MAP and candidate != "fusion" and candidate not in sources:
-                sources.append(candidate)
-        if len(sources) >= 2:
-            sources = _escalate_multi_source_for_discourse_framing(query, sources)
-            _LOGGER.info("LLM escalated to fusion: '%s' -> %s", query[:50], sources)
-            _set_routing(f"source:{query}", ",".join(sources))
-            return sources
-        _LOGGER.warning("LLM returned multi-source but too few valid: '%s'", raw)
-
-    # Single source response
-    chosen = raw.strip(".").strip()
-    if chosen in SOURCE_MAP and chosen != "fusion":
-        escalated = _escalate_single_source_for_discourse_framing(query, chosen)
-        if escalated is not None:
-            _LOGGER.info(
-                "Discourse-framing detected — escalating '%s' to fusion: %s",
-                query[:50], escalated
-            )
-            _set_routing(f"source:{query}", ",".join(escalated))
-            return escalated
-        _LOGGER.info("LLM intent: '%s' -> %s", query[:50], chosen)
-        _set_routing(f"source:{query}", chosen)
-        return chosen
-
-    if raw:
-        _LOGGER.warning("LLM returned unknown source '%s', falling back to kiwix", raw)
-
-    # Found alongside the same real bug in _llm_pick_fusion_sources(),
-    # via the same complexity-investigation pass: this used to cache
-    # the kiwix fallback under the same key a genuine success would
-    # use, permanently locking a query into kiwix for the full routing
-    # cache TTL after a single transient LLM hiccup — even though a
-    # retry moments later would likely have succeeded with the actual,
-    # correct source. Not caching the fallback gives every subsequent
-    # identical query a fresh, real chance at a correct decision.
-    return "kiwix"
 
 
 def _llm_pick_fusion_sources(query: str) -> list[str]:
     """Ask LLM to pick 2-3 best sources for an explicit fusion query.
-    Falls back to ["kiwix", "web"] if LLM is not configured."""
+    Falls back to ["kiwix", "web"] if LLM is not configured.
+
+    Singleflight: see _llm_detect()'s docstring and the module-level
+    comment above _RefCountedLock/_inflight_locks — this is the second
+    of four call sites sharing the identical check-call-write gap (the
+    others are this module's own _llm_detect() and kiwix.py's
+    _pick_books_with_llm()/_get_disambiguation_candidates()).
+    """
     from app.llm import complete, is_configured
 
-    cache_key = f"fusion_sources:{query}"
-    cached = _get_routing(cache_key)
-    if cached:
+    def _interpret_cached_fusion_sources(cached: str) -> list[str] | None:
         sources = [s.strip() for s in cached.split(",") if s.strip() in SOURCE_MAP and s.strip() != "fusion"]
         if sources:
             _LOGGER.info("Routing cache hit for fusion sources: '%s' -> %s", query[:50], sources)
             return sources
+        return None
 
-    if not is_configured():
+    cache_key = f"fusion_sources:{query}"
+    cached = _get_routing(cache_key)
+    if cached:
+        result = _interpret_cached_fusion_sources(cached)
+        if result is not None:
+            return result
+
+    with _singleflight(cache_key):
+        # Re-check now that we hold the lock — see _llm_detect()'s
+        # identical re-check for why this is necessary, not redundant.
+        cached = _get_routing(cache_key)
+        if cached:
+            result = _interpret_cached_fusion_sources(cached)
+            if result is not None:
+                return result
+
+        if not is_configured():
+            return ["kiwix", "web"]
+
+        source_list = "\n".join(
+            f"- {name}: {desc}"
+            for name, desc in SOURCE_DESCRIPTIONS.items()
+            if name != "fusion"
+        )
+
+        prompt = (
+            f"You are a search router. Given a user query, pick 2 or 3 sources that together "
+            f"would give the most complete answer. Return ONLY the source names separated by commas. "
+            f"No explanation, no punctuation other than commas. Pick 2 sources for focused queries, "
+            f"3 for complex or multi-topic queries.\n\n"
+            f"Query: {query}\n\n"
+            f"Available sources:\n{source_list}\n\n"
+            f"Best source names (comma-separated):"
+        )
+
+        raw = (complete(prompt, max_tokens=30) or "").lower()
+        chosen = []
+        for candidate in raw.split(","):
+            candidate = candidate.strip().strip(".")
+            if candidate in SOURCE_MAP and candidate != "fusion" and candidate not in chosen:
+                chosen.append(candidate)
+
+        if len(chosen) >= 2:
+            _LOGGER.info("LLM fusion sources for '%s': %s", query[:50], chosen)
+            _set_routing(cache_key, ",".join(chosen))
+            return chosen[:3]
+
+        # Found via a deliberate complexity-investigation pass: this used to
+        # cache the failure-default fallback under the exact same key as a
+        # genuine success — a single transient LLM hiccup (a truncated
+        # response, a momentary parsing glitch) would permanently lock this
+        # specific query into the generic ["kiwix", "web"] fallback for the
+        # full routing cache TTL, even though a retry moments later would
+        # likely have succeeded with a better, more specific source
+        # selection. Confirmed directly: a query that failed once and would
+        # have genuinely succeeded on a second attempt never even reached
+        # the LLM the second time, since the cached failure short-circuited
+        # the function before the real call. Not caching the fallback means
+        # every subsequent identical query gets a fresh, real chance at
+        # success, at the (acceptable, since this is a per-query auto-fusion
+        # path, not the hot single-source routing path) cost of re-querying
+        # the LLM each time until it actually succeeds.
+        _LOGGER.warning("LLM returned invalid fusion sources '%s', using defaults", raw)
         return ["kiwix", "web"]
-
-    source_list = "\n".join(
-        f"- {name}: {desc}"
-        for name, desc in SOURCE_DESCRIPTIONS.items()
-        if name != "fusion"
-    )
-
-    prompt = (
-        f"You are a search router. Given a user query, pick 2 or 3 sources that together "
-        f"would give the most complete answer. Return ONLY the source names separated by commas. "
-        f"No explanation, no punctuation other than commas. Pick 2 sources for focused queries, "
-        f"3 for complex or multi-topic queries.\n\n"
-        f"Query: {query}\n\n"
-        f"Available sources:\n{source_list}\n\n"
-        f"Best source names (comma-separated):"
-    )
-
-    raw = (complete(prompt, max_tokens=30) or "").lower()
-    chosen = []
-    for candidate in raw.split(","):
-        candidate = candidate.strip().strip(".")
-        if candidate in SOURCE_MAP and candidate != "fusion" and candidate not in chosen:
-            chosen.append(candidate)
-
-    if len(chosen) >= 2:
-        _LOGGER.info("LLM fusion sources for '%s': %s", query[:50], chosen)
-        _set_routing(cache_key, ",".join(chosen))
-        return chosen[:3]
-
-    # Found via a deliberate complexity-investigation pass: this used to
-    # cache the failure-default fallback under the exact same key as a
-    # genuine success — a single transient LLM hiccup (a truncated
-    # response, a momentary parsing glitch) would permanently lock this
-    # specific query into the generic ["kiwix", "web"] fallback for the
-    # full routing cache TTL, even though a retry moments later would
-    # likely have succeeded with a better, more specific source
-    # selection. Confirmed directly: a query that failed once and would
-    # have genuinely succeeded on a second attempt never even reached
-    # the LLM the second time, since the cached failure short-circuited
-    # the function before the real call. Not caching the fallback means
-    # every subsequent identical query gets a fresh, real chance at
-    # success, at the (acceptable, since this is a per-query auto-fusion
-    # path, not the hot single-source routing path) cost of re-querying
-    # the LLM each time until it actually succeeds.
-    _LOGGER.warning("LLM returned invalid fusion sources '%s', using defaults", raw)
-    return ["kiwix", "web"]
 
 
 def detect_intent(query: str) -> str | list[str]:
