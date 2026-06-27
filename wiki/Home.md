@@ -71,6 +71,7 @@ These pages exist because the lessons are genuinely worth keeping, not just beca
 - **[The Fusion Merge Bugs](The-Fusion-Merge-Bugs)** — three sequential bugs in same-source result merging, plus the `[FUSION — FUSION]` double-header bug and a mixed-speed timeout crash
 - **[The Caching Concurrency Investigation](The-Caching-Concurrency-Investigation)** — synthetic test traffic silently polluting real caches, and a separate file-write race underneath both caches, found while researching whether to parallelize query expansion
 - **[The Latency Parallelization Investigation](The-Latency-Parallelization-Investigation)** — the single most cross-page-scattered story in the project's history: two structurally similar latency problems, one fixed first, one initially (and wrongly) left alone, and a real regression caught only by going back and checking that reasoning
+- **[The Benchmark Investigation Log](The-Benchmark-Investigation-Log)** — five separate threads traced across nine benchmark releases: `uptime`'s tail finally root-caused on the fifth try, a real pool-sizing mistake caught by the very next re-benchmark, and one failure still genuinely unexplained
 
 ## Reference
 
