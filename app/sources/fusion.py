@@ -45,15 +45,75 @@ def _looks_empty(result: str) -> bool:
     fusion.search() for internal multi-source dispatch), making this
     the safe home for the shared, canonical version — the reverse
     import direction would create a circular import.
+
+    A REAL FALSE POSITIVE, FOUND AND FIXED THIS RELEASE: the original
+    version checked whether any of these phrases appeared ANYWHERE in
+    the result, with no other constraint. Several of these phrases
+    ("not configured", "could not connect", "could not determine",
+    "error:") are ordinary English, not unique sentinel strings —
+    found by investigating a real, unexplained benchmark anomaly
+    (`cache_hit`'s single cold request paying a multi-second cost in
+    both the v3.50.9 and v3.50.11 runs, eventually traced to ordinary
+    Ollama queue contention, NOT this bug — but checking _looks_empty()
+    itself along the way as one of several candidate mechanisms turned
+    up this real, separate issue). `_diff_news()` in snapshots.py
+    echoes RAW, unmodified upstream article headlines directly into
+    change descriptions (`f"New article: {story}"`), and freshrss.py's
+    own search() does the same for article titles/summaries — real
+    news content can absolutely contain a headline like "Tech Company
+    Could Not Determine Cause of Outage" by sheer coincidence.
+    Confirmed directly with a real reproduction: a genuinely successful,
+    fully-populated, multi-source `changes` response containing one
+    such headline matched the OLD _looks_empty() and would have been
+    silently discarded by FALLBACK_CHAIN's real "news" -> "web"
+    fallback in a live deployment — a worse, generic web-search answer
+    substituted for a perfectly good one, for no reason but an unlucky
+    word in a real headline this project has no control over.
+
+    Two heuristics were tried and rejected before landing on the real
+    fix. A length cap (real Mnemolis messages are all under 80 chars)
+    fails because kiwix.py's `f"Found {title} but could not fetch
+    article content."` has unbounded length (a real article title is
+    interpolated into it) — and a SHORT, single-article false positive
+    (a brief headline with little summary text) can still slip under
+    any length cap that's generous enough to keep that real message
+    working. A prefix check (does the result START WITH the phrase)
+    fails for the common "X is not configured" shape, since the
+    SOURCE NAME always comes first ("Home Assistant is not
+    configured." — the phrase starts at index 18, not 0) — confirmed
+    this would have broken 5 of the project's own real config-error
+    messages, caught by the existing test suite before this design
+    shipped.
+
+    The actual fix: every genuine empty/error message this function
+    exists to catch is plain, unformatted prose — confirmed directly
+    against every real `return` statement that produces one. Every
+    real article/multi-source result this project produces, by
+    contrast, wraps titles in markdown bold (`f"**{title}** ..."` —
+    freshrss.py, searxng.py, home_assistant.py, and snapshots.py's
+    format_changes() all do this consistently). A bare "**" anywhere in
+    the result is a reliable, structural signal that this is genuine
+    formatted content, regardless of what words happen to appear
+    inside it — confirmed this distinction holds for every real
+    message (none contain "**") and every constructed false-positive
+    case (all of them do, since the offending headline only ever
+    appears wrapped in the same markdown formatting every other
+    real article does).
     """
     if not result:
         return True
-    result_lower = result.lower()
+    if "**" in result:
+        # Genuine formatted content (an article title, a changes
+        # header, an HA entity label) — never a plain failure/empty
+        # message, regardless of what words happen to appear inside it.
+        return False
+    result_lower = result.lower().strip()
     empty_phrases = [
         "no results found", "no recent articles", "not yet implemented",
         "could not fetch", "no books available", "could not determine",
         "unknown source", "not configured", "could not connect",
-        "error:", "error reaching",
+        "error:", "error reaching", "error fetching",
+        "no sufficiently relevant results", "no monitors found",
     ]
     return any(phrase in result_lower for phrase in empty_phrases)
 

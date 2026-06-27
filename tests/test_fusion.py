@@ -653,3 +653,62 @@ class TestLooksEmpty:
         failure message every source file actually produces."""
         assert self.check("Error reaching SearXNG: connection failed.") is True
 
+    def test_real_news_headline_with_unlucky_phrase_is_not_flagged_empty(self):
+        """Regression test for a real false positive found by
+        investigating an unrelated benchmark anomaly: a genuinely
+        successful, fully-populated multi-source `changes` response
+        containing a real news headline that happens to coincidentally
+        contain "could not determine" must NOT be flagged as empty —
+        confirmed this exact scenario WOULD have triggered
+        FALLBACK_CHAIN's real "news" -> "web" fallback against the old
+        implementation, silently discarding a perfectly good answer.
+        `_diff_news()` in snapshots.py echoes raw, unmodified upstream
+        article headlines verbatim, so real news content can contain
+        any of these ordinary-English trigger phrases by sheer
+        coincidence — this is the actual, real-world shape that
+        traffic takes, not a contrived edge case."""
+        result = (
+            "**News:**\n"
+            "- New article: Tech Company Could Not Determine Cause of Outage "
+            "(2026-06-20 14:30 UTC)\n\n"
+            "**Home:**\n"
+            "- Front door unlocked (2026-06-20 15:00 UTC)"
+        )
+        assert self.check(result) is False
+
+    def test_single_short_article_with_unlucky_title_is_not_flagged_empty(self):
+        """The hardest real version of the same false positive: a
+        SHORT single article (the kind a length-based heuristic could
+        plausibly still misclassify) whose title alone contains a
+        trigger phrase. Confirms the fix's actual mechanism (markdown
+        bold presence, not message length) correctly handles this
+        case too — a length cap was considered and rejected specifically
+        because it could not distinguish this from a genuine short
+        Mnemolis error message without also breaking real coverage."""
+        assert self.check("**Senator Bill Not Configured** (CNN)") is False
+
+    def test_kiwix_could_not_fetch_with_real_article_title_still_flagged_empty(self):
+        """Regression test for the one real message a naive fix could
+        easily have broken: kiwix.py's `f"Found {title} but could not
+        fetch article content."` interpolates a REAL, VARIABLE article
+        title before the fixed phrase — this message contains no
+        markdown bold (it's plain prose, not a formatted article
+        result), so it must still correctly match via the phrase list,
+        confirming the markdown-bold check doesn't accidentally
+        exclude this real failure case."""
+        result = (
+            "Found Very Long Real Article Title About Something Important "
+            "but could not fetch article content.\nURL: https://example.com"
+        )
+        assert self.check(result) is True
+
+    def test_no_monitors_found_is_empty(self):
+        """Regression test for a real, separate gap found and fixed
+        alongside the false-positive rewrite: "no monitors found" (the
+        literal message uptime_kuma.py returns when Uptime Kuma has no
+        configured monitors at all) was never in this phrase list,
+        meaning fusion's own empty-result filtering would have
+        incorrectly treated it as real, successful content in a fusion
+        query that includes `uptime` alongside other sources."""
+        assert self.check("No monitors found in Uptime Kuma.") is True
+

@@ -593,6 +593,66 @@ Run against the real v3.50.8 codebase on MiniDock, validating two changes agains
 
 **One real failure, not yet explained**: `POST /search [fusion_triple]: RemoteDisconnected('Remote end closed connection without response')` — the server closed the connection without sending any response at all, not a timeout or an error response. `fusion_triple` queries `uptime` alongside `forecast`/`news`, so it touches code changed this release, but a direct read of `app/sources/uptime_kuma.py` and `app/sources/fusion.py`'s concurrent-dispatch error handling (every per-source exception is caught and converted to `None`, never re-raised past the dispatch loop) found nothing that explains a dropped HTTP connection. Not attributed to the recent changes, and not dismissed as unrelated noise either — both would be guessing past the evidence the Locust output alone provides. Real server-side logs from around the time of this run are the only way to actually know; flagged here as a genuinely open item.
 
+### 20 Users — Cold vs Warm Cache (v3.50.11, validating the v3.50.9 pool-sizing correction and confirming `cache_hit`'s remaining cost is unrelated to Mnemolis)
+
+Run against the real v3.50.10 codebase on MiniDock. Zero exceptions, zero failures on both passes — the `RemoteDisconnected` from the v3.50.9 warm run did not recur.
+
+**Cold cache** — both caches explicitly cleared immediately before this run.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n | Failures |
+|----------|--------|-----|-----|-----|-----|---|----------|
+| `/health` | 730ms | 790ms | 1000ms | 1300ms | 1300ms | 27 | 0% |
+| `/search [kiwix]` | 23ms | 820ms | 1300ms | 1700ms | 1800ms | 80 | 0% |
+| `/search [kiwix_disambiguation]` | 22ms | 28ms | 2400ms | 4800ms | 6800ms | 52 | 0% |
+| `/search [web]` | 23ms | 120ms | 1300ms | 1300ms | 1900ms | 59 | 0% |
+| `/search [conditional]` | 46ms | 1500ms | 2500ms | 5300ms | 5300ms | 34 | 0% |
+| `/search [conditional_remainder]` | 67ms | 1200ms | 1200ms | 1500ms | 1500ms | 23 | 0% |
+| `/search [discourse_framing]` | 28ms | 150ms | 1600ms | 2500ms | 2700ms | 54 | 0% |
+| `/search [forecast]` | 23ms | 31ms | 42ms | 120ms | 770ms | 51 | 0% |
+| `/search [news]` | 23ms | 32ms | 42ms | 72ms | 72ms | 38 | 0% |
+| `/search [uptime]` | 24ms | 47ms | 62ms | 62ms | 62ms | 16 | 0% |
+| `/search [ha]` | 36ms | 50ms | 57ms | 57ms | 57ms | 16 | 0% |
+| `/search [auto]` | 34ms | 720ms | 740ms | 770ms | 990ms | 51 | 0% |
+| `/search [fusion_explicit]` | 21ms | 29ms | 34ms | 730ms | 740ms | 166 | 0% |
+| `/search [fusion_auto]` | 24ms | 41ms | 290ms | 2600ms | 3600ms | 113 | 0% |
+| `/search [fusion_triple]` | 21ms | 29ms | 30ms | 720ms | 720ms | 48 | 0% |
+| `/search [cache_hit]` | 23ms | 26ms | 27ms | 3600ms | 3600ms | 27 | 0% |
+| **Aggregated** | **24ms** | **670ms** | **810ms** | **1600ms** | **2500ms** | **855** | **0%** |
+
+**`uptime`'s cold tail dropped further: p98/p99 went from 190ms (v3.50.9) to 62ms** — a second consecutive confirmation that the `wait_events` fix is working as designed.
+
+**`conditional`/`conditional_remainder` both improved substantially from the v3.50.9 baseline, confirming the corrected pool-sizing did real, predicted work.** `conditional` cold p98/p99 dropped from 9800ms to 5300ms (46% reduction); `conditional_remainder` dropped from 4200ms to 1500ms (64% reduction). Neither cleared the "low tens of milliseconds" bar — both still show real multi-second tails — but the correction's own model predicted exactly this: meaningful, not complete, improvement. See [The Benchmark Investigation Log](https://github.com/immortalbob/Mnemolis/wiki/The-Benchmark-Investigation-Log#thread-2-the-autoconditional-thundering-herd-including-a-real-mistake-caught-by-the-next-benchmark) for the full model and history.
+
+**`cache_hit`'s cold p98/p99 (3600ms) is elevated again, similar in magnitude to the v3.50.9 run (3800ms) — investigated thoroughly this time, not just flagged.** Confirmed not a query-pool collision (the dedicated query is still clean), not disambiguation (the query's search terms don't qualify), and not routing-cache disk-write cost (measured directly, under 1ms even at realistic cache sizes). The real, most likely explanation: ordinary Ollama request queueing shared by every cold LLM call in the run, not specific to `cache_hit` — the endpoint showing the single worst sample changes between runs (`kiwix_disambiguation` at 6800ms here, `conditional` at 9800ms in v3.50.9), consistent with a shared queue, not an endpoint-specific defect. Deliberately not pursued as a fix — see `CHANGELOG.md`'s v3.50.11 entry for the full VRAM/`OLLAMA_NUM_PARALLEL` reasoning and why it's not worth the tradeoff.
+
+**Warm cache** — identical run immediately afterward, no clearing in between.
+
+| Endpoint | Median | p90 | p95 | p98 | p99 | n | Failures |
+|----------|--------|-----|-----|-----|-----|---|----------|
+| `/health` | 730ms | 780ms | 800ms | 1300ms | 1300ms | 33 | 0% |
+| `/search [kiwix]` | 23ms | 28ms | 37ms | 53ms | 54ms | 96 | 0% |
+| `/search [kiwix_disambiguation]` | 23ms | 31ms | 34ms | 250ms | 250ms | 35 | 0% |
+| `/search [web]` | 24ms | 32ms | 33ms | 37ms | 74ms | 68 | 0% |
+| `/search [conditional]` | 42ms | 380ms | 890ms | 1400ms | 1400ms | 42 | 0% |
+| `/search [conditional_remainder]` | 48ms | 720ms | 1200ms | 1400ms | 1400ms | 25 | 0% |
+| `/search [discourse_framing]` | 27ms | 33ms | 38ms | 49ms | 84ms | 53 | 0% |
+| `/search [forecast]` | 23ms | 30ms | 34ms | 170ms | 170ms | 39 | 0% |
+| `/search [news]` | 24ms | 27ms | 29ms | 45ms | 45ms | 42 | 0% |
+| `/search [uptime]` | 23ms | 63ms | 73ms | 73ms | 73ms | 17 | 0% |
+| `/search [ha]` | 38ms | 46ms | 48ms | 50ms | 50ms | 22 | 0% |
+| `/search [auto]` | 25ms | 68ms | 700ms | 740ms | 2500ms | 64 | 0% |
+| `/search [fusion_explicit]` | 22ms | 31ms | 35ms | 48ms | 58ms | 152 | 0% |
+| `/search [fusion_auto]` | 25ms | 30ms | 35ms | 38ms | 39ms | 121 | 0% |
+| `/search [fusion_triple]` | 21ms | 29ms | 33ms | 36ms | 40ms | 60 | 0% |
+| `/search [cache_hit]` | 25ms | 29ms | 34ms | 34ms | 34ms | 18 | 0% |
+| **Aggregated** | **24ms** | **48ms** | **380ms** | **740ms** | **790ms** | **887** | **0%** |
+
+**`uptime`'s warm tail held flat (69ms in v3.50.9, 73ms here)** — within normal run-to-run noise for n=16-17, confirming the fix's stability across a second real run, not a one-off result.
+
+**`conditional`/`conditional_remainder`'s warm numbers are essentially unchanged from v3.50.9** (`conditional` 1300ms → 1400ms p98/p99; `conditional_remainder` 1800ms → 1400ms) — consistent with the model's own prediction that warm-cache improvement from this specific correction would be modest, not dramatic.
+
+**`auto`'s warm p98/p99 (740ms/2500ms) is noticeably worse than the v3.50.9 run's near-perfect result (72ms/80ms), despite zero code changes to `AUTO_QUERIES` between the two runs.** Reading the distribution: roughly 3-4 of 64 requests landed in a real collision this run, versus a near-zero collision rate last time. `AUTO_QUERIES` sits at a real, nonzero modeled collision rate (~55%), so this kind of run-to-run swing is expected noise at this pool size, not a regression — the v3.50.9 run simply drew favorably.
+
 ## Running benchmarks
 
 Replace `192.168.1.50` below with your actual Mnemolis host's real IP or hostname — not a placeholder. `--host` silently accepts anything that looks like a URL, so a leftover example value doesn't fail loudly; it fails much later as a DNS error (`Temporary failure in name resolution`) on every single request, which doesn't obviously point back to `--host` as the cause.

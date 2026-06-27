@@ -1896,6 +1896,36 @@ class TestFallbackChainTriggersOnNotConfigured:
         assert source == "web"
         assert result == "Real, genuine web search result content."
 
+    def test_real_news_with_unlucky_headline_does_not_fall_back_to_web(self):
+        """The inverse, real-world regression case for the same
+        _looks_empty() machinery: a genuinely successful `news` result
+        whose article happens to contain an unlucky phrase ("could not
+        connect") must be returned AS-IS, not silently discarded and
+        replaced by a worse, generic web-search fallback. Confirmed
+        this exact scenario would have triggered FALLBACK_CHAIN's
+        "news" -> "web" path against the pre-fix _looks_empty() —
+        real, successful content being thrown away for no reason but
+        an unlucky word inside a real headline this project has no
+        control over."""
+        from app.router import route_with_source, clear_cache
+        import app.router as router_module
+
+        clear_cache()
+        real_news_result = (
+            "**Power Grid Operators Could Not Connect Backup Systems** (Reuters)\n"
+            "Regional officials say backup infrastructure failed to engage during peak demand."
+        )
+        original_map = dict(router_module.SOURCE_MAP)
+        router_module.SOURCE_MAP["news"] = lambda q: real_news_result
+        router_module.SOURCE_MAP["web"] = lambda q: "FALLBACK: this should never be returned."
+        try:
+            result, source = route_with_source("give me the news", "news")
+        finally:
+            router_module.SOURCE_MAP.update(original_map)
+
+        assert source == "news"
+        assert result == real_news_result
+
 
 class TestLlmPickFusionSources:
     """Tests for _llm_pick_fusion_sources LLM fusion source selection."""
