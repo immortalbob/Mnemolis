@@ -26,6 +26,8 @@ Every setting is an environment variable, set in `docker-compose.yml`. This page
 | `LLM_URL` | _(blank)_ | Leaving this blank disables every LLM-assisted feature — [Routing](Routing) falls back to keyword-only matching, [Kiwix Disambiguation](Kiwix-Disambiguation) and [Query Expansion](Query-Expansion) never trigger, Kiwix book selection falls back to a fixed "search Wikipedia first" rule. Mnemolis still works, with meaningfully less of its actual intelligence available |
 | `LLM_MODEL` | `qwen3:8b` | |
 | `LLM_API_TYPE` | `ollama` | The other supported value is `openai`, for any OpenAI-compatible endpoint |
+| `LLM_CONNECTION_POOL_SIZE` | `20` | Pooled HTTP connections kept open and reused for calls to the LLM backend — see [Caching](Caching#llm-connection-pooling-and-keep-alive) for why this exists and how it was found. Sized for up to 20 genuinely simultaneous LLM calls; raise it if you regularly run with substantially more concurrent traffic than that |
+| `LLM_KEEP_ALIVE` | `5m` | How long Ollama keeps the model loaded in VRAM after Mnemolis's last call — Ollama-native backend only, see [Caching](Caching#llm-connection-pooling-and-keep-alive). Accepts any format Ollama's own API documents (a duration string, plain seconds, `-1` for never-unload, `0` for unload-immediately), passed straight through with no reinterpretation. Deliberately left at Ollama's own default rather than `-1` — see the setting's own comment in `app/config.py` for why |
 
 ## Weather (`forecast`)
 
