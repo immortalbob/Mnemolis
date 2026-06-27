@@ -4,6 +4,51 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.17]
+
+### Changed — Expanded SearXNG Engine List Beyond Just DuckDuckGo
+v3.50.16 disabled `duckduckgo` after finding its own stale per-engine timeout was the cause of `auto`'s real benchmark plateau. The very next benchmark run after applying that fix still showed real, if smaller, stalls — `docker logs searxng --since 10m | grep "ERROR:searx.engines"` showed why: `google` failing on every query with a known, recurring SearXNG scraper bug (`IndexError: list index out of range` in `searx/engines/google.py`, confirmed both in this deployment's own logs and in multiple independent external bug reports against fresh installs), `brave` rate-limited (`suspended_time=180`), and `wikipedia` also rate-limited under the same sustained load. Disabling one bad engine just exposed the next one taking on more traffic.
+
+**`searxng/settings.yml` now ships a full, explicit engine list rather than one single override.** Disabled: `duckduckgo` (stale per-engine timeout, CAPTCHA defense), `google`/`bing` (shared scraper fragility — Bing has the identical `IndexError` bug reported against it independently), `brave`/`wikipedia` (both rate-limited under sustained querying this session). Enabled in their place: `mojeek` and `presearch` (both disabled by SearXNG's own default), based on an independent, corroborating real-world report of someone hitting the identical failure signature (`brave` suspended, `duckduckgo` access-denied, `qwant` API error) and finding `mojeek`/`startpage`/`presearch` worked cleanly with zero errors. `startpage` itself needed no change — already enabled by SearXNG's own default, never implicated in any failure this session.
+
+Every entry in the new list is explicit (`disabled: true` or `disabled: false`), not left to SearXNG's own silent default, specifically so the file is self-documenting — each engine's status and the real reason behind it is visible without cross-referencing SearXNG's own `settings.yml`.
+
+**Framed honestly, the same as every fix in this arc**: bot-detection sensitivity and rate-limit thresholds are IP-reputation- and traffic-volume-dependent — what broke repeatedly on this exact deployment under this exact sustained benchmark load may not break the same way on every deployment. Every disabled engine can be flipped back with `disabled: false` if your own instance doesn't see this behavior.
+
+### Changed
+- `searxng/settings.yml` — full explicit engine enable/disable list (see above)
+- `README.md` — SearXNG section updated with the full table of disabled engines and why, plus the two newly-enabled ones
+- Version bumped to 3.50.17
+
+---
+
+## [3.50.16]
+
+### Found and Fixed — The Real Cause of `auto`'s Benchmark Plateau Was Never in `auto`'s Own Code
+v3.50.15's own conclusion — that `auto`'s cold p99 plateau was likely just irreducible noise at the tail of a small benchmark sample, since p90 had stayed remarkably stable across every release — was wrong, and live testing against a real deployment found the actual cause within the same investigation session.
+
+**What actually broke the "just noise" theory**: a single, genuinely cold request to a fusion-escalating query (one that pulls in `web` as a fused source) was timed directly, by hand, more than once. The identical query swung between 1.75 seconds and 11-13 seconds across repeated cold runs, with zero code changes in between. A 7x spread on one query is not what statistical noise at the tail of a small sample looks like — that was the signal to keep digging rather than accept the prior round's explanation.
+
+**Two false leads, ruled out by direct testing rather than assumed:**
+- **Host DNS/IPv6 loopback fallback** — `localhost:8080` from the host shell took 8-10 seconds while `searxng:8080` (the real container-to-container hostname Mnemolis actually uses) took 9-11ms, every time. Confirmed this was purely a host-`curl`/`docker-proxy` loopback artifact (`curl -4` forcing IPv4 was *still* slow, ruling out simple IPv6 fallback as the mechanism) — and confirmed directly via `docker network inspect` that Mnemolis's own bridge network has `EnableIPv6: false` with every container holding only an IPv4 address, meaning this class of ambiguity is structurally impossible on the actual path Mnemolis's code uses. Zero code or config relevance; included here only because it consumed real investigation time before being ruled out.
+- **Adversarial testing or general host/GPU contention** — checked directly (timestamps confirmed no adversarial cycle fired during the slow test windows; the GPU was confirmed running nothing but the LLM and a desktop GUI) rather than assumed from the shared-hardware history documented in earlier releases.
+
+**The real cause, found in SearXNG's own container logs** (not Mnemolis's): `duckduckgo`'s own per-engine `timeout:` override had stayed at SearXNG's old factory default (`10.0`) the entire time — completely unaffected by the global `outgoing.request_timeout`/`max_request_timeout` raise this project's own [The SearXNG Timeout Lesson](https://github.com/immortalbob/Mnemolis/wiki/The-SearXNG-Timeout-Lesson) already documented fixing once before. Per-engine timeout overrides replace the global settings for that one engine; they don't inherit from them — a real, easy-to-miss SearXNG behavior, confirmed directly via the exact log line (`HTTP requests timeout (search duration: 10.2s, timeout: 10.0s)`, repeating, never reaching the raised 20.0s global ceiling). Independently, the same logs showed DuckDuckGo's own CAPTCHA defense firing on every query and a real Brave rate-limit suspension (`suspended_time=180`) — both the predictable consequence of sustained, repeated automated querying against public engines that actively defend against exactly that pattern, not a bug anywhere in this stack.
+
+**None of this was ever reachable from `_llm_detect()` or any of the routing-cache code three prior releases focused on.** The actual bottleneck the whole time was `web`/fusion's fan-out to SearXNG — which is precisely why singleflight (v3.50.13) and LLM connection pooling (v3.50.14), both real, both correctly diagnosed and fixed for what they targeted, could never have closed `auto`'s plateau. They fixed genuine, separate problems on the LLM-routing path; this release fixes a genuine, separate problem on the web-search path that happened to produce a similarly-shaped symptom on the same benchmark endpoint.
+
+### Changed
+- `searxng/settings.yml` — `outgoing.request_timeout`/`max_request_timeout`/`pool_connections`/`pool_maxsize` now shipped by default (`10.0`/`20.0`/`100`/`20`) rather than left as a README-only recommendation; `duckduckgo` disabled by name via a per-engine override block (with `timeout: 20.0` left in place in case anyone re-enables it later)
+- `app/config.py` — `searxng_request_timeout_seconds` default raised from `10` to `25`, closing a real mismatch this project's own docs had found and described honestly once before (an earlier CHANGELOG entry corrected the *documentation* to admit the default was `10` when it had been claimed as `15`) but never actually corrected at the code level until now
+- `wiki/The-SearXNG-Timeout-Lesson.md` — new section covering this third recurrence: a global fix being genuinely live doesn't guarantee every per-engine override beneath it inherited the change
+- `wiki/Caching.md` — Development Notes corrected: the prior "likely just small-sample noise" entry is superseded, not left standing, by a new entry explaining what was actually found
+- `wiki/The-Benchmark-Investigation-Log.md` — Thread 2's own "lesson" paragraph corrected with the real conclusion, rather than leaving the now-wrong small-sample-noise framing as the final word
+- `README.md`, `wiki/Configuration-Reference.md` — `SEARXNG_REQUEST_TIMEOUT_SECONDS`'s documented default and recommendation updated to match; SearXNG timeout section updated to reflect these settings now shipping by default rather than requiring a manual edit
+- `tests/test_config.py` — new default test for `searxng_request_timeout_seconds` (`25`); `SEARXNG_REQUEST_TIMEOUT_SECONDS` added to the cleared-env-vars list
+- Version bumped to 3.50.16
+
+---
+
 ## [3.50.15]
 
 ### Added — `LLM_KEEP_ALIVE`, Found While Investigating Why the v3.50.14 Connection-Pooling Fix Also Didn't Move `auto`'s Benchmark Plateau

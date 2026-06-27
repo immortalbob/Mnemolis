@@ -73,15 +73,31 @@ class Settings(BaseSettings):
     searxng_url: str = "http://searxng:8080"
 
     # How long Mnemolis itself waits for a SearXNG response, separate
-    # from SearXNG's own server-side request_timeout setting. Found
-    # hardcoded via a deliberate config-completeness audit: this client-
-    # side timeout was fixed at 10s regardless of what SearXNG's own
-    # config allowed, meaning the documented fix for "Error reaching
-    # SearXNG" (raising SearXNG's max_request_timeout to 20s — see The
-    # SearXNG Timeout Lesson) wouldn't fully work, since Mnemolis's own
-    # client would still cut the connection at 10s first. Set this to
-    # match or exceed whatever you've configured on the SearXNG side.
-    searxng_request_timeout_seconds: int = 10
+    # from SearXNG's own server-side request_timeout setting. Originally
+    # found hardcoded at 10s via a config-completeness audit and made
+    # configurable, but left at a default (10) below what the documented
+    # fix for "Error reaching SearXNG" (raising SearXNG's own
+    # max_request_timeout to 20s — see The SearXNG Timeout Lesson)
+    # actually needs — a real, previously-documented-but-unfixed mismatch
+    # (see CHANGELOG.md's own "found the docs said 15, the real default
+    # was 10" entry, which corrected the DOCS to be honest about the
+    # mismatch without ever actually closing it).
+    #
+    # Raised to 25 — comfortably above the 20.0 max_request_timeout this
+    # project's own shipped searxng/settings.yml now sets, with headroom
+    # rather than racing it exactly. Found via direct, live investigation
+    # against a real deployment under real benchmark load, not assumed:
+    # a per-engine timeout override (DuckDuckGo's own stale 10.0s,
+    # overriding SearXNG's raised global default) was confirmed in
+    # SearXNG's own logs as the actual mechanism behind a real,
+    # reproducible 10-13 second tail on queries that included `web` as a
+    # fused source — see wiki/Caching.md's own SearXNG section and
+    # searxng/settings.yml's own comments for the full mechanism and the
+    # engine-level fix that accompanies this default change. If you
+    # raise SearXNG's own max_request_timeout further, raise this to
+    # match or exceed it again — the two settings don't sense each
+    # other's values.
+    searxng_request_timeout_seconds: int = 25
 
     # How many raw, unscored results to pull from each of the (up to two)
     # SearXNG searches before confidence-aware scoring filters them down.

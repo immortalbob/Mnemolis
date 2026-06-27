@@ -34,7 +34,7 @@ class TestDefaultValues:
             "FUSION_MAX_SOURCES", "FUSION_MAX_CHARS_PER_SOURCE",
             "FUSION_TIMEOUT_SECONDS", "CACHE_MAX_SIZE", "KIWIX_SEARCH_LIMIT",
             "KIWIX_MAX_BOOKS", "WEB_NEWS_SCORE_THRESHOLD", "WEB_NEWS_TOP_N",
-            "LLM_CONNECTION_POOL_SIZE", "LLM_KEEP_ALIVE",
+            "LLM_CONNECTION_POOL_SIZE", "LLM_KEEP_ALIVE", "SEARXNG_REQUEST_TIMEOUT_SECONDS",
         ]
         self._saved_env = {}
         for key in self._env_keys:
@@ -70,6 +70,17 @@ class TestDefaultValues:
     def test_searxng_url_default(self):
         s = self._bare_settings()
         assert s.searxng_url == "http://searxng:8080"
+
+    def test_searxng_request_timeout_seconds_default(self):
+        """Raised from the original 10 to 25 — comfortably above the
+        20.0 max_request_timeout this project's own shipped
+        searxng/settings.yml now sets, closing a real,
+        previously-documented-but-unfixed mismatch (the docs once said
+        15, the real default stayed at 10 regardless — see
+        CHANGELOG.md). If you raise SearXNG's own max_request_timeout
+        further, raise this to match."""
+        s = self._bare_settings()
+        assert s.searxng_request_timeout_seconds == 25
 
     def test_forecast_coordinates_default_to_zero(self):
         s = self._bare_settings()

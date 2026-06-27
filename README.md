@@ -122,7 +122,7 @@ All settings are passed as environment variables in `docker-compose.yml`:
 | `FRESHRSS_API_PASSWORD` | FreshRSS API password | |
 | `FRESHRSS_MAX_ARTICLES` | Max articles to fetch | `10` |
 | `SEARXNG_URL` | SearXNG container URL | `http://searxng:8080` |
-| `SEARXNG_REQUEST_TIMEOUT_SECONDS` | How long Mnemolis itself waits for a SearXNG response — set to match or exceed SearXNG's own server-side `request_timeout`, see [SearXNG request timeout](#searxng-request-timeout) | `10` |
+| `SEARXNG_REQUEST_TIMEOUT_SECONDS` | How long Mnemolis itself waits for a SearXNG response — set to match or exceed SearXNG's own server-side `max_request_timeout`, see [SearXNG request timeout](#searxng-request-timeout) | `25` |
 | `WEB_NEWS_RAW_RESULT_BUDGET` | How many raw, unscored results to pull from each web search before confidence-aware scoring filters them down — the scoring pipeline's *input* budget, distinct from `WEB_NEWS_TOP_N`'s *output* cap below | `25` |
 | `QUERY_EXPANSION_MIN_WORDS` | Minimum query length (in words) for web search query expansion to trigger | `3` |
 | `KIWIX_ARTICLE_MAX_CHARS` | How many characters of a fetched Kiwix article to keep before scoring/fusion sees it — distinct from `FUSION_MAX_CHARS_PER_SOURCE`, which truncates the already-combined multi-source response | `3000` |
@@ -206,17 +206,33 @@ openssl rand -hex 32
 
 ### SearXNG request timeout
 
-SearXNG's default `request_timeout` (3.0s) is too short for several real, commonly-used engines, which can take 15-25+ seconds to respond under normal conditions. If you see `"Error reaching SearXNG: connection failed"`, raise it in your SearXNG `settings.yml`:
+SearXNG's default `request_timeout` (3.0s) is too short for several real, commonly-used engines, which can take 15-25+ seconds to respond under normal conditions. The shipped `searxng/settings.yml` already raises this:
 
 ```yaml
 outgoing:
   request_timeout: 10.0
   max_request_timeout: 20.0
+  pool_connections: 100
+  pool_maxsize: 20
 ```
 
-Restart SearXNG after changing this. If the error persists after the change, **verify SearXNG actually picked it up** — a correctly-edited config file doesn't help if the container was never restarted. Full story, including how this was diagnosed: **[The SearXNG Timeout Lesson](https://github.com/immortalbob/Mnemolis/wiki/The-SearXNG-Timeout-Lesson)**.
+If you're upgrading from an older deployment, copy these into your own `settings.yml` and restart SearXNG. If `"Error reaching SearXNG: connection failed"` persists after the change, **verify SearXNG actually picked it up** — a correctly-edited config file doesn't help if the container was never restarted. Full story, including how this was diagnosed: **[The SearXNG Timeout Lesson](https://github.com/immortalbob/Mnemolis/wiki/The-SearXNG-Timeout-Lesson)**.
 
-**Also raise `SEARXNG_REQUEST_TIMEOUT_SECONDS` on the Mnemolis side to match or exceed whatever you set above.** Mnemolis has its own, separate client-side timeout for calling SearXNG (default `10`) — if it's shorter than SearXNG's own `max_request_timeout`, Mnemolis will cut the connection first regardless of how generously SearXNG itself is configured to wait. The default here is itself below the `20`-second `max_request_timeout` recommended just above, so if you've applied that fix, raise this to match.
+`SEARXNG_REQUEST_TIMEOUT_SECONDS` (default `25`, on the Mnemolis side) is already set above SearXNG's own `max_request_timeout` shown here — if you raise the SearXNG-side value further, raise this to match or exceed it too, or Mnemolis will cut the connection first regardless of how generously SearXNG itself is configured to wait.
+
+**Several major engines are disabled by default in the shipped `settings.yml`, in favor of a smaller, more reliable set.** Found via direct log inspection under real, sustained query load against a small self-hosted instance:
+
+| Engine | Why it's disabled |
+|--------|--------------------|
+| `duckduckgo` | Its own per-engine `timeout:` stays at SearXNG's old factory value (10.0s) even after the global timeouts above are raised — per-engine overrides don't inherit from global settings — and it independently hit its own CAPTCHA defense under sustained querying |
+| `google` | SearXNG's own Google scraper has a known, recurring, externally-reported bug (`IndexError: list index out of range`) whenever Google's HTML structure shifts — not specific to this deployment |
+| `bing` | The identical class of scraper fragility reported against Google also affects Bing's scraper |
+| `brave` | Hit a real rate-limit suspension (`suspended_time=180`) under sustained querying |
+| `wikipedia` | Also hit a real rate-limit suspension under the same load |
+
+`mojeek` and `presearch` are explicitly enabled in their place (both disabled by SearXNG's own default) — corroborated by an independent report of someone hitting the identical failure pattern (`brave` suspended, `duckduckgo` access-denied) and finding `mojeek`/`startpage`/`presearch` worked cleanly. `startpage` is already enabled by SearXNG's own default.
+
+A frequently-hanging or frequently-blocked engine contributes nothing to a fused result while still costing a slow timeout or a failed request on every query that includes it. Re-enable any of the disabled engines (`disabled: false` in the `engines:` block) if your own instance doesn't see this behavior — bot-detection sensitivity and rate-limit thresholds vary by IP reputation and query volume, so what broke on one deployment may not break on another.
 
 ### LLM-assisted routing
 Mnemolis uses a local LLM backend in five ways:

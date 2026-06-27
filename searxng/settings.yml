@@ -28,14 +28,102 @@ ui:
   static_use_hash: true
   default_theme: simple
 
-# Uncomment and configure to enable specific engines
-# engines:
-#   - name: google
-#     engine: google
-#     shortcut: g
-#   - name: bing
-#     engine: bing
-#     shortcut: b
-#   - name: duckduckgo
-#     engine: duckduckgo
-#     shortcut: d
+# Communication with upstream search engines. SearXNG's own factory defaults
+# here (request_timeout: 3.0, max_request_timeout unset, pool_maxsize: 10)
+# are tuned conservatively for a low-traffic public instance, not for the
+# kind of sustained, concurrent, repeated querying a benchmark (or a busy
+# household) produces against a small self-hosted instance — found directly,
+# not assumed: under real load, several upstream engines were genuinely
+# taking 10-20+ seconds to respond under completely normal conditions, not
+# just when something was actually broken — see
+# wiki/The-SearXNG-Timeout-Lesson.md for the full original investigation.
+# Also raise SEARXNG_REQUEST_TIMEOUT_SECONDS on the Mnemolis side to match
+# or exceed max_request_timeout below, or Mnemolis will cut the connection
+# first regardless of how generously SearXNG itself is configured to wait.
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 20.0
+  pool_connections: 100
+  pool_maxsize: 20
+
+# Per-engine overrides, merged by name with SearXNG's own defaults (see
+# use_default_settings above — this does NOT replace the full default
+# engine list, only patches the named ones). Every entry below is
+# explicit (disabled: true/false) rather than left to SearXNG's own
+# silent default, specifically so this list is self-documenting —
+# anyone reading this file later can see the actual decision made for
+# each engine without having to separately check SearXNG's own
+# settings.yml to know what the unstated default would have been.
+#
+# Four engines disabled, each for a real, directly-confirmed reason —
+# not a guess, not a blanket "disable everything risky" policy:
+#
+#   duckduckgo: two independent, real problems, found via direct log
+#   inspection during sustained benchmark traffic against this exact
+#   deployment. (1) Its own engine definition carries a per-engine
+#   `timeout:` override that stays at SearXNG's OLD factory default
+#   (10.0s) even after the global outgoing.request_timeout/
+#   max_request_timeout above are raised — per-engine timeout values
+#   override the global ones, they don't inherit from them. Confirmed
+#   directly in the logs: "HTTP requests timeout (search duration:
+#   10.2s, timeout: 10.0s)" firing repeatedly, exactly at the 10.0s
+#   mark, never the raised 20.0s ceiling. (2) Independently, repeated
+#   real querying triggered DuckDuckGo's own bot/CAPTCHA defense
+#   (SearxEngineCaptchaException).
+#
+#   google: SearXNG's own Google scraper has a known, recurring,
+#   externally-reported bug (IndexError: list index out of range in
+#   searx/engines/google.py, content_nodes[0] on an empty list) that
+#   fires whenever Google's HTML structure shifts in a way the XPath
+#   scraper doesn't handle — confirmed both in this deployment's own
+#   logs and in multiple independent SearXNG bug reports against fresh,
+#   default installs. Not specific to this instance's traffic pattern;
+#   a structural fragility in scraper-based engines against frequently-
+#   changing target markup (Bing's own scraper has the identical
+#   IndexError shape reported against it too, which is why bing is also
+#   left disabled here rather than enabled).
+#
+#   brave: hit a real rate-limit suspension during sustained querying
+#   (SearxEngineTooManyRequestsException, suspended_time=180), confirmed
+#   directly in the logs.
+#
+#   wikipedia: also hit a real rate-limit suspension during the same
+#   session (SearxEngineTooManyRequestsException, suspended_time=180),
+#   confirmed directly in the logs.
+#
+# Two engines explicitly enabled (overriding SearXNG's own
+# disabled-by-default) based on a real, independent, corroborating data
+# point: a SearXNG operator hitting the *identical* failure pattern
+# documented above (brave suspended, duckduckgo access-denied, qwant
+# server-API-error) reported that switching to mojeek, startpage, and
+# presearch resolved it cleanly with zero error messages. startpage is
+# already enabled by SearXNG's own default, so only mojeek and
+# presearch needed an explicit override here.
+#
+# Re-enable any of the four disabled engines below (`disabled: false`)
+# if your own instance doesn't see this behavior — bot-detection
+# sensitivity and rate-limit thresholds vary by IP reputation and query
+# volume, so what broke on one deployment may not break on another.
+engines:
+  - name: duckduckgo
+    disabled: true
+    timeout: 20.0  # in case you re-enable it — matches the raised global ceiling above, not SearXNG's old 10.0 per-engine default
+
+  - name: google
+    disabled: true
+
+  - name: bing
+    disabled: true  # already disabled by SearXNG's own default; listed explicitly for the same self-documenting reason as the rest of this block
+
+  - name: brave
+    disabled: true
+
+  - name: wikipedia
+    disabled: true
+
+  - name: mojeek
+    disabled: false
+
+  - name: presearch
+    disabled: false
+    timeout: 10.0  # SearXNG's own default here (4.0s) is tight for a less-mainstream engine; matches this file's general posture of giving engines real room to respond rather than cutting them off aggressively
