@@ -169,7 +169,9 @@ HA_QUERIES = [
 # _interpret_yes_no()'s structured-source verdict path, and
 # _frame_conditional_response(). Mix of structured (ha/uptime/forecast,
 # gets a real verdict) and open-ended (kiwix, honest abstention) sources,
-# since both paths have genuinely different cost profiles.
+# since both paths have genuinely different cost profiles — and that
+# difference matters more for THIS pool's sizing than it first appeared,
+# see the v3.50.9 comment block below.
 #
 # Widened from the original 4-entry pool for the same reason AUTO_QUERIES
 # was widened above — both the v3.44.0 and v3.50.2 benchmark runs found
@@ -187,18 +189,14 @@ CONDITIONAL_QUERIES = [
     "if the network is down, tell me right away",
     "if it is going to snow, remind me to grab a coat",
     "if jupiter is in retrograde, I will be extra careful today",
-    # Widened again, 8 -> 20, after the v3.50.7 benchmark run still
-    # showed a real, partial collision tail at this size. Per the same
-    # birthday-paradox-shaped math worked out for AUTO_QUERIES above
-    # (see that pool's own comment for the full reasoning): the
-    # expected number of pool entries hit by 2+ of 20 concurrent users
-    # actually peaks around pool_size ~= 10-12 before declining, so a
-    # modest widening from a small pool can genuinely make the absolute
-    # collision count WORSE, not better, until the pool grows well past
-    # that peak. 20 entries sits past it. Every new condition verified
-    # directly against detect_conditional() before being added — each
-    # one correctly parses into a real condition/consequence with an
-    # empty remainder, the same shape every existing entry has.
+    # Widened again, 8 -> 20 (v3.50.8), after the v3.50.7 benchmark run
+    # still showed a real, partial collision tail at this size, using an
+    # "expected number of colliding pool entries" model that correctly
+    # identified the relationship between pool size and collision count
+    # isn't monotonic, but picked a size that still left this pool's
+    # actual benchmark behavior WORSE on the next real run (cold p99 hit
+    # 9800ms, the single worst sample this endpoint has ever produced) —
+    # see the v3.50.9 block below for what that model was missing.
     "if the front porch light is off, let me know",
     "if the freezer is too warm, let me know right away",
     "if it is going to be windy tomorrow, remind me to secure the patio furniture",
@@ -211,6 +209,63 @@ CONDITIONAL_QUERIES = [
     "if any cameras go offline, let me know",
     "if the humidity gets too high, remind me to run the dehumidifier",
     "if venus is in retrograde, I will think twice about new purchases",
+    # Widened again, 20 -> 40 (v3.50.9), this time correcting TWO real
+    # mistakes the v3.50.8 sizing made, not just picking a bigger number:
+    #
+    # 1. Wrong metric. "Expected number of colliding pool entries" isn't
+    #    what predicts the benchmark's actual tail — "fraction of the 20
+    #    concurrent users whose first pick collides with someone else's"
+    #    is. That fraction declines monotonically with pool size (no
+    #    peak to worry about), but it declines SLOWLY: 4 entries -> 99.6%
+    #    of users collide, 12 -> 80.9%, 20 -> 62.3%. The v3.50.8 sizing
+    #    (8->20) only moved this from 92.1% to 62.3% — a real
+    #    improvement on paper, small enough to be invisible against
+    #    ordinary single-run noise at this benchmark's sample sizes
+    #    (35-49 requests/run for this endpoint).
+    #
+    # 2. Wrong assumption about collision cost. AUTO_QUERIES's widening
+    #    worked great at a SIMILAR nominal collision fraction (55.5% at
+    #    24 entries) because most of ITS collisions land on a cheap,
+    #    structured source (forecast/news/uptime) — confirmed directly:
+    #    only 2 of 24 AUTO_QUERIES entries fall through to kiwix's
+    #    expensive LLM book-selection path. The original 20-entry
+    #    CONDITIONAL_QUERIES pool was the opposite: 17 of 20 conditions
+    #    (85%) fell through to kiwix — confirmed by running every one
+    #    through detect_intent() directly, not assumed — meaning a
+    #    collision here costs far more per occurrence than a collision
+    #    on auto's pool, even at a similar collision RATE. Lower
+    #    collision rate alone wasn't going to be enough.
+    #
+    # This pass fixes both: widened to 40 entries (38.2% collision
+    # fraction — chosen LOWER than auto's 55.5%, deliberately, given the
+    # higher per-collision cost), AND the 20 new entries below were
+    # specifically written to hit ha/uptime/forecast/changes keywords in
+    # app/router.py's real INTENT_MAP rather than falling through to
+    # kiwix — verified directly against detect_intent() before being
+    # added, not assumed from "sounds like it should." Brought the
+    # pool's overall kiwix-fallback ratio from 85% down to 42%. Every
+    # entry (old and new) still verified against detect_conditional() to
+    # confirm a real condition/consequence with an empty remainder.
+    "if any motion is detected outside, let me know",
+    "if the lights status changes, let me know",
+    "if any outages today, let me know",
+    "if the battery levels are low, let me know",
+    "if the security status changes, let me know",
+    "if it is going to be cold tomorrow, remind me to dress warm",
+    "if the indoor air quality drops, let me know",
+    "if the power consumption spikes, let me know",
+    "if the server status changes, let me know",
+    "if is it down right now, let me know",
+    "if the network status changes, let me know",
+    "if any new outages appear, let me know",
+    "if the house status changes, let me know",
+    "if the outdoor conditions get bad, remind me to close the windows",
+    "if are the doors locked, let me know",
+    "if low battery is detected, let me know",
+    "if any new headlines appear, let me know",
+    "if the door locked status changes, let me know",
+    "if the wind forecast looks bad, remind me to bring a jacket",
+    "if the energy usage spikes, let me know",
 ]
 
 # Conditional queries with a real remainder after the consequence — also
@@ -222,22 +277,16 @@ CONDITIONAL_WITH_REMAINDER_QUERIES = [
     "if the back door is unlocked, let me know, and also check the news",
     "if it is raining, remind me to bring an umbrella, and also is everything up",
     "if the garage door is open, let me know, and also whats happening with bitcoin",
-    # Widened again, 4 -> 12, after the v3.50.7 benchmark run still
-    # showed a real collision tail at this size — and per the same
-    # collision math worked out above, 4 entries against 20 concurrent
-    # users sits almost exactly at "nearly every entry collides" (the
-    # worked-out model gives ~3.9 of 4 entries expected to be hit by 2+
-    # users at this size), so this pool specifically needed to clear
-    # the math's peak, not just double. Deliberately reuses several
-    # conditions already present in CONDITIONAL_QUERIES above (e.g.
-    # "the back door is unlocked") rather than avoiding overlap —
-    # confirmed directly that this HELPS, not hurts: both tasks
-    # ultimately call route_with_source() with the identical extracted
-    # condition text as the cache key, so a condition warmed by either
-    # task benefits both, the same overlap pattern the original 4-entry
-    # pool already relied on. Every new entry verified directly against
-    # detect_conditional() to produce a genuine non-empty remainder, not
-    # assumed.
+    # Widened again, 4 -> 12 (v3.50.8), after the v3.50.7 benchmark run
+    # still showed a real collision tail at this size — but this sizing
+    # decision was a real mistake, not just an incomplete fix: the model
+    # used at the time ("expected number of colliding pool entries")
+    # actually predicted 4->12 would make the absolute collision count
+    # WORSE (3.90 -> 6.07 expected colliding entries), and the next real
+    # benchmark run confirmed it — cold p99 went from 1300ms to 4200ms,
+    # warm p98 from 450ms to 1800ms. See CONDITIONAL_QUERIES's own
+    # comment block above and the v3.50.9 block below for the full
+    # correction (wrong metric, wrong assumption about collision cost).
     "if the side gate is unlocked, let me know, and also is it going to rain",
     "if the network is down, tell me right away, and also whats the latest news",
     "if mars is in retrograde, I will be careful with decisions, and also check if the doors are locked",
@@ -246,6 +295,36 @@ CONDITIONAL_WITH_REMAINDER_QUERIES = [
     "if the humidity gets too high, remind me to run the dehumidifier, and also check the news",
     "if the freezer is too warm, let me know right away, and also whats the weather tomorrow",
     "if venus is in retrograde, I will think twice about new purchases, and also is everything online",
+    # Widened again, 12 -> 30 (v3.50.9), using the corrected metric and
+    # deliberately reusing CONDITIONAL_QUERIES's new, structured-source-
+    # heavy conditions above rather than writing a third independent set
+    # — confirmed earlier in this investigation that sharing a condition
+    # across both pools HELPS, not hurts (both tasks cache on the
+    # identical extracted condition text, so either one warming it
+    # benefits the other). 30 entries gives this pool a 47.5% collision
+    # fraction — proportionally similar to CONDITIONAL_QUERIES's own
+    # move (62.3% -> 38.2%), scaled down slightly to reflect this pool's
+    # lower task weight (1, vs conditional's 2) and therefore lower real
+    # request volume per run. Every entry verified directly against
+    # detect_conditional() to produce a genuine non-empty remainder.
+    "if any motion is detected outside, let me know, and also whats the forecast",
+    "if the lights status changes, let me know, and also check the news",
+    "if any outages today, let me know, and also is everything up",
+    "if the battery levels are low, let me know, and also whats happening with bitcoin",
+    "if the security status changes, let me know, and also check the weather",
+    "if it is going to be cold tomorrow, remind me to dress warm, and also any news",
+    "if the indoor air quality drops, let me know, and also is it raining",
+    "if the power consumption spikes, let me know, and also check the headlines",
+    "if the server status changes, let me know, and also whats the weather",
+    "if is it down right now, let me know, and also check the news",
+    "if the network status changes, let me know, and also is it raining",
+    "if any new outages appear, let me know, and also whats the forecast",
+    "if the house status changes, let me know, and also check the headlines",
+    "if the outdoor conditions get bad, remind me to close the windows, and also check the news",
+    "if are the doors locked, let me know, and also whats the weather",
+    "if low battery is detected, let me know, and also check the headlines",
+    "if any new headlines appear, let me know, and also is everything up",
+    "if the door locked status changes, let me know, and also whats the forecast",
 ]
 
 # Discourse-framing queries ("everyone's obsessed with X") — exercises

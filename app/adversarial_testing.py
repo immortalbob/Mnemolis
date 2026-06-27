@@ -217,6 +217,31 @@ CONDITIONAL_SEEDS = [
     "if any cameras go offline",
     "if the humidity gets too high",
     "if venus is in retrograde",
+    # Added alongside locustfile.py's THIRD CONDITIONAL_QUERIES widening
+    # (20 -> 40 entries, v3.50.9 — this pass also corrected a real
+    # sizing mistake from the v3.50.8 widening above, not just adding
+    # more entries; see that file's own comment block for the full
+    # story) — kept in sync for the same reason as the blocks above.
+    "if any motion is detected outside",
+    "if the lights status changes",
+    "if any outages today",
+    "if the battery levels are low",
+    "if the security status changes",
+    "if it is going to be cold tomorrow",
+    "if the indoor air quality drops",
+    "if the power consumption spikes",
+    "if the server status changes",
+    "if is it down right now",
+    "if the network status changes",
+    "if any new outages appear",
+    "if the house status changes",
+    "if the outdoor conditions get bad",
+    "if are the doors locked",
+    "if low battery is detected",
+    "if any new headlines appear",
+    "if the door locked status changes",
+    "if the wind forecast looks bad",
+    "if the energy usage spikes",
 ]
 
 # Consequence phrases to pair with conditions — plain text, since Mnemolis

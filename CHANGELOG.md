@@ -4,6 +4,58 @@ All notable changes to Mnemolis are documented here.
 
 ---
 
+## [3.50.10]
+
+### Changed — Split `wiki/Benchmarks.md` Into Reference and Dev-Blog Pages, Trimmed `BENCHMARKS.md`'s Narrative
+`wiki/Benchmarks.md` had drifted into doing two genuinely different jobs at once: telling a user what the current numbers mean (present-tense reference) and telling the chronological story of five separate investigation threads across nine benchmark releases (history). The same drift had happened in `BENCHMARKS.md` — every dated table came wrapped in long narrative paragraphs re-explaining the multi-release backstory each time, rather than just the numbers for that specific run.
+
+**Split into two pages.** `wiki/Benchmarks.md` is now pure current-state reference: the constant-median fact, the cold/warm cost-shape table (refreshed to v3.50.9's real numbers), hardware caveats, and how to run your own — no chronology, no "here's what we found and fixed in vX.Y.Z." A new page, **`wiki/The-Benchmark-Investigation-Log.md`**, holds the actual story: `uptime`'s five-release path to a root cause, the `auto`/`conditional` thundering-herd saga including the real v3.50.8 sizing mistake the v3.50.9 re-benchmark caught, `cache_hit`'s collision-and-fix, `/health`'s concurrency fix, and the still-open `RemoteDisconnected` failure. Linked from `wiki/Home.md`'s "Design History" section, matching the project's existing convention for this kind of page (`The-Caching-Concurrency-Investigation`, `The-Latency-Parallelization-Investigation`, and others).
+
+**Trimmed `BENCHMARKS.md`'s long-form narrative** in the v3.50.2/v3.50.4/v3.50.7 sections — the multi-paragraph "against the design doc's success criteria" and cross-release chronology blocks are now brief, run-specific factual captions with a pointer to the investigation log, rather than re-telling the same multi-release story inline at every dated entry. Tables, request counts, and single-run-specific findings (the actual numbers analysis for that one run) are all unchanged — only the repeated chronology was cut. Added a top-of-file pointer to both new/updated wiki pages.
+
+Also added the v3.50.9 benchmark entry to `BENCHMARKS.md` itself, which hadn't been recorded there yet despite the changelog already discussing it — full cold/warm tables, the `uptime` win, the `conditional`/`conditional_remainder` regression, and the open `RemoteDisconnected` failure.
+
+### Changed
+- `wiki/Sources.md`/`wiki/Caching.md`/`wiki/Contributing.md`'s cross-links to the old `Benchmarks#what-got-fully-fixed-...` anchor (now removed) repointed to the new investigation log page's relevant section
+- Two pre-existing, unrelated wiki link issues were checked for and confirmed unaffected by this restructure (the wiki's own pre-existing anchor-rot inventory, ~18 links, is unchanged by this pass — none of them touch the pages restructured here)
+- Version bumped to 3.50.10 — no application code, tests, or benchmark data changed; documentation structure only
+
+**Total test count: 1263** (unchanged)
+
+---
+
+## [3.50.9]
+
+### Confirmed — `uptime`'s `wait_events` Fix (v3.50.8) Actually Worked
+A real re-benchmark on MiniDock confirms the root-cause fix: warm p98/p99 dropped from 440ms (every prior run since v3.50.4) to **69ms** — finally in the same order of magnitude as the cleanest sources (kiwix 44ms, forecast 45ms, news 40ms), not a separate tail. Cold tail dropped from 520ms to 190ms. A small minority of requests (1-2 per run) still pay something in the 60-190ms range, consistent with the fix's own design: the one call genuinely needing the full, safe `wait_events` (right after a fresh connect or reconnect) still gets it, by design. This closes the loop the v3.50.4/v3.50.6/v3.50.7 runs left open — `uptime`'s benchmark anomaly, first flagged in v3.17.0, is resolved.
+
+### Fixed — A Real Mistake in v3.50.8's Pool Re-Sizing, Found and Corrected by the Same Re-Benchmark
+The same run that confirmed `uptime`'s fix also showed `conditional`'s cold p99 at **9800ms** — the single worst sample this endpoint has ever produced — and `conditional_remainder`'s cold p98/p99 nearly tripling (1300ms → 4200ms) versus the v3.50.7 baseline. Both got *worse*, not better, after v3.50.8's widening. This needed taking seriously rather than dismissing as noise, and re-checking the v3.50.8 sizing decision against the real result rather than assuming the model was already right.
+
+**Two real mistakes, found by re-deriving the math rather than re-guessing:**
+
+1. **Wrong metric.** v3.50.8 sized pools using "expected number of pool entries hit by 2+ of 20 users" — a real calculation, but not what predicts the benchmark's actual tail. The metric that does is "fraction of the 20 users whose first pick collides with someone else's," which declines monotonically with pool size (no peak to dodge) but slowly enough that v3.50.8's sizes (`CONDITIONAL_QUERIES` 20, `CONDITIONAL_WITH_REMAINDER_QUERIES` 12) still left 62-81% of users colliding with someone. Worse: re-reading the wrong-metric model's own output for `conditional_with_remainder`'s specific change (4→12) shows it predicted the absolute collision count getting WORSE (3.90 → 6.07), not better — that prediction was sitting in the v3.50.8 changelog entry's own reasoning and wasn't acted on.
+
+2. **Wrong assumption about collision cost.** `AUTO_QUERIES`'s widening worked well at a similar nominal collision rate (55.5% at 24 entries) because most of its collisions land on a cheap, structured source — confirmed directly: only 2 of 24 `AUTO_QUERIES` entries fall through to `kiwix`'s expensive LLM book-selection path. `CONDITIONAL_QUERIES`'s 20-entry pool was the opposite: 17 of 20 conditions (85%) fell through to `kiwix`, confirmed by running every condition through `detect_intent()` directly — meaning a collision on this pool costs far more per occurrence than a similarly-frequent collision on `auto`'s pool. A lower collision rate alone wasn't going to fix this; the *kind* of collision mattered too, and the original widening's new entries (mostly "if X is in retrograde"-style conditions, written and verified only for correct conditional-detection, never checked against which source they'd actually route to) made this slightly worse, not better.
+
+**The fix**: widened further (`CONDITIONAL_QUERIES` 20→40, `CONDITIONAL_WITH_REMAINDER_QUERIES` 12→30) and fixed the source mix — the 20 new `CONDITIONAL_QUERIES` entries were specifically written to hit `ha`/`uptime`/`forecast`/`changes` keywords in `INTENT_MAP` rather than falling through to `kiwix`, verified directly against `detect_intent()` before being added. This brought the pool's overall `kiwix`-fallback ratio from 85% down to 42%. `CONDITIONAL_WITH_REMAINDER_QUERIES`'s 18 new entries deliberately reuse the same new, better-mixed conditions (confirmed beneficial in v3.50.8: both tasks cache on the identical extracted condition text, so either one warming it helps both). `AUTO_QUERIES` (24 entries) is unchanged — its own re-benchmark result was a clear win (warm p98/p99 dropped to 65-80ms) and didn't need correcting.
+
+Not yet re-benchmarked as of this writing. Given the size of the v3.50.8 miss, this correction is being recorded as a real, falsifiable hypothesis for the next run, not declared fixed in advance.
+
+### Added (Tests)
+- `test_locustfile_thundering_herd_pools_are_wide_enough_to_avoid_high_collision_rates` in `test_router.py`'s `TestResultCacheThunderingHerd` — replaces the v3.50.8 version of this test (same enforcement role, corrected minimums: `CONDITIONAL_QUERIES` 40, `CONDITIONAL_WITH_REMAINDER_QUERIES` 30)
+- `test_conditional_queries_kiwix_fallback_ratio_stays_below_half` — guards the second half of this fix: a future well-meaning addition of more open-ended, kiwix-routed conditions can't silently walk the fallback ratio back toward 85% without a test catching it
+
+### Flagged — A Real `RemoteDisconnected` Failure During the Warm Run, Not Yet Explained
+The warm run's Locust output shows one real failure: `POST /search [fusion_triple]: RemoteDisconnected('Remote end closed connection without response')` — the server closed the TCP connection without sending any HTTP response, not a timeout or an error response. `fusion_triple` queries `uptime` alongside `forecast`/`news`, so it does touch the code changed in v3.50.8, but nothing in `app/sources/uptime_kuma.py` or `app/sources/fusion.py`'s concurrent-dispatch error handling (every per-source exception is caught and converted to a `None` result, never re-raised past the dispatch loop) explains a dropped connection at the HTTP layer. Not dismissed as noise and not attributed to the recent changes either — both would be guessing past the actual evidence. Real server-side logs from around the time of that warm run are the only way to actually know; flagged here as an open item pending that, not closed one way or the other.
+
+### Changed
+- Version bumped to 3.50.9
+
+**Total test count: 1263**
+
+---
+
 ## [3.50.8]
 
 ### Fixed — `uptime`'s Remaining Tail, Actually Root-Caused: `uptime_kuma_api`'s Own Unconditional `wait_events` Sleep

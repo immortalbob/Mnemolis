@@ -3375,24 +3375,39 @@ class TestResultCacheThunderingHerd:
                 f"benchmark's cold-cache cache_hit anomaly (p90 5100ms, p99 8000ms)"
             )
 
-    def test_locustfile_thundering_herd_pools_are_wide_enough_to_clear_the_collision_peak(self):
-        """Regression test for the actual sizing decision behind the
-        second pool widening (v3.50.8): AUTO_QUERIES, CONDITIONAL_QUERIES,
-        and CONDITIONAL_WITH_REMAINDER_QUERIES were widened past the
-        point where the expected NUMBER of pool entries hit by 2+ of 20
-        concurrent Locust users actually peaks — a real, worked-out
-        birthday-paradox-shaped calculation, not an arbitrary "double it
-        again" guess. The v3.50.3 widening (the first one) landed several
-        of these pools right ON that peak rather than past it, which is
-        the documented reason it only partially helped.
+    def test_locustfile_thundering_herd_pools_are_wide_enough_to_avoid_high_collision_rates(self):
+        """Regression test for the corrected pool-sizing investigation
+        (v3.50.9), which fixed a real mistake in the v3.50.8 sizing pass
+        rather than just adding more entries on top of it.
 
-        This test doesn't re-run the full probability model (that lives
-        in the design reasoning, not in CI) — it enforces the concrete
-        conclusion: each pool must be at or above the specific size this
-        investigation determined sits past its own collision peak. A
-        future accidental shrink (or a well-meaning "simplify this" edit
-        that quietly drops entries) gets caught here rather than silently
-        reintroducing the exact tail this work removed.
+        v3.50.8 sized these pools using "expected NUMBER of pool entries
+        hit by 2+ of 20 concurrent users" — a real, worked-out
+        calculation, but the wrong metric. It correctly identified that
+        relationship isn't simple ("more entries always helps"), but the
+        metric that actually predicts the benchmark's tail is "fraction
+        of the 20 users whose first pick collides with someone else's,"
+        which declines monotonically with pool size (no peak to dodge)
+        but slowly enough that the v3.50.8 sizes (CONDITIONAL_QUERIES 20,
+        CONDITIONAL_WITH_REMAINDER_QUERIES 12) still left a 62-81%
+        collision rate — and the very next real benchmark run confirmed
+        it: CONDITIONAL_WITH_REMAINDER_QUERIES's cold p99 got WORSE
+        (1300ms -> 4200ms), not better, exactly as that wrong-metric
+        model itself would have predicted if read correctly (it showed
+        4->12 entries making the absolute collision count worse, not
+        just unchanged).
+
+        A second, independent factor made it worse than the collision
+        rate alone explains: CONDITIONAL_QUERIES's conditions skewed
+        85% toward kiwix's expensive LLM book-selection fallback path
+        (confirmed by running every condition through detect_intent()
+        directly), versus AUTO_QUERIES's 2/24 — so a collision on this
+        pool costs far more per occurrence than a similar-rate collision
+        on auto's pool. This test enforces both corrections: a real size
+        floor for each pool (not just "bigger than v3.50.8"), AND a real
+        ceiling on how much of CONDITIONAL_QUERIES is allowed to fall
+        through to the expensive kiwix path, so a well-meaning future
+        addition of more "if X is in retrograde"-style entries doesn't
+        silently regress the cost-per-collision back toward where it was.
         """
         import ast
         import os
@@ -3419,14 +3434,17 @@ class TestResultCacheThunderingHerd:
                 ]
                 list_literals[name] = values
 
-        # Minimums determined by the v3.50.8 collision-math investigation
+        # Minimums determined by the v3.50.9 collision-fraction correction
         # (see locustfile.py's own comments on each pool for the full
-        # reasoning) — each sits past that pool's own modeled collision
-        # peak under 20 concurrent users, not just "bigger than before".
+        # reasoning) — chosen so each pool's collision fraction sits
+        # meaningfully below AUTO_QUERIES's own (55.5% at 24 entries),
+        # since CONDITIONAL_QUERIES/CONDITIONAL_WITH_REMAINDER_QUERIES's
+        # collisions cost more per occurrence (the kiwix-fallback check
+        # below is the other half of that correction).
         minimums = {
             "AUTO_QUERIES": 24,
-            "CONDITIONAL_QUERIES": 20,
-            "CONDITIONAL_WITH_REMAINDER_QUERIES": 12,
+            "CONDITIONAL_QUERIES": 40,
+            "CONDITIONAL_WITH_REMAINDER_QUERIES": 30,
         }
         for pool_name, minimum in minimums.items():
             assert pool_name in list_literals, (
@@ -3436,8 +3454,65 @@ class TestResultCacheThunderingHerd:
             actual = len(list_literals[pool_name])
             assert actual >= minimum, (
                 f"{pool_name} has {actual} entries, below the {minimum}-entry "
-                f"minimum the v3.50.8 collision-math investigation determined "
-                f"sits past this pool's own collision peak under 20 concurrent "
-                f"users — shrinking this pool risks reintroducing the exact "
-                f"thundering-herd tail that investigation removed"
+                f"minimum the v3.50.9 collision-fraction correction determined "
+                f"keeps this pool's collision rate meaningfully below auto's — "
+                f"shrinking this pool risks reintroducing the exact tail this "
+                f"work removed"
             )
+
+    def test_conditional_queries_kiwix_fallback_ratio_stays_below_half(self):
+        """Regression test for the SECOND half of the v3.50.9 sizing
+        correction: it's not enough for CONDITIONAL_QUERIES to be wide
+        enough — too many of its conditions falling through to kiwix's
+        expensive LLM book-selection path (the original 20-entry pool
+        was 85% kiwix) makes every remaining collision cost far more
+        than a similar-rate collision on AUTO_QUERIES (2/24, ~8%) does.
+        This doesn't re-verify every entry's exact source on every test
+        run (that's what TestResultCacheThunderingHerd's sibling tests
+        and the manual detect_intent() check during this investigation
+        already did) — it guards the AGGREGATE ratio, so a future
+        well-meaning addition of more open-ended "if X happens" entries
+        doesn't silently walk this back toward the original 85%."""
+        import ast
+        import os
+        from app.router import detect_intent
+
+        locustfile_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "locustfile.py"
+        )
+        with open(locustfile_path) as f:
+            tree = ast.parse(f.read(), filename=locustfile_path)
+
+        conditional_queries = None
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "CONDITIONAL_QUERIES"
+                and isinstance(node.value, ast.List)
+            ):
+                conditional_queries = [
+                    elt.value for elt in node.value.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                ]
+
+        assert conditional_queries is not None, "CONDITIONAL_QUERIES not found"
+
+        # Extract the condition text the same way detect_conditional()
+        # itself would, for an accurate real-routing check.
+        kiwix_count = 0
+        for full_query in conditional_queries:
+            condition = full_query[len("if "):].split(",")[0]
+            if detect_intent(condition) == "kiwix":
+                kiwix_count += 1
+
+        ratio = kiwix_count / len(conditional_queries)
+        assert ratio < 0.5, (
+            f"{kiwix_count} of {len(conditional_queries)} CONDITIONAL_QUERIES "
+            f"conditions ({ratio:.0%}) fall through to kiwix's expensive LLM "
+            f"book-selection path — back above the v3.50.9 fix's target. A "
+            f"collision on this pool costs far more per occurrence when it "
+            f"lands on kiwix than on a structured source (ha/uptime/forecast), "
+            f"so this ratio matters as much as the pool's raw size."
+        )
