@@ -67,4 +67,4 @@ Docker Compose automatically prefixes named volumes and, in some setups, network
 
 ## Development Notes
 
-- **An unconfigured `forecast` used to silently return weather for the wrong place on Earth.** `FORECAST_LATITUDE`/`FORECAST_LONGITUDE` both default to `0.0` — a real, valid ocean coordinate, not an obviously-invalid sentinel — so an early version's blank-check missed it and returned genuine-looking weather for that location instead of reporting the source as unconfigured. Fixed; leaving these blank now correctly reports `forecast` as not configured, the same as every other optional source.
+If `forecast` ever returns weather for the wrong location after setup, see [Troubleshooting](Troubleshooting#weather-forecast-looks-completely-wrong-for-your-location) — this is a known, now-fixed historical issue, not something currently expected from a correct configuration.

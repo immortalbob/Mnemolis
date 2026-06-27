@@ -48,7 +48,7 @@ Four possible states: **`ok`** (recent enough), **`stale`** (more than 3x its ex
 
 ## `/logs/stats` — fallback visibility
 
-[Routing](Routing#fallback-when-a-source-comes-back-empty) falls back from `kiwix` or `news` to `web` when a result looks empty. Whether that happened on any given query used to be completely invisible outside of reading raw logs — `source_used` correctly reported the *actual* source after a fallback, but nothing recorded *that a fallback occurred at all*.
+[Routing](Routing#fallback--when-a-source-comes-back-empty) falls back from `kiwix` or `news` to `web` when a result looks empty. Whether that happened on any given query used to be completely invisible outside of reading raw logs — `source_used` correctly reported the *actual* source after a fallback, but nothing recorded *that a fallback occurred at all*.
 
 ```json
 {
@@ -73,10 +73,3 @@ Each entry in `top_queries` reports the source that answered it **most recently*
 ## `/logs` — the raw query log
 
 `GET /logs?limit=N` returns recent entries directly: timestamp, query, source requested, source used, cached flag, success, latency in milliseconds, and `fallback_occurred`. `limit` is clamped to a sane range (1-1000) — SQLite treats a negative `LIMIT` as "no limit at all," so this bound exists specifically to keep `?limit=-1` from returning the entire query log. Useful for spot-checking a specific recent query's behavior without waiting for it to show up in aggregate stats.
-
----
-
-## Development Notes
-
-- **Within minutes of `/health` first reporting `snapshot_jobs` and the cache fields, it caught something unrelated and already real**: a SearXNG `request_timeout` setting that had genuinely been edited correctly in the config file, but never took effect because the container running SearXNG had never actually been restarted since the edit. `/health` reported `web: error, Read timed out (read timeout=3)` — the literal old value, live, immediately. See [The SearXNG Timeout Lesson](The-SearXNG-Timeout-Lesson) for the full story.
-- **`/health`'s seven source checks used to run sequentially, not concurrently.** A real v3.50.2 benchmark run hit a 5244ms `/health` sample, several times its own 750ms median — each check is a real network call with its own 3-5 second timeout, so one or two slow real checks could stack additively into a multi-second worst case. Fixed by running all seven concurrently via a small `ThreadPoolExecutor`, the same pattern `fusion.py`'s own multi-source dispatch already uses — genuinely simpler here, since every `_check_*` function already catches its own exceptions and never raises, so none of fusion's exception-handling complexity was needed.

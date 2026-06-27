@@ -67,5 +67,5 @@ This is a real, deliberate parallel to [Fusion](Fusion)'s own merge logic — tr
 
 ## Development Notes
 
-- **Book selection used to be non-deterministic across restarts** when the LLM's response fell back to fuzzy substring matching — the candidate-checking order wasn't guaranteed stable, so a genuinely ambiguous response could resolve differently after a restart for no visible reason. Fixed by checking candidates in a fixed, sorted order.
+- **Book selection could silently pick a non-deterministic result on certain LLM failures** — the same bug documented in full at [The Kiwix Bulletproofing Pass](The-Kiwix-Bulletproofing-Pass#book-selection-could-silently-pick-a-random-book-on-an-empty-llm-response).
 - **The fusion threshold used to be hardcoded** rather than exposed as `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT` — made configurable since it's the central decision this page documents.

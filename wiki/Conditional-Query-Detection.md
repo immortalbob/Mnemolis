@@ -32,6 +32,8 @@ _YES_NO_INTERPRETABLE_SOURCES = {"ha", "uptime", "forecast"}
 
 Every other source — Kiwix, web, news — is **never** interpreted, on purpose. There's no structured signal to check against in free text, and guessing wrong would actively mislead rather than just be unhelpful. Even within the three interpretable sources, a genuinely subjective condition like *"if it's hot enough this week"* correctly returns no verdict, because there's no universal threshold for "hot enough" to check against — `_interpret_yes_no` returns `None` here, not a guess.
 
+The `ha` source's specific "check 'unlocked' before 'locked', regardless of context" ordering (above) is a real, deliberate guard against a substring trap, not an arbitrary implementation detail — worth knowing if this logic is ever refactored or generalized, since a unified version that instead checks whichever keyword matches the condition's own stated polarity first gets the "condition says locked, result says unlocked" case backwards. This exact regression was caught once already, before shipping, specifically by testing that scenario rather than trusting a generalization the existing test suite had never actually covered.
+
 ```text
                  Condition extracted, searched
                               │
@@ -97,12 +99,3 @@ Back Door: locked"
 ```
 
 The real underlying result is always preserved in the response, regardless of the verdict — framing adds context, it never replaces or hides the actual data.
-
----
-
-## Development Notes
-
-- **The first version of sub-query re-detection used a manual recursion-depth counter** that introduced a real bug: it incremented before the conditional was actually consumed, blocking the recursive call's own necessary re-detection of the same conditional. See [The Recursion Design Bug](The-Recursion-Design-Bug) for the much simpler design that replaced it.
-- **An early version of the consequence-extraction regex was greedy** and captured everything to the end of the string, silently swallowing a genuine second question into plain descriptive text that never got searched. The same fix that addressed this surfaced the `[FUSION — FUSION]` double-header bug at a new call site — see [The Fusion Merge Bugs](The-Fusion-Merge-Bugs#the-fusion-fusion-bug-and-why-it-kept-coming-back).
-- **The condition and remainder used to be resolved sequentially**, not concurrently — a real, measured latency cost that was initially left as an accepted risk, then re-examined and fixed once the original reasoning for leaving it alone turned out not to hold up. See [The Latency Parallelization Investigation](The-Latency-Parallelization-Investigation#the-conditionalremainder-case-was-initially-wrongly-left-alone) for the full story.
-- **A refactor that unified `ha`/`uptime`/`forecast`'s interpretation logic into one shared helper almost reintroduced the "locked"/"unlocked" substring trap.** The original, separate implementations correctly checked for "unlocked" first regardless of context; a first attempt at generalizing the logic instead checked whichever keyword matched the condition's own polarity first, which got the "condition says locked, result says unlocked" case backwards. Caught by deliberately constructing and testing that exact scenario before trusting the generalization — the existing test suite had never actually covered this specific case at all, despite the original code's correct check order existing specifically to guard against it.

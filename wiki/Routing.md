@@ -81,7 +81,7 @@ The full investigation behind this feature, including the original LLM-path fix 
 
 ## Fallback — when a source comes back empty
 
-Two sources have a configured fallback target: `kiwix` and `news` both fall back to `web` if their own result looks empty. "Looks empty" is a literal phrase match against a known list — `"no results found"`, `"not configured"`, `"could not connect"`, and several others — not a judgment call or a confidence score. Both `router.py` and `fusion.py` share one canonical version of this list, living in `fusion.py`. If `kiwix`'s response contains one of those phrases, `web` gets queried instead, transparently, and `source_used` in the response correctly reports `"web"` — never the originally-intended source that actually failed. The fallback itself is fully observable — see [Health & Observability](Health-and-Observability) for how `fallback_occurred` gets tracked and surfaced in `/logs/stats`.
+Two sources have a configured fallback target: `kiwix` and `news` both fall back to `web` if their own result looks empty. "Looks empty" is a literal phrase match against a known list — `"no results found"`, `"not configured"`, `"could not connect"`, and several others — not a judgment call or a confidence score. Both `router.py` and `fusion.py` share one canonical version of this list, living in `fusion.py` — see [The Fallback Observability Gap](The-Fallback-Observability-Gap) for the real history of why that sharing matters. If `kiwix`'s response contains one of those phrases, `web` gets queried instead, transparently, and `source_used` in the response correctly reports `"web"` — never the originally-intended source that actually failed. The fallback itself is fully observable — see [Health & Observability](Health-and-Observability) for how `fallback_occurred` gets tracked and surfaced in `/logs/stats`.
 
 ## Where this connects to everything else
 
@@ -90,10 +90,3 @@ Routing decides *which* source(s) answer a query, but it's not the only layer th
 - [Query Decomposition](Query-Decomposition) runs first for any compound question, splitting it into independent sub-queries that each get routed separately
 - [Conditional Query Detection](Conditional-Query-Detection) runs before decomposition for leading `"if X, Y"` phrasing, and is re-applied to each decomposed sub-query too
 - [Fusion](Fusion) is what actually happens when routing decides more than one source is needed
-
----
-
-## Development Notes
-
-- **The discourse-framing bias originally only fired on the LLM-selection path.** A real, separate gap meant a keyword match (even an ordinary one like `"rss"`) could silently bypass the bias entirely, defeating its purpose for the majority of real discourse-framed queries that happen to also mention an everyday `INTENT_MAP` word. See [The Discourse-Framing Investigation](The-Discourse-Framing-Investigation) for the full multi-bug history.
-- **A source you forgot to configure used to return its own raw error message instead of falling back to `web`.** `router.py` and `fusion.py` carried separate copies of the "looks empty" phrase list that had quietly drifted apart — confirmed directly with an unconfigured FreshRSS returning its literal `"FreshRSS is not configured..."` error as the actual result, with `source_used: "news"`. Fixed by sharing one canonical list. Separately, `source_used` itself used to report the originally-*intended* source even when a fallback happened, which made the bug above harder to see in the first place — fixed at the same time.

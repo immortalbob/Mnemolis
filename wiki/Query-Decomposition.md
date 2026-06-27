@@ -82,7 +82,7 @@ It splits independent intents — it deliberately does *not* try to handle a lea
 
 ## Development Notes
 
-- **Meaningful-content filtering's original allowlist had zero coverage for technical vocabulary.** An earlier version used a fixed list of "intent words" that silently dropped real content like *"I've been getting a python pigpio no permission to update GPIO error"* because none of those words happened to be on the list — the current stop-word-based approach replaced it.
+- **Meaningful-content filtering's original allowlist had zero coverage for technical vocabulary** — replaced by the current stop-word-based approach for exactly this reason. See [The Meaningful-Content-Filter Bugs](The-Meaningful-Content-Filter-Bugs#before-this-a-fixed-allowlist-that-had-zero-coverage-for-technical-vocabulary) for the real query that exposed the gap.
 - **Two real keyword phrases, `"is it up"` and `"are they up"`, are made entirely of common stop words** and were silently vanishing from decomposed output before the `INTENT_MAP` keyword check was moved ahead of stop-word stripping. See [The Meaningful-Content-Filter Bugs](The-Meaningful-Content-Filter-Bugs) for the full story, including a second, related ordering bug found while fixing the first.
 - **The proper-noun-pair guard used to be a global veto** — finding any proper-noun pair anywhere in the query canceled splitting entirely, dropping every other real intent in the same query along with it. Three of the five bugs in [The Proper-Noun-Pair Saga](The-Proper-Noun-Pair-Saga) live in this guard and its fix.
 - **Colloquial-phrase detection used to miss phrases that appeared mid-clause** rather than at the very start of the query, before the check was changed from `.startswith()` to a substring match.

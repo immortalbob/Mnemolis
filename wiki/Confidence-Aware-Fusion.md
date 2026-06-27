@@ -50,10 +50,3 @@ Two URLs that are really the same page — `https://www.example.com/page/` and `
 ## Where this fits into the bigger picture
 
 This scoring runs *before* a result is even eligible to participate in [Fusion](Fusion)'s cross-source merge — a `news` or `web` result still has to clear this bar before fusion's own deduplication and truncation logic ever sees it. For `web` specifically, scoring also has to account for results coming from two different searches at once — see [Query Expansion](Query-Expansion) for why, and how the same scoring function handles a doubled result pool without favoring one search's results over the other's just because of which one ran first.
-
----
-
-## Development Notes
-
-- **Single-letter and single-digit keywords used to be dropped entirely during keyword extraction.** A query about "R" the programming language, or "C," lost the one word that actually distinguished it from an unrelated result, since both sides were then only being compared on generic shared words — for a real query like "tutorial for the c programming language," a correct "C Programming Language" result could score *lower* than an unrelated "JavaScript Programming Language" one. Fixed by keeping a single character when it's genuinely alphanumeric, rather than simply allowing any single character through — a bare punctuation mark (a stray hyphen in "C++ vs C#", say) still doesn't count as a keyword on its own.
-- **A tracking query string used to defeat the generic-homepage detection.** `?utm_source=twitter` on an otherwise bare homepage made the URL look like it had a real article path, letting an obvious landing page slip past the −20 generic-result penalty. Fixed by stripping the query string before the path check runs.

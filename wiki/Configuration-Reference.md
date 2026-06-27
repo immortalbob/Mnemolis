@@ -146,6 +146,5 @@ Most of the notes above link to the wiki page that covers the real mechanism a s
 
 ## Development Notes
 
-- **`UPTIME_KUMA_TIMEOUT_SECONDS` didn't exist until recently** — the client previously had a bare, hardcoded `timeout=30` with no way to tune it, found via a real, live latency flag. See [The Adversarial Testing Production Bugs](The-Adversarial-Testing-Production-Bugs#a-real-genuine-backend-timeout-correctly-reported-but-with-no-way-to-tune-it) for the full story.
+- **`UPTIME_KUMA_TIMEOUT_SECONDS` didn't exist until recently** — the client previously had a bare, hardcoded `timeout=30` with no way to tune it, found via a real, live latency flag. See [The Adversarial Testing Production Bugs](The-Adversarial-Testing-Production-Bugs#a-real-genuine-backend-timeout--correctly-reported-but-with-no-way-to-tune-it) for the full story.
 - **`FUSION_MAX_SOURCES=0` used to crash with a raw error** rather than returning the sensible "no valid sources specified" message that already existed elsewhere in the same code path.
-- **Application logging was silently disabled project-wide for a real stretch of this project's history.** The root logger defaulted to `WARNING` with no handler configured, meaning every `_LOGGER.info()` call across the entire codebase was being swallowed before anyone could see it. Fixed once; worth knowing about if you're ever debugging on a build old enough to predate the fix.

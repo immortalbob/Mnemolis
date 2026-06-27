@@ -51,9 +51,3 @@ Both fallbacks take the *last* non-empty line of the thinking/reasoning text, no
 ## What happens when nothing is configured at all
 
 `is_configured()` returns `False` whenever `LLM_URL` or `LLM_MODEL` is blank — the default, out-of-the-box state. This isn't a degraded or error mode; it's a fully supported way to run Mnemolis, just with less of its routing intelligence available. [Routing](Routing) falls back to keyword-only matching, [Kiwix Disambiguation](Kiwix-Disambiguation) and [Query Expansion](Query-Expansion) never trigger, and book selection falls back to a fixed "search Wikipedia first" rule — see [Configuration Reference](Configuration-Reference) for the complete list of what depends on this setting being present.
-
----
-
-## Development Notes
-
-- **The OpenAI-compatible path used to have no thinking-model fallback at all**, while Ollama's native path already did. This meant every single completion would silently return `None` for a thinking model on this backend — not a contrived edge case, but the literal default behavior for the specific setup (`llama-server` with a Qwen3-Coder model) this project's own setup documentation describes running. Fixed by mirroring the same fallback shape already proven on the Ollama side.

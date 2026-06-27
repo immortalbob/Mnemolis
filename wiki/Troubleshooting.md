@@ -33,7 +33,7 @@ This exact category of bug has a long, real history — see [The Proper-Noun-Pai
 
 ## A conditional question ("if X, Y") didn't get the expected framing
 
-Check [Conditional Query Detection](Conditional-Query-Detection#why-the-pattern-is-this-narrow) — detection is deliberately narrow. Missing the leading comma ("if the front door is unlocked tell me," no comma) is a known, accepted limitation, not a bug. Mid-sentence or trailing "if" is out of scope for the same reason. If the structure genuinely matches the leading-comma pattern and still isn't framed correctly, check whether the source the condition resolved to is actually one of the three [interpretable sources](Conditional-Query-Detection#honest-abstention-the-actual-point-of-this-feature) (`ha`, `uptime`, `forecast`) — every other source intentionally never gets a yes/no verdict, only an honestly-presented raw result.
+Check [Conditional Query Detection](Conditional-Query-Detection#why-the-pattern-is-this-narrow) — detection is deliberately narrow. Missing the leading comma ("if the front door is unlocked tell me," no comma) is a known, accepted limitation, not a bug. Mid-sentence or trailing "if" is out of scope for the same reason. If the structure genuinely matches the leading-comma pattern and still isn't framed correctly, check whether the source the condition resolved to is actually one of the three [interpretable sources](Conditional-Query-Detection#honest-abstention--the-actual-point-of-this-feature) (`ha`, `uptime`, `forecast`) — every other source intentionally never gets a yes/no verdict, only an honestly-presented raw result.
 
 ## A backup/restore command silently did nothing
 
@@ -49,7 +49,7 @@ See [Home Assistant Integration](Home-Assistant-Integration#development-notes) �
 
 ## A source you forgot to configure returned its own raw error message instead of falling back to web search
 
-Check [Routing](Routing#fallback-when-a-source-comes-back-empty) — `kiwix` and `news` are both supposed to fall back to `web` automatically when they come back empty, including when they're simply unconfigured. This used to fail silently for certain "not configured"/"could not connect" messages specifically; fixed now, but worth confirming the source you expected to fall back from is actually the intended one, since not every source has a configured fallback target.
+Check [Routing](Routing#fallback--when-a-source-comes-back-empty) — `kiwix` and `news` are both supposed to fall back to `web` automatically when they come back empty, including when they're simply unconfigured. This used to fail silently for certain "not configured"/"could not connect" messages specifically; fixed now, but worth confirming the source you expected to fall back from is actually the intended one, since not every source has a configured fallback target.
 
 ## Weather forecast looks completely wrong for your location
 
@@ -63,6 +63,10 @@ A real bug used to drop single-character search terms entirely while scoring and
 
 If `FUSION_MAX_SOURCES` is set to `0`, this used to crash with a raw error; it now correctly reports "no valid sources specified" instead. If you're trying to limit fusion to fewer sources, set it to a positive number — `0` was never a valid way to disable fusion, just a configuration mistake that's now handled gracefully instead of crashing.
 
+## `docker logs mnemolis` shows almost nothing, even during active queries
+
+If you're on a build old enough to predate a real fix: the root logger used to default to Python's standard `WARNING` level with no handler attached, meaning every `_LOGGER.info()` call across the whole codebase was silently swallowed — only uvicorn's own access logger ever produced visible output, making the app look like it was running with zero diagnostic detail when the logging calls were actually firing the entire time. Fixed now; routing, decomposition, and conditional-detection decisions should all be visible in the logs by default.
+
 ## General debugging principle, if none of the above applies
 
-Several of the real bugs documented in [Design History](Home#design-history-real-bugs-real-fixes) were only correctly diagnosed by adding genuine debug tracing and reading the actual output, rather than guessing at a plausible-sounding cause. If something's behaving unexpectedly and none of the documented cases above match, check the application logs directly (`docker logs mnemolis`) for the actual routing/decomposition/conditional-detection decision being made, rather than inferring it from the final response alone — the log lines at each of those stages are usually specific enough to show exactly where a query's handling diverged from what was expected.
+Several of the real bugs documented in [Design History](Home#design-history--real-bugs-real-fixes) were only correctly diagnosed by adding genuine debug tracing and reading the actual output, rather than guessing at a plausible-sounding cause. If something's behaving unexpectedly and none of the documented cases above match, check the application logs directly (`docker logs mnemolis`) for the actual routing/decomposition/conditional-detection decision being made, rather than inferring it from the final response alone — the log lines at each of those stages are usually specific enough to show exactly where a query's handling diverged from what was expected.
