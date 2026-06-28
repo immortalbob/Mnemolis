@@ -73,3 +73,5 @@ Each entry in `top_queries` reports the source that answered it **most recently*
 ## `/logs` — the raw query log
 
 `GET /logs?limit=N` returns recent entries directly: timestamp, query, source requested, source used, cached flag, success, latency in milliseconds, and `fallback_occurred`. `limit` is clamped to a sane range (1-1000) — SQLite treats a negative `LIMIT` as "no limit at all," so this bound exists specifically to keep `?limit=-1` from returning the entire query log. Useful for spot-checking a specific recent query's behavior without waiting for it to show up in aggregate stats.
+
+`POST /logs/clear` deletes every row from `query_log.db` — all of it, not a time-windowed subset — and returns `{"status": "cleared", "entries_removed": N}` with the real count. This also resets every aggregate built from the log (`/logs/stats`'s fallback rate, latency-by-source, top queries) back to empty, since they're all computed from this same table rather than tracked independently. `query_log.db` is one of the six files [`GET /backup`](Backup-and-Restore) covers — worth a backup first if the history has any value, since this has no undo.

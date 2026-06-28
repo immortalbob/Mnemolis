@@ -1,6 +1,6 @@
 # The Snapshot Engine Bulletproofing Pass
 
-Five real bugs found in the snapshot/diff engine during a deliberate review — the same kind of pass that found similar chains in [Home Assistant](The-Home-Assistant-Bulletproofing-Pass) and [Kiwix](The-Kiwix-Bulletproofing-Pass). All five are independent findings, not a chain.
+Six real bugs found in the snapshot/diff engine during a deliberate review — the same kind of pass that found similar chains in [Home Assistant](The-Home-Assistant-Bulletproofing-Pass) and [Kiwix](The-Kiwix-Bulletproofing-Pass). Five are independent findings; the sixth was found later by checking whether one of the five had a sibling gap one step further downstream.
 
 ## A single shared retention count meant `uptime` only kept 9.6 hours of real history
 
@@ -18,10 +18,16 @@ Uptime Kuma's own status model treats a confirmed "down" state and a "pending"/r
 
 `forecast`'s temperature-change detection relies on regexes to extract numeric values from forecast text. Those regexes had no support for a negative sign at all — meaning any genuinely cold deployment, anywhere a forecast could plausibly go below zero, would never detect a temperature change at all. Not a degraded or partial result — change detection for temperature silently stopped working completely, with no error or warning anywhere to suggest why. Fixed by allowing an optional negative sign in both extraction regexes.
 
+## A sibling bug, found later, one step past the fix above: exactly zero degrees had the same problem
+
+The negative-sign fix protected *extraction* — the regexes could now correctly pull a negative number out of forecast text. It never checked whether *consumption* of that extracted value had an analogous gap for a different falsy-but-valid number: zero. The actual comparison was `if old_high and new_high and ...` — a truthiness check, not an `is not None` check — and `0.0` is exactly as falsy in Python as `None` is. A forecast high or low of exactly zero degrees was silently indistinguishable from "couldn't extract a value at all," so a real, large temperature change involving a 0° day never registered, in either direction. Confirmed directly: a high changing from 0° to 15° — a real 15-degree swing, well above any sane threshold — produced zero detected changes before this fix.
+
+The existing test suite had thorough coverage for the negative-sign fix, but every single test case used non-zero values for both old and new — the zero case sits right next to negative numbers on the number line and is, if anything, more common in practice (0°F is an ordinary cold-day temperature; deeply negative readings are rarer), but it was never constructed or considered. Fixed by checking `is not None` against the extracted values, rather than relying on truthiness, for both the high and low comparisons.
+
 ## One malformed entity could crash the diff for every other entity in the same snapshot
 
 Home Assistant entity diffing used direct bracket-notation access to a `state` field that isn't actually guaranteed to be present — a single entity missing that field raised an uncaught `KeyError` that took down the diff for the *entire* snapshot, not just the one malformed entity. Not reachable through the current snapshot writer, which always populates the field — but snapshots persist in a long-lived database table, and a snapshot written under an older schema version could plausibly be read back without it. Fixed by skipping any entity missing the required field rather than crashing on it, so one bad row degrades gracefully instead of taking the rest of a real diff down with it.
 
 ## The lesson
 
-None of these five needed a failing test to be visible once looked for directly — each one is a real, traceable gap between what the code assumes (every source snapshots at the same rate; every fractional value is already rounded; every temperature is non-negative; every stored entity has every expected field) and what's actually true once enough real time, real weather, or real schema history passes. A deliberate read specifically looking for these assumptions, rather than waiting for one of them to fail in a way someone would notice and report, is what found all five.
+None of these six needed a failing test to be visible once looked for directly — each one is a real, traceable gap between what the code assumes (every source snapshots at the same rate; every fractional value is already rounded; every temperature is non-negative and never exactly zero; every stored entity has every expected field) and what's actually true once enough real time, real weather, or real schema history passes. A deliberate read specifically looking for these assumptions, rather than waiting for one of them to fail in a way someone would notice and report, is what found five of the six directly — and the sixth came from a different, equally valuable habit: after fixing a real bug, checking whether the same class of mistake has a sibling sitting one step away from where the fix actually looked. The negative-sign fix and the zero-truthiness fix are the same lesson twice, just caught at different times.
