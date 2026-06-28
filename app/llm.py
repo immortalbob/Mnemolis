@@ -37,14 +37,22 @@ _LOGGER = logging.getLogger(__name__)
 # connection pool has no equivalent of "logged in vs not"; `requests`' own
 # adapter already transparently opens a fresh connection if a pooled one has
 # gone stale or dead), so a single, eagerly-created module-level `Session`
-# is sufficient. `requests.Session` is documented as safe for concurrent use
-# across threads for making requests (the unsafe case is concurrent
-# *mutation* of shared session state like `session.headers`, which nothing
-# in this module ever does after construction) — Mnemolis's own concurrent
-# request model (FastAPI's /search route is synchronous, so Starlette
-# already runs real concurrent requests on its own thread pool) makes this
-# the actual, live concurrency shape this needs to be safe under, not a
-# theoretical one.
+# is sufficient. requests.Session() is genuinely safe for concurrent READ-
+# ONLY use across threads — confirmed against the library maintainers' own
+# stated position (a real psf/requests GitHub issue on this exact question),
+# which is more precise than the library's own homepage "thread-safe" bullet
+# alone suggests: the underlying urllib3 connection pool is thread-safe per
+# individual request, but the Session object's own shared mutable state
+# (headers, cookies) is NOT safe under concurrent MUTATION — one thread
+# changing session.headers while another reads it is the real, documented
+# risk, not concurrent requests through an unmodified session. Verified this
+# module's actual usage never crosses that line: grep-confirmed `_session`
+# is only ever read from (`.post()`) after the two `.mount()` calls at
+# import time below, never mutated again from anywhere. Mnemolis's own
+# concurrent request model (FastAPI's /search route is synchronous, so
+# Starlette already runs real concurrent requests on its own thread pool)
+# makes this the actual, live concurrency shape this needs to be safe
+# under, not a theoretical one.
 #
 # Plain module-level singleton, not a lazy-init-with-lock accessor like
 # `uptime_kuma.get_connection()` — Session() construction does no I/O at
@@ -105,6 +113,23 @@ def _complete_ollama(prompt: str, max_tokens: int, temperature: float) -> str | 
     value Ollama itself accepts (a duration string, plain seconds, "-1"
     for never-unload, "0" for unload-immediately), not a fixed Mnemolis-
     specific shape.
+
+    "think": False is sent as a TOP-LEVEL request field, not nested
+    inside "options" — confirmed via real-world research this placement
+    matters for at least one real Ollama bug class, not just style:
+    multiple independently-reported issues against the newer qwen3.5/
+    qwen3-vl model family describe /api/generate ignoring think:false
+    specifically when it's nested under options, with the model burning
+    its entire token budget on hidden reasoning and returning a
+    genuinely empty response field regardless of max_tokens. Checked
+    specifically whether this affects this project's own documented
+    model (qwen3:8b, not qwen3.5) before treating it as relevant here:
+    it doesn't — the reported bug is scoped to qwen3.5/qwen3-vl's newer
+    built-in renderer/parser mechanism, architecturally different from
+    qwen3:8b's own template-based thinking-control logic, which
+    correctly respects think:false regardless of nesting. Worth
+    re-verifying this placement still matters (or doesn't) if this
+    project's documented model ever changes to a qwen3.5-family model.
     """
     resp = _session.post(
         f"{settings.llm_url}/api/generate",
@@ -186,7 +211,23 @@ def _complete_openai(prompt: str, max_tokens: int, temperature: float) -> str | 
     # specific kind of model this project's own README documents using
     # on this backend.
     if not raw:
+        # Defensive: reasoning_content/reasoning are expected as plain
+        # strings per llama.cpp's own documented "deepseek" reasoning
+        # format (confirmed via llama.cpp's real server README) — the
+        # actual, documented target for this fallback. A different,
+        # OpenAI-proper convention exists where `reasoning` is itself a
+        # dict (e.g. {"effort": "none"}), distinct from the string-
+        # shaped field this fallback is actually built for; .splitlines()
+        # against a dict would raise. Not reachable through this
+        # project's own documented backend (llama-server's real response
+        # shape uses a plain string), but checked anyway since the outer
+        # complete() already has a real safety net (its own
+        # except Exception) — this just keeps the failure honestly
+        # logged as "field wasn't usable" rather than a less specific
+        # AttributeError, for free.
         reasoning = message.get("reasoning_content", "") or message.get("reasoning", "")
+        if not isinstance(reasoning, str):
+            reasoning = ""
         lines = [line.strip() for line in reasoning.splitlines() if line.strip()]
         raw = lines[-1] if lines else ""
 

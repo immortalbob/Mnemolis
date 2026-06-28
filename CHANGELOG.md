@@ -4,6 +4,24 @@ All notable changes to Mnemolis are documented here, from v3.45.0 onward. For ev
 
 ---
 
+## [3.50.28]
+
+### Fixed — A Real Lint Regression, Self-Introduced and Caught by CI, Not by This Project's Own Verification Routine
+`app/main.py` failed `ruff check` with six `E402` (module-level import not at top of file) errors — a real, embarrassing mistake introduced during this session's earlier `mcp_server.py` work: the new `MCP_MOUNT_PATH` constant and its explanatory comment were inserted in the middle of the existing import block instead of after it, pushing every subsequent import (`app.sources.kiwix`, `app.snapshots`, `app.adversarial_testing`, `app.temporal_patterns`, `app.config`) below a non-import statement. This shipped across several versions because the verification routine for this whole session only ever ran `pytest` — which has no opinion about import ordering — never `ruff`, the actual tool this project's own CI pipeline runs. Fixed by moving the constant and its comment back to after the import block, a pure reordering with zero behavior change, confirmed by an unchanged full test suite pass before and after. `ruff check .` now reports zero errors across the entire repository. **Running both `pytest` and `ruff check` together is now the standing verification step for every change going forward, not just `pytest` alone.**
+
+### Fixed — A Real, Defensive Gap Found During a Deliberate Function-by-Function Read of `app/llm.py`
+Every concurrency and API-shape claim in this file's own dense, pre-existing comments was verified directly rather than trusted — `requests.Session`'s real thread-safety boundary (confirmed against the library maintainers' own GitHub discussion: safe for concurrent reads, unsafe only under concurrent mutation of shared session state, which this module never does after construction), and the `"think": False` top-level-vs-nested placement (confirmed against multiple real Ollama bug reports — the bug exists, but is scoped to the newer qwen3.5/qwen3-vl renderer architecture, not this project's actually-documented `qwen3:8b`, which uses the older, unaffected template-based thinking control).
+
+One real, defensive gap found: `_complete_openai()`'s thinking-model fallback reads `message.get("reasoning_content", "") or message.get("reasoning", "")` and calls `.splitlines()` on the result, assuming a plain string. A different, OpenAI-proper convention exists where `reasoning` is itself a dict (e.g. `{"effort": "none"}`) rather than the plain-string shape llama.cpp's own real, documented response format actually uses for this fallback. Confirmed via direct testing that this would raise an uncaught `AttributeError` — not reachable through this project's own documented backend, and already caught one layer up by `complete()`'s own outer exception handler, so this was never a crash risk in practice, just a less-specific log message than necessary. Fixed with a cheap `isinstance` guard.
+
+### Added (Tests)
+- 1 new test in `test_llm.py`'s `TestCompleteOpenAI`, calling `_complete_openai()` directly rather than the public `complete()` wrapper — confirmed a first draft of this test was flawed (it passed regardless of whether the fix existed, since the outer exception handler already masks the difference) and rewrote it to check the inner function's own behavior directly, the only way to confirm this specific guard does real work
+
+### Changed
+- Version bumped to 3.50.28
+
+---
+
 ## [3.50.27]
 
 ### Fixed — Two Real Bugs From the Same Root Cause: Unbounded Per-Call Thread Creation, and a Timeout That Didn't Actually Return Promptly

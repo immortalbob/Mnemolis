@@ -316,6 +316,37 @@ class TestCompleteOpenAI:
             result = complete("test")
         assert result == "uptime"
 
+    def test_dict_shaped_reasoning_field_does_not_crash(self):
+        """Regression test for a real, defensive gap found via a
+        deliberate function-by-function read: a different, OpenAI-
+        proper convention exists where 'reasoning' is itself a dict
+        (e.g. {"effort": "none"}), distinct from the plain-string
+        'reasoning_content'/'reasoning' shape llama.cpp's own real
+        response format actually uses (confirmed against llama.cpp's
+        server README). Not reachable through this project's actual
+        documented backend, but .splitlines() against a dict would
+        raise an uncaught AttributeError if it ever were.
+
+        Calls _complete_openai() DIRECTLY rather than the public
+        complete() wrapper — complete()'s own outer except Exception
+        would catch this AttributeError regardless of whether the
+        inner defensive guard exists, which would make a test only
+        checking the final return value pass either way and prove
+        nothing about which layer actually handled it. Checking the
+        inner function's own behavior is the only way to confirm this
+        specific guard, not just the existing outer safety net,
+        actually does the work."""
+        from app.llm import _complete_openai
+        mock_resp = self._mock_response({
+            "choices": [{"message": {
+                "content": "",
+                "reasoning": {"effort": "none"}
+            }}]
+        })
+        with patch("app.llm._session.post", return_value=mock_resp):
+            result = _complete_openai("test", 100, 0.0)
+        assert result is None
+
     def test_returns_none_when_content_and_reasoning_both_empty(self):
         """Confirms the fix doesn't change behavior when there's
         genuinely no usable content anywhere — the existing

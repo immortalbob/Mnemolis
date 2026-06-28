@@ -30,19 +30,6 @@ from app.router import (
     clear_routing_cache,
 )
 from app.mcp_server import mcp_app, get_mcp_app
-
-# Defined once, used at both real call sites below (app.mount() and the
-# lifespan function's own route-matching loop) — found via a deliberate
-# function-by-function read of mcp_server.py and its real consumer here:
-# the two were previously two independent "/mcp" string literals with
-# nothing enforcing they ever agreed. If they silently drifted apart (a
-# future refactor renaming one without the other), the lifespan's
-# matching loop would find no route at all, silently leave the stale
-# module-import-time mcp_app mounted, and reintroduce the exact
-# "StreamableHTTPSessionManager.run() can only be called once" bug this
-# fix exists to prevent — not at startup where it would be immediately
-# obvious, but on the first real MCP request after the next restart.
-MCP_MOUNT_PATH = "/mcp"
 from app.sources.kiwix import get_books, refresh_catalog
 from app.sources import uptime_kuma
 from app.snapshots import (
@@ -70,6 +57,19 @@ from app.temporal_patterns import (
     get_temporal_patterns,
 )
 from app.config import settings
+
+# Defined once, used at both real call sites below (app.mount() and the
+# lifespan function's own route-matching loop) — found via a deliberate
+# function-by-function read of mcp_server.py and its real consumer here:
+# the two were previously two independent "/mcp" string literals with
+# nothing enforcing they ever agreed. If they silently drifted apart (a
+# future refactor renaming one without the other), the lifespan's
+# matching loop would find no route at all, silently leave the stale
+# module-import-time mcp_app mounted, and reintroduce the exact
+# "StreamableHTTPSessionManager.run() can only be called once" bug this
+# fix exists to prevent — not at startup where it would be immediately
+# obvious, but on the first real MCP request after the next restart.
+MCP_MOUNT_PATH = "/mcp"
 
 # Configure logging at startup — without this, the root logger defaults to
 # WARNING with no attached handler, which silently swallows every
@@ -327,7 +327,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.50.27",
+    version="3.50.28",
     lifespan=lifespan,
 )
 
