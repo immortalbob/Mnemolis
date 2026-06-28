@@ -1,7 +1,7 @@
-import re
 import time
 import logging
 import requests
+from bs4 import BeautifulSoup
 from app.config import settings
 from app.scoring import filter_and_rank
 
@@ -144,7 +144,26 @@ def search(query: str) -> str:
         for item in items:
             title = item.get("title", "No title")
             source = item.get("origin", {}).get("title", "Unknown source")
-            summary = re.sub(r"<[^>]+>", "", item.get("summary", {}).get("content", ""))[:300].strip()
+            # Found via a deliberate function-by-function read: the
+            # original `re.sub(r"<[^>]+>", "", ...)` regex approach has
+            # two real, distinct gaps a genuine HTML parser doesn't.
+            # First, HTML entities (&amp;, &lt;, &gt;) were never
+            # decoded, so they survived as literal text in the output —
+            # cosmetic, not a parsing failure, but still wrong. Second,
+            # and more seriously: `[^>]+` stops at the FIRST `>` it
+            # finds, with no awareness of quoted attribute values — a
+            # real, plausible tag like `<img alt="a > b">` truncates the
+            # match at the `>` inside the quoted alt text, leaving the
+            # genuine tag boundary unmatched and `">` syntax bleeding
+            # directly into the visible summary text. BeautifulSoup
+            # (already a real, existing dependency — see kiwix.py's own
+            # identical get_text() convention) uses a real parser that
+            # understands attribute-value boundaries and decodes
+            # entities automatically, fixing both gaps with the same
+            # change rather than patching the regex twice.
+            summary = BeautifulSoup(
+                item.get("summary", {}).get("content", ""), "html.parser"
+            ).get_text()[:300].strip()
             published = item.get("published")
             articles.append({
                 "title": title,

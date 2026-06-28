@@ -296,6 +296,27 @@ class Settings(BaseSettings):
     # bounding the ceiling, not throttling realistic load.
     fusion_thread_pool_size: int = 12
 
+    # Found via a deliberate function-by-function read of searxng.py:
+    # search() spun up a brand-new, 2-worker ThreadPoolExecutor on every
+    # single call (one worker for the primary fetch, one for the
+    # alternate-phrasing chain) — the identical unbounded-per-call
+    # pattern already found and fixed in fusion.py above, just never
+    # checked for here. Confirmed directly, not estimated: 15 concurrent
+    # search() calls under realistic network latency produced a measured
+    # peak of 46 real OS threads, with no ceiling as concurrent traffic
+    # increases. Worse here than the original fusion.py case in one real
+    # way: fusion.py dispatches to searxng.search() THROUGH its own
+    # already-bounded _fusion_executor pool when a fusion query includes
+    # `web` — meaning every one of fusion's 12 bounded workers could
+    # simultaneously spin up its own additional, unbounded 2-worker pool,
+    # undermining the very bound fusion.py's own fix was meant to
+    # establish. Replaced with the identical shared-pool shape as
+    # FUSION_THREAD_POOL_SIZE — sized smaller (2 is the genuine per-call
+    # need; this only needs enough headroom for a few requests'
+    # primary+alternate pairs to be in flight at once, not capacity for
+    # every concurrent request the way fusion's source-fanout does).
+    searxng_thread_pool_size: int = 4
+
     # -------------------------------------------------------------------
     # Caching — result cache, routing cache, and per-source TTLs
     # -------------------------------------------------------------------

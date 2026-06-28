@@ -87,6 +87,42 @@ class TestGetAlternatePhrasing:
             result = get_alternate_phrasing("best laptop for programming")
         assert result is None
 
+    def test_accepts_response_at_exactly_twice_original_length(self):
+        """The length-sanity check is `len(alternate.split()) > word_count
+        * 2` — strictly greater than, so a rephrasing that's EXACTLY
+        double the original's word count should still be accepted, not
+        rejected. The existing overly-long test above uses 50 words
+        against a 4-word query, comfortably past the boundary in either
+        direction — never actually exercising the literal "exactly 2x"
+        edge documented in the wiki as "more than twice... is discarded"
+        (implying exactly twice is not "more than" and should pass)."""
+        from app.query_expansion import get_alternate_phrasing
+        # 3-word query, 6-word response = exactly 2x
+        response = "one two three four five six"
+        with patch("app.query_expansion._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value=response):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = get_alternate_phrasing("best laptop here")
+        assert result == response
+
+    def test_rejects_response_just_over_twice_original_length(self):
+        """The immediately adjacent case to the test above — one word
+        past the exact-2x boundary must be rejected, confirming the
+        boundary is tight rather than accidentally off by one in either
+        direction."""
+        from app.query_expansion import get_alternate_phrasing
+        # 3-word query, 7-word response = just over 2x
+        response = "one two three four five six seven"
+        with patch("app.query_expansion._get_routing_fns") as mock_fns, \
+             patch("app.llm.complete", return_value=response):
+            mock_get_routing = MagicMock(return_value=None)
+            mock_set_routing = MagicMock()
+            mock_fns.return_value = (mock_get_routing, mock_set_routing)
+            result = get_alternate_phrasing("best laptop here")
+        assert result is None
+
     def test_rejects_identical_response(self):
         from app.query_expansion import get_alternate_phrasing
         with patch("app.query_expansion._get_routing_fns") as mock_fns, \

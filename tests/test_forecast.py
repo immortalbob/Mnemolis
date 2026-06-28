@@ -137,6 +137,37 @@ class TestForecastSearch:
             result = forecast.search("weather")
         assert "unable to retrieve" in result.lower() or "error" in result.lower()
 
+    def test_partial_daily_data_returns_error_message_not_a_crash(self):
+        """Regression test for a real gap found via a deliberate
+        function-by-function read: the original try/except only ever
+        covered the network call and JSON parse, not the consumption of
+        `daily` itself. A genuinely successful HTTP response (status 200,
+        valid JSON) that comes back with fewer than 3 days of data —
+        forecast_days=3 is a request parameter, not a guarantee — used
+        to raise an uncaught IndexError once the code reached day 3's
+        indexing, rather than degrading the same honest way a network
+        failure already does."""
+        from app.sources import forecast
+        mock = _mock_forecast_response()
+        # Only 2 days of weathercode data, simulating a real partial/
+        # degraded API response despite a successful HTTP status.
+        mock.json.return_value["daily"]["weathercode"] = [0, 2]
+        with patch("app.sources.forecast.requests.get", return_value=mock):
+            result = forecast.search("weather")
+        assert "unable to retrieve" in result.lower()
+
+    def test_missing_daily_field_returns_error_message_not_a_crash(self):
+        """The sibling case to the partial-data test above — a response
+        missing an entire expected field (not just a short array) must
+        also degrade gracefully rather than raising an uncaught
+        KeyError."""
+        from app.sources import forecast
+        mock = _mock_forecast_response()
+        del mock.json.return_value["daily"]["sunrise"]
+        with patch("app.sources.forecast.requests.get", return_value=mock):
+            result = forecast.search("weather")
+        assert "unable to retrieve" in result.lower()
+
     def test_clear_weather_described(self):
         from app.sources import forecast
         with patch("app.sources.forecast.requests.get", return_value=_mock_forecast_response(codes=(0, 0, 0))):

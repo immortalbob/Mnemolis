@@ -936,3 +936,55 @@ class TestLogsStatsEndpoint:
         entry = next(q for q in result["top_queries"] if q["query"] == "deterministic source test")
         assert entry["source"] == "forecast"  # the most recently inserted row's source
 
+
+class TestLifespanMountRefresh:
+    """Tests for the lifespan function's MCP mount-refresh logic, added
+    alongside the MCP_MOUNT_PATH constant — found via a deliberate
+    function-by-function read: the path used to match against was a bare
+    "/mcp" string literal, independently typed in two places (here and at
+    the real app.mount() call), with nothing enforcing the two ever
+    agreed. If they silently drifted apart, the matching loop would find
+    no route, silently leave the stale module-import-time mcp_app
+    mounted, and reintroduce the exact "session manager can only be
+    entered once" bug the surrounding fix exists to prevent — not at
+    startup, but on the first real MCP request after the next restart."""
+
+    def test_real_app_startup_finds_and_refreshes_the_real_mount(self):
+        """The actual, real success path — confirms app.mount()'s real
+        path and MCP_MOUNT_PATH genuinely agree today, the same way the
+        existing test_other_real_rest_routes_unaffected_by_mcp_mount
+        test already does, but checking the route object directly rather
+        than only inferring success from an unrelated endpoint working."""
+        from starlette.testclient import TestClient
+        from starlette.routing import Mount
+        from app.main import app, MCP_MOUNT_PATH
+        from app.mcp_server import mcp_app as original_mcp_app
+
+        with TestClient(app) as client:
+            # Find the real, currently-mounted MCP route and confirm its
+            # .app was genuinely swapped to a fresh object during this
+            # lifecycle, not left pointing at the module-import-time one.
+            mount_route = next(
+                r for r in app.router.routes
+                if isinstance(r, Mount) and r.path == MCP_MOUNT_PATH
+            )
+            assert mount_route.app is not original_mcp_app
+            resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_no_matching_mount_logs_a_warning_instead_of_failing_silently(self):
+        """The defensive branch itself — if MCP_MOUNT_PATH ever stops
+        matching any real mounted route, startup must not crash (the
+        rest of the app still needs to come up), but it must not stay
+        silent about it either."""
+        with patch("app.main.MCP_MOUNT_PATH", "/this-path-will-never-match-anything"), \
+             patch("app.main._LOGGER") as mock_logger:
+            from starlette.testclient import TestClient
+            from app.main import app
+            with TestClient(app) as client:
+                resp = client.get("/health")
+            assert resp.status_code == 200  # the rest of the app still starts cleanly
+        mock_logger.warning.assert_called_once()
+        assert "No Mount route found" in mock_logger.warning.call_args[0][0]
+
+

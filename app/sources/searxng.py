@@ -8,6 +8,30 @@ from app.query_expansion import get_alternate_phrasing
 
 _LOGGER = logging.getLogger(__name__)
 
+# Found via a deliberate function-by-function read: search() used to
+# spin up a brand-new ThreadPoolExecutor(max_workers=2) on every single
+# call — the identical unbounded-per-call pattern already found and
+# fixed in fusion.py (see that file's own module-level _fusion_executor
+# comment for the full investigation this borrows from directly).
+# Confirmed directly, not estimated: 15 concurrent search() calls under
+# realistic network latency produced a measured peak of 46 real OS
+# threads, with no ceiling as concurrent traffic increases. Worse here
+# than the original fusion.py case in one real way: fusion.py dispatches
+# to searxng.search() THROUGH its own already-bounded _fusion_executor
+# pool whenever a fusion query includes `web` — meaning every one of
+# fusion's bounded workers could simultaneously spin up its own
+# additional, unbounded pool here, undermining the very bound fusion's
+# own fix exists to establish. Replaced with the identical shared-pool
+# shape fusion.py already uses — a plain module-level singleton, not a
+# lazy-init-with-lock accessor, since ThreadPoolExecutor construction
+# does no real work eagerly (worker threads spawn on first submit, not
+# at construction), so there's no "first caller pays a real cost" race
+# to guard against.
+_searxng_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=settings.searxng_thread_pool_size,
+    thread_name_prefix="searxng",
+)
+
 
 def _fetch_searxng(query: str, raise_on_timeout: bool = False) -> list[dict] | None:
     """Fetch raw SearXNG results for a single query.
@@ -114,38 +138,55 @@ def search(query: str) -> str:
     # same parent state, since copy_context() is called twice from the
     # SAME calling thread before either worker starts, just as two
     # independent objects rather than one shared one.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        primary_future = executor.submit(contextvars.copy_context().run, _fetch_searxng, query, raise_on_timeout=True)
-        alternate_future = executor.submit(contextvars.copy_context().run, _alternate_phrasing_chain, query)
+    #
+    # Dispatched through the shared, module-level _searxng_executor
+    # (see its own comment above) rather than a fresh per-call
+    # executor — found via a deliberate function-by-function read: a
+    # bare `with ThreadPoolExecutor(...) as executor:` block here
+    # wasn't just an unbounded-thread-creation risk (see
+    # _searxng_executor's own comment), it also meant an early return
+    # on the primary-fetch timeout path below didn't actually return
+    # control to the caller as fast as it looked like it did — `return`
+    # from inside a `with` block doesn't propagate until __exit__'s
+    # implicit shutdown(wait=True) completes, so the caller still
+    # waited for the alternate-phrasing thread to finish even on a
+    # fast, already-decided timeout error, confirmed directly with a
+    # constructed repro (a 0ms exception path still took the full
+    # duration of an unrelated slow concurrent task to actually
+    # return). The shared pool fixes this as a side effect — there's no
+    # per-call executor left to shut down at all; an abandoned
+    # straggler simply keeps running in the shared pool and is
+    # discarded once it finishes, the identical pattern fusion.py's own
+    # shared-pool fix already established.
+    primary_future = _searxng_executor.submit(contextvars.copy_context().run, _fetch_searxng, query, raise_on_timeout=True)
+    alternate_future = _searxng_executor.submit(contextvars.copy_context().run, _alternate_phrasing_chain, query)
 
-        try:
-            primary_results = primary_future.result()
-        except requests.exceptions.Timeout:
-            # The alternate-phrasing thread may still be running — it's
-            # non-fatal and never raises, so no need to wait for or
-            # cancel it; letting the `with` block's own context-manager
-            # exit handle cleanup is correct and simpler than adding
-            # explicit cancellation for a thread that was about to
-            # finish on its own anyway.
-            return (
-                "Error reaching SearXNG: request timed out. If this happens "
-                "consistently, check SearXNG's own request_timeout setting "
-                "(see the wiki's \"SearXNG request timeout\" troubleshooting page)."
-            )
-        if primary_results is None:
-            return "Error reaching SearXNG: connection failed."
+    try:
+        primary_results = primary_future.result()
+    except requests.exceptions.Timeout:
+        # The alternate-phrasing thread may still be running in the
+        # shared pool — genuinely non-fatal now in both senses: it
+        # never raises, AND (since the fix above) it no longer blocks
+        # this early return from actually reaching the caller promptly.
+        return (
+            "Error reaching SearXNG: request timed out. If this happens "
+            "consistently, check SearXNG's own request_timeout setting "
+            "(see the wiki's \"SearXNG request timeout\" troubleshooting page)."
+        )
+    if primary_results is None:
+        return "Error reaching SearXNG: connection failed."
 
-        # Scoring below ranks the combined pool against the ORIGINAL
-        # query only, so a result only survives because it's genuinely
-        # relevant to what was asked, not because of how the alternate
-        # phrasing happened to word it. A failed alternate fetch is
-        # non-fatal — the primary result still stands.
-        alternate_query, alternate_results = alternate_future.result()
-        if alternate_query:
-            _LOGGER.info(
-                "Web query expansion: '%s' -> also searched '%s' (%d extra raw results)",
-                query[:50], alternate_query[:50], len(alternate_results)
-            )
+    # Scoring below ranks the combined pool against the ORIGINAL
+    # query only, so a result only survives because it's genuinely
+    # relevant to what was asked, not because of how the alternate
+    # phrasing happened to word it. A failed alternate fetch is
+    # non-fatal — the primary result still stands.
+    alternate_query, alternate_results = alternate_future.result()
+    if alternate_query:
+        _LOGGER.info(
+            "Web query expansion: '%s' -> also searched '%s' (%d extra raw results)",
+            query[:50], alternate_query[:50], len(alternate_results)
+        )
 
     if not primary_results and not alternate_results:
         _LOGGER.info("SearXNG returned no results for query: %s", query[:50])

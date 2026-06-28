@@ -133,11 +133,25 @@ def local_hour_bucket(timestamp: str, bucket_minutes: int = 30) -> int:
     before the expected time" framing without over-fitting to single-minute
     noise).
 
-    Returns an int in [0, (1440 // bucket_minutes) - 1]. Deliberately
-    returns a plain bucket index rather than an (hour, minute) pair — every
-    real consumer of this (pattern mining, clustering) wants a single,
-    directly-comparable/groupable key, not a tuple it would just immediately
-    flatten back down anyway.
+    Returns an int in [0, ceil(1440 / bucket_minutes) - 1]. Found via a
+    deliberate function-by-function read: an earlier version of this
+    docstring claimed the upper bound was `(1440 // bucket_minutes) - 1`,
+    which is only correct when bucket_minutes evenly divides 1440 (the
+    documented default of 30 does, which is why this went unnoticed) — for
+    any value that doesn't (7, 13, 17, 25, 50, 100, and most arbitrary
+    values), the real last-minute-of-day (23:59) lands in a bucket index
+    exactly one past that claimed maximum, confirmed directly across a
+    range of non-divisor values. The function's own arithmetic was never
+    wrong — `minutes_since_midnight // bucket_minutes` always returns a
+    real, correct bucket index for any input — only the documented range
+    claim was. No current caller passes a non-default bucket_minutes (this
+    module has no consumers yet — see the module docstring), so this had
+    zero live impact, but a future caller sizing a fixed-length array or
+    list from the old formula would have silently allocated one bucket too
+    few. Deliberately returns a plain bucket index rather than an (hour,
+    minute) pair — every real consumer of this (pattern mining, clustering)
+    wants a single, directly-comparable/groupable key, not a tuple it
+    would just immediately flatten back down anyway.
     """
     local_dt = utc_string_to_local(timestamp)
     minutes_since_midnight = local_dt.hour * 60 + local_dt.minute

@@ -140,6 +140,26 @@ class TestLocalHourBucket:
             import app.timeutil as timeutil
             assert timeutil.local_hour_bucket("2026-01-15T23:59:00Z", bucket_minutes=30) == 47
 
+    def test_last_bucket_with_non_divisor_bucket_minutes(self):
+        """Regression test for a real docstring/documentation gap found
+        via a deliberate function-by-function read: the function's own
+        arithmetic (`minutes_since_midnight // bucket_minutes`) has always
+        been correct for any bucket_minutes value, but an earlier version
+        of the docstring claimed the maximum return value was
+        `(1440 // bucket_minutes) - 1` — only true when bucket_minutes
+        evenly divides 1440 (which the documented default of 30 happens
+        to do, masking the gap). For a non-divisor value like 7 minutes,
+        the real last-minute-of-day (23:59) lands in bucket 205, one past
+        the old docstring's claimed maximum of 204. This test locks in the
+        function's own correct, real behavior directly, independent of
+        whatever the docstring says, so any future change to the
+        arithmetic itself would be caught here."""
+        with patch("app.timeutil.settings") as mock_settings:
+            mock_settings.local_timezone = "UTC"
+            import app.timeutil as timeutil
+            assert timeutil.local_hour_bucket("2026-01-15T23:59:00Z", bucket_minutes=7) == 205
+            assert timeutil.local_hour_bucket("2026-01-15T00:00:00Z", bucket_minutes=7) == 0
+
 
 class TestLocalDayOfWeek:
     """Tests for local_day_of_week()."""

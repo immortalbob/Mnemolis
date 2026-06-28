@@ -30,6 +30,19 @@ from app.router import (
     clear_routing_cache,
 )
 from app.mcp_server import mcp_app, get_mcp_app
+
+# Defined once, used at both real call sites below (app.mount() and the
+# lifespan function's own route-matching loop) — found via a deliberate
+# function-by-function read of mcp_server.py and its real consumer here:
+# the two were previously two independent "/mcp" string literals with
+# nothing enforcing they ever agreed. If they silently drifted apart (a
+# future refactor renaming one without the other), the lifespan's
+# matching loop would find no route at all, silently leave the stale
+# module-import-time mcp_app mounted, and reintroduce the exact
+# "StreamableHTTPSessionManager.run() can only be called once" bug this
+# fix exists to prevent — not at startup where it would be immediately
+# obvious, but on the first real MCP request after the next restart.
+MCP_MOUNT_PATH = "/mcp"
 from app.sources.kiwix import get_books, refresh_catalog
 from app.sources import uptime_kuma
 from app.snapshots import (
@@ -219,10 +232,26 @@ async def lifespan(app: FastAPI):
     two different objects that happen to share an FastMCP instance.
     """
     fresh_mcp_app = get_mcp_app()
+    found_mount = False
     for r in app.router.routes:
-        if isinstance(r, Mount) and r.path == "/mcp":
+        if isinstance(r, Mount) and r.path == MCP_MOUNT_PATH:
             r.app = fresh_mcp_app
+            found_mount = True
             break
+    if not found_mount:
+        # Defense in depth, mirroring this project's existing pattern for
+        # similar real risks (e.g. ADVERSARIAL_TEST_ENABLED checked at
+        # both scheduler-registration time and inside the cycle function
+        # itself): if this ever fires, the stale module-import-time
+        # mcp_app is still mounted and will fail on its first real
+        # request, not at startup — loud here is strictly better than
+        # silent there.
+        _LOGGER.warning(
+            "No Mount route found at '%s' during startup — the MCP app "
+            "was NOT refreshed for this lifecycle. If this fires, check "
+            "that MCP_MOUNT_PATH and the app.mount() call below still agree.",
+            MCP_MOUNT_PATH,
+        )
 
     async with AsyncExitStack() as stack:
         await stack.enter_async_context(fresh_mcp_app.router.lifespan_context(fresh_mcp_app))
@@ -298,11 +327,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.50.20",
+    version="3.50.27",
     lifespan=lifespan,
 )
 
-app.mount("/mcp", mcp_app)
+app.mount(MCP_MOUNT_PATH, mcp_app)
 
 
 class SearchRequest(BaseModel):

@@ -76,33 +76,56 @@ def search(query: str) -> str:
         _LOGGER.error("Forecast fetch failed: %s", e)
         return f"Unable to retrieve forecast: {e}"
 
-    lines = []
+    try:
+        lines = []
 
-    # Today
-    if settings.forecast_location_name:
-        s = f"In {settings.forecast_location_name}, today will be {_describe(daily['weathercode'][0])} with a high of about {round(daily['temperature_2m_max'][0])} and a low of {round(daily['temperature_2m_min'][0])}."
-    else:
-        s = f"Today will be {_describe(daily['weathercode'][0])} with a high of about {round(daily['temperature_2m_max'][0])} and a low of {round(daily['temperature_2m_min'][0])}."
-    if daily["precipitation_probability_max"][0] >= settings.forecast_precip_threshold_pct:
-        s += f" {daily['precipitation_probability_max'][0]}% chance of precipitation."
-    if daily["windspeed_10m_max"][0] >= settings.forecast_wind_threshold_mph:
-        s += f" Winds from the {_degrees_to_cardinal(daily['winddirection_10m_dominant'][0])} around {round(daily['windspeed_10m_max'][0])} miles per hour."
-    s += f" Sunrise at {_fmt_time(daily['sunrise'][0])}, sunset at {_fmt_time(daily['sunset'][0])}."
-    lines.append(s)
+        # Today
+        if settings.forecast_location_name:
+            s = f"In {settings.forecast_location_name}, today will be {_describe(daily['weathercode'][0])} with a high of about {round(daily['temperature_2m_max'][0])} and a low of {round(daily['temperature_2m_min'][0])}."
+        else:
+            s = f"Today will be {_describe(daily['weathercode'][0])} with a high of about {round(daily['temperature_2m_max'][0])} and a low of {round(daily['temperature_2m_min'][0])}."
+        if daily["precipitation_probability_max"][0] >= settings.forecast_precip_threshold_pct:
+            s += f" {daily['precipitation_probability_max'][0]}% chance of precipitation."
+        if daily["windspeed_10m_max"][0] >= settings.forecast_wind_threshold_mph:
+            s += f" Winds from the {_degrees_to_cardinal(daily['winddirection_10m_dominant'][0])} around {round(daily['windspeed_10m_max'][0])} miles per hour."
+        s += f" Sunrise at {_fmt_time(daily['sunrise'][0])}, sunset at {_fmt_time(daily['sunset'][0])}."
+        lines.append(s)
 
-    # Tomorrow
-    s = f"Tomorrow looks {_describe(daily['weathercode'][1])}, high of {round(daily['temperature_2m_max'][1])}, low of {round(daily['temperature_2m_min'][1])}."
-    if daily["precipitation_probability_max"][1] >= settings.forecast_precip_threshold_pct:
-        s += f" {daily['precipitation_probability_max'][1]}% chance of rain."
-    if daily["windspeed_10m_max"][1] >= settings.forecast_wind_threshold_mph:
-        s += f" Winds from the {_degrees_to_cardinal(daily['winddirection_10m_dominant'][1])} around {round(daily['windspeed_10m_max'][1])} miles per hour."
-    lines.append(s)
+        # Tomorrow
+        s = f"Tomorrow looks {_describe(daily['weathercode'][1])}, high of {round(daily['temperature_2m_max'][1])}, low of {round(daily['temperature_2m_min'][1])}."
+        if daily["precipitation_probability_max"][1] >= settings.forecast_precip_threshold_pct:
+            s += f" {daily['precipitation_probability_max'][1]}% chance of rain."
+        if daily["windspeed_10m_max"][1] >= settings.forecast_wind_threshold_mph:
+            s += f" Winds from the {_degrees_to_cardinal(daily['winddirection_10m_dominant'][1])} around {round(daily['windspeed_10m_max'][1])} miles per hour."
+        lines.append(s)
 
-    # Day 3
-    day3 = datetime.fromisoformat(daily["time"][2]).strftime("%A")
-    s = f"{day3} is looking {_describe(daily['weathercode'][2])}, high of {round(daily['temperature_2m_max'][2])}, low of {round(daily['temperature_2m_min'][2])}."
-    if daily["precipitation_probability_max"][2] >= settings.forecast_precip_threshold_pct:
-        s += f" {daily['precipitation_probability_max'][2]}% chance of precipitation."
-    lines.append(s)
+        # Day 3
+        day3 = datetime.fromisoformat(daily["time"][2]).strftime("%A")
+        s = f"{day3} is looking {_describe(daily['weathercode'][2])}, high of {round(daily['temperature_2m_max'][2])}, low of {round(daily['temperature_2m_min'][2])}."
+        if daily["precipitation_probability_max"][2] >= settings.forecast_precip_threshold_pct:
+            s += f" {daily['precipitation_probability_max'][2]}% chance of precipitation."
+        lines.append(s)
+    except (KeyError, IndexError, TypeError, ValueError) as e:
+        # Found via a deliberate function-by-function read: the ORIGINAL
+        # try/except above only ever covered the network call and JSON
+        # parse — every line that actually CONSUMES `daily` (direct
+        # dict/list indexing: daily['weathercode'][0], daily['time'][2],
+        # and so on, for all three days) sat entirely outside it. A
+        # genuinely successful HTTP 200 response with fewer than 3 days
+        # of data, or a missing expected field, is a real, reachable API
+        # anomaly (a transient Open-Meteo degradation, a schema change,
+        # a rate-limit-adjacent partial response) — `forecast_days=3` is
+        # a request parameter, not a guarantee. Before this fix, that
+        # case raised an uncaught IndexError/KeyError that propagated
+        # all the way to main.py's /search endpoint, which DOES catch it
+        # (no crash, no hang), but surfaced a raw Python exception
+        # string instead of the same honest, specific "Unable to
+        # retrieve forecast" message every other real failure in this
+        # file already produces. Caught here with the same message and
+        # logging shape as the fetch/parse failure above, so a malformed
+        # response degrades exactly the same honest way a network
+        # failure already does.
+        _LOGGER.error("Forecast data malformed or incomplete: %s", e)
+        return f"Unable to retrieve forecast: {e}"
 
     return " ".join(lines)

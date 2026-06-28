@@ -300,12 +300,27 @@ def _diff_forecast(old: str, new: str) -> list[str]:
     old_low = extract_low(old)
     new_low = extract_low(new)
 
+    # Found via the same discipline as the negative-sign fix above, one
+    # step further: `if old_high and new_high` is a truthiness check,
+    # and 0.0 is just as falsy in Python as None is — meaning a forecast
+    # high or low of EXACTLY zero degrees was silently indistinguishable
+    # from "couldn't extract a value at all", and a real temperature
+    # change involving a 0° day would never register, in either
+    # direction. Confirmed directly: a high changing from 0° to 15°
+    # (a real, 15-degree swing, well above any sane threshold) produced
+    # zero detected changes before this fix. 0° is an entirely ordinary
+    # winter temperature for a real deployment somewhere genuinely cold
+    # — the exact same "Mnemolis is deployable anywhere" reasoning that
+    # motivated the negative-sign fix applies here too, just one
+    # truthiness check further downstream from where that fix looked.
+    # `is not None` checks are required, not `and`/`or` against the
+    # extracted values themselves.
     threshold = settings.forecast_temp_change_threshold
-    if old_high and new_high and abs(new_high - old_high) >= threshold:
+    if old_high is not None and new_high is not None and abs(new_high - old_high) >= threshold:
         direction = "up" if new_high > old_high else "down"
         changes.append(f"Forecast high changed {direction} to {int(new_high)}°")
 
-    if old_low and new_low and abs(new_low - old_low) >= threshold:
+    if old_low is not None and new_low is not None and abs(new_low - old_low) >= threshold:
         direction = "up" if new_low > old_low else "down"
         changes.append(f"Forecast low changed {direction} to {int(new_low)}°")
 

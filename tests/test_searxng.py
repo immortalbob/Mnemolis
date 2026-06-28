@@ -440,6 +440,46 @@ class TestSearxngConcurrentFetch:
 
         assert "request timed out" in result.lower()
 
+    def test_primary_timeout_returns_promptly_even_while_alternate_thread_still_running(self):
+        """Regression test for a real bug found via a deliberate
+        function-by-function read, distinct from the message-
+        correctness test above: a bare `with ThreadPoolExecutor(...) as
+        executor:` block here used to mean a `return` from inside it
+        didn't actually reach the caller until __exit__'s implicit
+        shutdown(wait=True) completed — so a fast, already-decided
+        timeout error still silently waited for an unrelated, slower
+        concurrent alternate-phrasing thread to finish first, even
+        though the function had already decided what to return.
+        Confirmed directly: this exact scenario took the full duration
+        of the slow alternate thread before this fix, not the near-
+        instant primary-timeout duration it should have taken. Switching
+        to the shared, never-torn-down _searxng_executor fixes this as
+        a side effect, since there's no per-call executor left to wait
+        for on the way out."""
+        import time
+        import requests
+        from app.sources import searxng
+
+        def timeout_primary(query, raise_on_timeout=False):
+            raise requests.exceptions.Timeout("simulated timeout")
+
+        def very_slow_alternate_phrasing(query):
+            time.sleep(0.5)
+            return "alternate phrasing"
+
+        with patch("app.sources.searxng._fetch_searxng", side_effect=timeout_primary), \
+             patch("app.sources.searxng.get_alternate_phrasing", side_effect=very_slow_alternate_phrasing):
+            start = time.monotonic()
+            result = searxng.search("test query")
+            elapsed = time.monotonic() - start
+
+        assert "request timed out" in result.lower()
+        # The real regression check: must return promptly, nowhere near
+        # the 0.5s the slow alternate thread takes — generous bound to
+        # avoid CI flakiness while still clearly distinguishing "fixed"
+        # from "silently waited for the unrelated slow thread."
+        assert elapsed < 0.2, f"took {elapsed:.2f}s — still silently waiting on the alternate thread"
+
     def test_alternate_chain_failure_does_not_affect_primary_result_when_concurrent(self):
         """The non-fatal-alternate-failure guarantee, re-verified under
         genuine concurrency — a real exception raised inside the
@@ -555,3 +595,59 @@ class TestSearxngConcurrentFetch:
         finally:
             router_module._routing_cache.clear()
             router_module._routing_cache.update(original_cache)
+
+
+class TestSearxngSharedExecutor:
+    """Regression tests for replacing search()'s per-call
+    ThreadPoolExecutor with a single, shared, module-level pool — the
+    identical fix already applied to fusion.py (see that file's own
+    test_fusion.py::TestFusionSharedExecutor for the precedent this
+    borrows from directly), found via a deliberate function-by-function
+    read of this file rather than a reported failure."""
+
+    def test_concurrent_search_calls_reuse_the_shared_pool_not_create_unbounded_threads(self):
+        """Confirms multiple concurrent search() calls don't each spin
+        up their own fresh 2-worker executor — the real, confirmed bug
+        this fix closes (15 concurrent search() calls under realistic
+        network latency produced a measured peak of 46 real OS threads,
+        with no ceiling as concurrent traffic increases)."""
+        import threading
+        import time
+        from app.sources import searxng
+        from app.config import settings
+
+        def slow_fetch(query, raise_on_timeout=False):
+            time.sleep(0.1)
+            return [{"title": "R", "url": "https://example.com", "content": "content"}]
+
+        baseline = threading.active_count()
+        threads = []
+        with patch("app.sources.searxng._fetch_searxng", side_effect=slow_fetch), \
+             patch("app.sources.searxng.get_alternate_phrasing", return_value=None):
+            for _ in range(8):
+                t = threading.Thread(target=searxng.search, args=("q",))
+                threads.append(t)
+                t.start()
+            time.sleep(0.05)  # let everything get mid-flight
+            peak = threading.active_count()
+            for t in threads:
+                t.join()
+
+        # 8 concurrent "request" threads, each spinning up its own
+        # 2-worker executor under the old per-call pattern, would be 16+
+        # fresh worker threads on top of the 8 request threads
+        # themselves (24+ total). With a shared pool capped at
+        # settings.searxng_thread_pool_size, worker thread count itself
+        # is bounded regardless of how many concurrent callers there
+        # are — confirmed by checking the actual ceiling rather than
+        # asserting an exact number (real thread counts vary slightly
+        # by interpreter/test-runner baseline).
+        assert peak <= baseline + 8 + settings.searxng_thread_pool_size
+
+    def test_searxng_thread_pool_size_setting_is_read(self):
+        """Confirms the shared executor is actually sized from
+        settings.searxng_thread_pool_size, not a hardcoded value."""
+        from app.sources import searxng
+        from app.config import settings
+        assert searxng._searxng_executor._max_workers == settings.searxng_thread_pool_size
+

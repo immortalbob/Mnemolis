@@ -158,6 +158,54 @@ class TestDiffForecast:
         assert len(changes) > 0
         assert any("low" in c.lower() for c in changes)
 
+    def test_detects_high_temp_change_when_old_high_is_exactly_zero(self):
+        """Regression test for a real bug found one step past the
+        existing negative-temperature fix above: `if old_high and
+        new_high` is a truthiness check, and 0.0 is exactly as falsy
+        in Python as None is — meaning a forecast high of exactly zero
+        degrees was silently indistinguishable from "couldn't extract
+        a value at all", so a real, large temperature change starting
+        from a 0° day never registered. Confirmed directly before this
+        fix: a high changing from 0° to 15° (a real 15-degree swing,
+        well above any sane threshold) produced zero detected changes.
+        0° is an entirely ordinary winter temperature for a real
+        deployment somewhere genuinely cold — the same "deployable
+        anywhere" reasoning behind the negative-sign fix, one
+        truthiness check further downstream from where that fix
+        looked."""
+        old = "Today will be clear with a high of about 0 and a low of -5."
+        new = "Today will be clear with a high of about 15 and a low of -5."
+        changes = self.diff(old, new)
+        assert len(changes) > 0
+        assert any("high" in c.lower() and "up" in c.lower() for c in changes)
+
+    def test_detects_high_temp_change_when_new_high_is_exactly_zero(self):
+        """The opposite direction of the same bug — the NEW value being
+        exactly zero must also still register a real change."""
+        old = "Today will be clear with a high of about 20 and a low of -5."
+        new = "Today will be clear with a high of about 0 and a low of -5."
+        changes = self.diff(old, new)
+        assert len(changes) > 0
+        assert any("high" in c.lower() and "down" in c.lower() for c in changes)
+
+    def test_detects_low_temp_change_when_old_low_is_exactly_zero(self):
+        """The same zero-truthiness bug, confirmed for the low-temperature
+        check too — both checks shared the identical `if x and y` shape."""
+        old = "Today will be clear with a high of about 90 and a low of 0."
+        new = "Today will be clear with a high of about 90 and a low of -10."
+        changes = self.diff(old, new)
+        assert len(changes) > 0
+        assert any("low" in c.lower() for c in changes)
+
+    def test_no_false_positive_when_both_high_values_are_genuinely_zero(self):
+        """Confirms the fix didn't overcorrect — two genuinely identical
+        zero-degree readings must still report no change, the same as
+        any other identical pair of readings would."""
+        old = "Today will be clear with a high of about 0 and a low of -10."
+        new = "Today will be clear with a high of about 0 and a low of -10."
+        changes = self.diff(old, new)
+        assert changes == []
+
 
 class TestDiffNews:
     """Tests for _diff_news new article detection."""
@@ -416,6 +464,43 @@ class TestDiffHA:
         new = self._snapshot([self._entity("sensor.lock_battery", "85", "Lock Battery", "battery")])
         changes = self.diff(old, new)
         assert changes == []
+
+    def test_battery_at_exactly_threshold_on_both_sides_is_not_low(self):
+        """The default threshold (20%) check is `old_val >= threshold and
+        new_val < threshold` — a battery sitting exactly AT the threshold
+        on both snapshots is, by this convention, "not yet low" rather
+        than "already low", since old_val >= 20 is satisfied but
+        new_val < 20 is not. Never directly tested before — the existing
+        tests all use values comfortably away from the literal boundary
+        (25->15, 15->10, 90->85)."""
+        old = self._snapshot([self._entity("sensor.lock_battery", "20", "Lock Battery", "battery")])
+        new = self._snapshot([self._entity("sensor.lock_battery", "20", "Lock Battery", "battery")])
+        changes = self.diff(old, new)
+        assert changes == []
+
+    def test_battery_landing_exactly_on_threshold_from_above_is_not_yet_low(self):
+        """A battery dropping from just above the threshold to exactly
+        the threshold (21 -> 20) has NOT yet crossed below it, by the
+        same `< threshold` convention — confirms the boundary is
+        correctly exclusive on the low side, not inclusive."""
+        old = self._snapshot([self._entity("sensor.lock_battery", "21", "Lock Battery", "battery")])
+        new = self._snapshot([self._entity("sensor.lock_battery", "20", "Lock Battery", "battery")])
+        changes = self.diff(old, new)
+        assert changes == []
+
+    def test_battery_crossing_from_exactly_threshold_to_just_below_fires(self):
+        """The genuine crossing case immediately adjacent to the two
+        boundary tests above: starting exactly AT the threshold (still
+        "not low" per old_val >= threshold) and dropping to just one
+        point below it (now genuinely < threshold) must fire — this is
+        the real crossing event the threshold exists to catch, tested
+        here at the tightest possible margin rather than a comfortable
+        distance away from the boundary."""
+        old = self._snapshot([self._entity("sensor.lock_battery", "20", "Lock Battery", "battery")])
+        new = self._snapshot([self._entity("sensor.lock_battery", "19", "Lock Battery", "battery")])
+        changes = self.diff(old, new)
+        assert len(changes) == 1
+        assert "19" in changes[0]
 
     def test_ignores_lights(self):
         old = self._snapshot([self._entity("light.bedroom", "off", "Bedroom Light")])

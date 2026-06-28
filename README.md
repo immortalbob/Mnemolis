@@ -855,6 +855,7 @@ Mnemolis/
 ├── requirements.txt
 ├── pytest.ini
 ├── CHANGELOG.md
+├── CHANGELOG-ARCHIVE.md            # v1.0.0–v3.44.1, split out once the live file grew too large to navigate
 ├── BENCHMARKS.md
 ├── mnemolis_tool.py                # Open WebUI bridge tool
 ├── README.md

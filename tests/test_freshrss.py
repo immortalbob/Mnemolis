@@ -184,6 +184,34 @@ class TestGetToken:
         settings.freshrss_user = ""
         settings.freshrss_api_password = ""
 
+    def test_returns_none_when_response_is_200_but_missing_auth_token(self):
+        """Regression test for a real, documented FreshRSS-side
+        misconfiguration (confirmed via real production reports, not a
+        contrived scenario): ClientLogin can return a genuine HTTP 200
+        with a body of just "OK" and no Auth= token at all, rather than
+        the expected three-line SID/LSID/Auth response. This isn't
+        something Mnemolis can fix — it's a real upstream FreshRSS
+        config issue — but the existing code already handles it
+        correctly (falls through the line-scan loop, logs a warning,
+        returns None) without needing any changes. This test locks in
+        that already-correct behavior against the exact real-world
+        response shape rather than leaving it unverified."""
+        from app.sources import freshrss
+        from app.config import settings
+        from unittest.mock import patch, MagicMock
+        settings.freshrss_url = "http://freshrss"
+        settings.freshrss_user = "admin"
+        settings.freshrss_api_password = "password"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "OK"
+        with patch("app.sources.freshrss.requests.post", return_value=mock_resp):
+            token = freshrss._get_token()
+        assert token is None
+        settings.freshrss_url = ""
+        settings.freshrss_user = ""
+        settings.freshrss_api_password = ""
+
     def test_returns_none_on_auth_failure(self):
         from app.sources import freshrss
         from app.config import settings
@@ -231,3 +259,111 @@ class TestGetToken:
         settings.freshrss_url = ""
         settings.freshrss_user = ""
         settings.freshrss_api_password = ""
+
+
+class TestSearch:
+    """Tests for search() — previously had zero direct test coverage at
+    all, found via a deliberate function-by-function read. These focus
+    first on the real bug found and fixed in this same pass (HTML
+    handling in article summaries), then on the function's other core
+    behaviors that had never been directly exercised either."""
+
+    def setup_method(self):
+        from app.config import settings
+        self._orig_url = settings.freshrss_url
+        self._orig_user = settings.freshrss_user
+        self._orig_password = settings.freshrss_api_password
+        settings.freshrss_url = "http://freshrss"
+        settings.freshrss_user = "admin"
+        settings.freshrss_api_password = "password"
+
+    def teardown_method(self):
+        from app.config import settings
+        settings.freshrss_url = self._orig_url
+        settings.freshrss_user = self._orig_user
+        settings.freshrss_api_password = self._orig_password
+
+    def _mock_articles_response(self, items):
+        from unittest.mock import MagicMock
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"items": items}
+        return mock_resp
+
+    def test_returns_not_configured_message_when_url_missing(self):
+        from app.sources import freshrss
+        from app.config import settings
+        settings.freshrss_url = ""
+        result = freshrss.search("news")
+        assert "not configured" in result.lower()
+
+    def test_returns_auth_error_when_token_unavailable(self):
+        from app.sources import freshrss
+        from unittest.mock import patch
+        with patch("app.sources.freshrss._get_token", return_value=None):
+            result = freshrss.search("news")
+        assert "could not authenticate" in result.lower()
+
+    def test_html_entities_are_decoded_not_left_as_literal_text(self):
+        """The first half of the real bug this pass found and fixed:
+        the original regex-based HTML stripper never decoded entities,
+        so &amp; survived as literal text in the actual response. A
+        real parser (BeautifulSoup, already a project dependency) does
+        this correctly as a side effect of parsing."""
+        from app.sources import freshrss
+        from unittest.mock import patch
+        items = [{
+            "title": "Test Article", "origin": {"title": "Source"},
+            "summary": {"content": "Cats &amp; dogs are friends"},
+            "published": None, "canonical": [],
+        }]
+        with patch("app.sources.freshrss._get_token", return_value="tok"), \
+             patch("app.sources.freshrss.requests.get", return_value=self._mock_articles_response(items)):
+            result = freshrss.search("cats and dogs")
+        assert "Cats & dogs are friends" in result
+        assert "&amp;" not in result
+
+    def test_angle_bracket_inside_quoted_attribute_does_not_leak_into_summary(self):
+        """The second, more serious half of the real bug: the original
+        regex `<[^>]+>` stops at the FIRST `>` it finds, with no
+        awareness of quoted attribute values. A real `<img>` tag with a
+        literal `>` inside its `alt` attribute used to truncate the
+        match early, leaking raw `">` syntax directly into the visible
+        summary text instead of being recognized as part of the same
+        tag. Confirmed this exact case fails against the original regex
+        before switching to BeautifulSoup, which correctly understands
+        attribute-value boundaries."""
+        from app.sources import freshrss
+        from unittest.mock import patch
+        items = [{
+            "title": "Test Article", "origin": {"title": "Source"},
+            "summary": {"content": '<img src="x.jpg" alt="A description with a > in it">After image text'},
+            "published": None, "canonical": [],
+        }]
+        with patch("app.sources.freshrss._get_token", return_value="tok"), \
+             patch("app.sources.freshrss.requests.get", return_value=self._mock_articles_response(items)):
+            result = freshrss.search("test article")
+        assert '">' not in result
+        assert "After image text" in result
+
+    def test_general_query_returns_all_articles_unfiltered(self):
+        from app.sources import freshrss
+        from unittest.mock import patch
+        items = [
+            {"title": "Article One", "origin": {"title": "Source"}, "summary": {"content": "content one"}, "published": None, "canonical": []},
+            {"title": "Article Two", "origin": {"title": "Source"}, "summary": {"content": "content two"}, "published": None, "canonical": []},
+        ]
+        with patch("app.sources.freshrss._get_token", return_value="tok"), \
+             patch("app.sources.freshrss.requests.get", return_value=self._mock_articles_response(items)):
+            result = freshrss.search("what's happening")
+        assert "Article One" in result
+        assert "Article Two" in result
+
+    def test_no_items_returns_clean_message_not_a_crash(self):
+        from app.sources import freshrss
+        from unittest.mock import patch
+        with patch("app.sources.freshrss._get_token", return_value="tok"), \
+             patch("app.sources.freshrss.requests.get", return_value=self._mock_articles_response([])):
+            result = freshrss.search("news")
+        assert "no recent articles" in result.lower()
+
