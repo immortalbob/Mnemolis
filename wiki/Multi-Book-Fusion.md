@@ -51,7 +51,7 @@ Having two books selected doesn't automatically mean both get used. The LLM pick
                           no fusion needed       result into one response
 ```
 
-That threshold — `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT`, default 50% of the top score — is a real, configurable setting, not a fixed constant; see [Configuration Reference](Configuration-Reference) to tune it. It's the actual, central "should a second book be fused in, or dropped as noise" decision this page documents, so it's exposed rather than hardcoded.
+That threshold — `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT`, default 0.5 (50% of the top score) — is a real, configurable setting, not a fixed constant; see [Configuration Reference](Configuration-Reference) to tune it. Note the setting name ends in `_PCT` but the value is a **fraction** (0–1), not a percentage (0–100): set it to `0.7` to require 70%, not `70`. It's the actual, central "should a second book be fused in, or dropped as noise" decision this page documents, so it's exposed rather than hardcoded.
 
 The `top_score > 0` guard above exists because a result can legitimately score negative (a list/index article nets a real penalty with zero other matches), and the threshold check (`score >= top_score * 0.5`) would otherwise behave inconsistently for a negative `top_score` — even the top result itself wouldn't pass its own bar (`-10 >= -5` is `False`). Checking explicitly makes the intent correct by construction: when every candidate is already poor, fall through to "just use the single best, still-poor result," rather than relying on the threshold math accidentally landing in the right place.
 

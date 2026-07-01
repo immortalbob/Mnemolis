@@ -20,11 +20,15 @@ Single-letter and single-digit keywords count toward this scoring as long as the
 
 A surprising amount of real search noise isn't *wrong*, it's just *not actually an article* — a site's homepage, an "about us" page, a bare category listing. `_is_generic_result()` catches three different shapes of this:
 
-- **Title is a known generic label** — things that read like a site name rather than article content
+- **Title is a known generic label** — things that read like a site name rather than article content. Single-word patterns like `home`, `error`, `404`, `login` match only as the *entire title*; multi-word phrases like `welcome to` and `about us` also match as title *prefixes*, since those phrases opening a title always signal a site page rather than a real article. This distinction matters: `"Home prices rise 5% in October"` is a legitimate news article that starts with `home`, and `"Error in climate data causes alarm"` is a legitimate article that starts with `error` — both would have been incorrectly penalized by a uniform `startswith()` check applied to all patterns equally. Found and fixed via a deliberate function-by-function read; the false-positive penalty was a measured 20-point swing.
 - **Content reads like a site description** — matches a small set of known boilerplate phrasing patterns
 - **The URL is a bare domain root with suspiciously short content** — no path beyond a trailing slash, with any query string stripped before that check runs (so a tracking parameter like `?utm_source=twitter` on an otherwise bare homepage doesn't make it look like it has a real article path), and under 40 characters of actual text. A real article almost always has a path (`/article/some-slug`) and more than a sentence fragment of content; a landing page often has neither.
 
 Any one of these triggers a flat −20 penalty, generally enough to push a generic result below anything genuinely on-topic without needing three separate penalty tiers.
+
+## Keyword extraction and possessives
+
+Keyword extraction (`_keywords()`) stems and stop-word-filters both the query and each result's title/content before comparing them, so plurals and inflections match correctly. Possessive forms are also normalized before stemming — `"Apple's"` maps to the same keyword as `"Apple"`, so a result titled `"Apple's profit rose"` correctly matches a query for `"Apple profit"` with full credit. This wasn't always the case: `str.strip()` only removes characters from the *ends* of a string, so a possessive apostrophe embedded mid-token (between the word and the trailing `s`) was invisible to it, and `"apple'"` (the stemmed possessive) didn't match `"apple"` (the stemmed bare form), costing a full title-keyword-match bonus. Found and fixed via a deliberate function-by-function read.
 
 ## Recency — why news has it and web doesn't
 
