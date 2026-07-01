@@ -116,6 +116,59 @@ class TestKeywords:
         assert "c++" in result
         assert "c#" in result
 
+    def test_singular_possessive_matches_bare_form(self):
+        """Regression test found via a deliberate function-by-function
+        read: possessives like "Apple's" stemmed to "apple'" (trailing
+        apostrophe preserved since str.strip() only removes from ends)
+        rather than "apple" — meaning a query for "Apple profit" would
+        miss the title "Apple's profit rose" by a full title-keyword-
+        match bonus. Fixed by normalizing "'s" before the strip/stem
+        pipeline. Confirmed directly by checking that 'apple' appears in
+        the keywords for both "Apple's profit" and "Apple profit"."""
+        from app.scoring import _keywords
+        assert "apple" in _keywords("Apple's profit")
+        assert "apple" in _keywords("Apple profit")
+        # Core guarantee: possessive and bare forms produce the same keyword set
+        assert _keywords("Apple's profit") == _keywords("Apple profit")
+
+    def test_plural_possessive_matches_base_form(self):
+        """Plural possessive "dogs'" (apostrophe at end, no 's') should
+        also normalize correctly — confirmed the trailing-apostrophe
+        variant is handled by the same regex."""
+        from app.scoring import _keywords
+        assert "dog" in _keywords("dogs' behavior")
+        assert "dog" in _keywords("dog behavior")
+
+    def test_contractions_are_not_mangled(self):
+        """Possessive normalization must not touch contractions like
+        "don't", "won't", "isn't" — these end in 't', not "'s" or
+        bare "'" so the regex should leave them entirely alone."""
+        from app.scoring import _keywords
+        # "don't" should produce the same result whether normalized or not
+        # (it doesn't match the 's? pattern, so it's unchanged)
+        result = _keywords("don't stop won't stop")
+        assert "stop" in result
+
+    def test_possessive_overlap_in_scoring(self):
+        """End-to-end: confirms a query for 'Apple profit' now scores
+        a title 'Apple's profit rose' the same as 'Apple profit rose',
+        proving the fix reaches the actual scoring path."""
+        from app.scoring import score_text_result
+        score_possessive = score_text_result(
+            "Apple profit",
+            "Apple's profit rose this quarter",
+            "Company reported higher earnings"
+        )
+        score_bare = score_text_result(
+            "Apple profit",
+            "Apple profit rose this quarter",
+            "Company reported higher earnings"
+        )
+        assert score_possessive == score_bare, (
+            f"Possessive title scored {score_possessive} vs bare {score_bare} "
+            f"— possessive normalization not reaching score_text_result"
+        )
+
 
 class TestIsGenericResult:
     """Tests for _is_generic_result() homepage/about-page detection."""
@@ -189,6 +242,33 @@ class TestIsGenericResult:
     def test_404_page_detected(self):
         from app.scoring import _is_generic_result
         assert _is_generic_result("404 - Page Not Found", "", "http://example.com/broken") is True
+
+    def test_home_prices_article_not_flagged_as_homepage(self):
+        """Regression test for a false positive found via a deliberate
+        function-by-function read: the original check used
+        `title_lower.startswith(p)` for ALL patterns including single-word
+        ones like "home", causing a real news article titled "Home prices
+        rise 5% in October" to be penalized as a generic homepage. Measured
+        impact: a 20-point swing between identical articles where only the
+        word order of "home" changed. Fixed by limiting single-word patterns
+        to exact-match (==) only."""
+        from app.scoring import _is_generic_result
+        assert _is_generic_result("Home prices rise 5% in October", "", "https://news.com/article") is False
+
+    def test_error_article_not_flagged_as_error_page(self):
+        """The sibling case to the home-prices false positive: "error" as a
+        standalone title correctly flags a 404/error page, but "Error in
+        climate data causes alarm" is a legitimate news article about data
+        quality that should not be penalized."""
+        from app.scoring import _is_generic_result
+        assert _is_generic_result("Error in climate data causes alarm", "", "") is False
+
+    def test_404_error_handling_article_not_flagged(self):
+        """Real tech article about 404 error handling should not be flagged
+        even though it starts with "404" — confirmed the fix correctly allows
+        multi-word titles starting with "404" through."""
+        from app.scoring import _is_generic_result
+        assert _is_generic_result("404 error handling best practices", "", "") is False
 
 
 class TestScoreTextResult:

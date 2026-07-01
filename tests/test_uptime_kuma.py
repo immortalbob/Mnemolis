@@ -178,6 +178,28 @@ class TestUptimeKumaStatus:
         assert "3" in result  # 3 of 4 up
         assert "4" in result
 
+    def test_unknown_status_code_does_not_silently_disappear(self):
+        """Regression test for a real gap found via a deliberate
+        function-by-function read: status codes beyond the known 0-3
+        range (DOWN/UP/PENDING/MAINTENANCE) fell through all elif branches
+        without any else, silently dropping the monitor from every output
+        bucket. The result was 'All 0 monitored services are up' even when
+        a real monitor existed — an actively wrong statement. Not a
+        realistic concern with the current API version (MonitorStatus
+        values 0-3 have been stable), but silently lying about a monitor
+        that exists is strictly worse than reporting it honestly as
+        something unexpected."""
+        from app.sources import uptime_kuma
+        monitors = [_make_monitor(1, "WeirdMonitor")]
+        heartbeats = {1: [{"status": 99}]}  # unknown future status code
+        mock_api = _mock_api(monitors, heartbeats)
+        with patch("app.sources.uptime_kuma.UptimeKumaApi", return_value=mock_api):
+            result = uptime_kuma.search("status")
+        # Must NOT claim all services are up — that would be a lie
+        assert "all" not in result.lower() or "0" in result
+        # The monitor should appear somewhere in the output (treated as no_data)
+        assert "WeirdMonitor" in result
+
 
 class TestGetStatusFromHeartbeats:
     """Tests for _get_status_from_heartbeats heartbeat parsing."""

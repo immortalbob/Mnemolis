@@ -97,6 +97,17 @@ class Settings(BaseSettings):
     # raise SearXNG's own max_request_timeout further, raise this to
     # match or exceed it again — the two settings don't sense each
     # other's values.
+    #
+    # Note: this is intentionally LONGER than fusion_timeout_seconds
+    # (default 15s). When a fusion query includes `web`, the fusion
+    # timeout fires first and marks the source as failed, but the
+    # underlying SearXNG worker thread keeps running for up to
+    # (searxng_request_timeout_seconds - fusion_timeout_seconds) more
+    # seconds before its own HTTP timeout fires. That's a bounded,
+    # short transient pool pressure, not a persistent problem — but if
+    # you raise SearXNG's timeout significantly above fusion's, you
+    # increase the window during which pool workers are occupied by
+    # already-abandoned tasks.
     searxng_request_timeout_seconds: int = 25
 
     # How many raw, unscored results to pull from each of the (up to two)

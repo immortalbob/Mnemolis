@@ -124,6 +124,33 @@ def get_connection() -> "UptimeKumaApi":
     return _persistent_api
 
 
+def warm_connection() -> None:
+    """Eagerly open the persistent connection at startup, so the first
+    real request or snapshot tick doesn't pay the Socket.IO handshake
+    and login cost. Called from main.py's lifespan before the scheduler
+    and request handlers start.
+
+    Distinct from calling get_connection() directly: this acquires
+    _connection_lock as required by get_connection()'s documented
+    contract ("Callers must hold _connection_lock"), which main.py
+    cannot do directly since get_connection() is an internal function
+    not designed for bare external calling. In practice, no other thread
+    can be calling get_connection() during startup (the scheduler hasn't
+    started and the app isn't yet accepting requests when this runs), so
+    the race _connection_lock exists to prevent can't actually occur
+    here — but the contract violation is real and cheap to close,
+    and a future startup-sequence change could expose the latent race
+    if left unfixed.
+    """
+    if not settings.uptime_kuma_url or not settings.uptime_kuma_username:
+        return
+    try:
+        with _connection_lock:
+            get_connection()
+    except Exception as e:
+        _LOGGER.warning("Uptime Kuma warm connection failed: %s — will retry on first real request", e)
+
+
 def disconnect() -> None:
     """Cleanly closes the persistent connection, if one exists.
 
@@ -202,6 +229,15 @@ def search(query: str) -> str:
             pending.append(name)
         elif status == 3:
             maintenance.append(name)
+        else:
+            # Unknown status code — shouldn't occur with the current
+            # uptime_kuma_api (v1.2.1, MonitorStatus values 0-3 are all
+            # stable), but silently dropping the monitor from all buckets
+            # would produce "All 0 monitored services are up" even for a
+            # real monitor, which is actively wrong. Treat as no_data so
+            # at minimum the monitor is named in output.
+            _LOGGER.warning("Uptime Kuma: monitor '%s' has unexpected status %r", name, status)
+            no_data.append(name)
 
     total = len(monitors)
     _LOGGER.info(

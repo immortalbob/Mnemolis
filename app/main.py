@@ -278,7 +278,7 @@ async def lifespan(app: FastAPI):
         # v3.50.2) -- not the result-cache TTL, which only explains why a
         # cache miss happens, not why it costs as much as it does.
         if settings.uptime_kuma_url and settings.uptime_kuma_username:
-            await loop.run_in_executor(None, uptime_kuma.get_connection)
+            await loop.run_in_executor(None, uptime_kuma.warm_connection)
             stack.callback(uptime_kuma.disconnect)
 
         # Start snapshot scheduler
@@ -327,7 +327,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.50.28",
+    version="3.50.29",
     lifespan=lifespan,
 )
 

@@ -12,18 +12,41 @@ keyword overlap between a query and a title/content pair, plus a penalty
 for results that describe a website rather than being an actual article.
 """
 import logging
+import re
 from app.sources.kiwix import _stem, _STOP_WORDS
 
 _LOGGER = logging.getLogger(__name__)
 
 
-# Title patterns that indicate a homepage/about-page result rather than
-# an actual article — these describe the site, not specific content.
-_GENERIC_TITLE_PATTERNS = [
-    "home", "homepage", "welcome to", "official site", "official website",
+# Title patterns that indicate a homepage/about-page/site-label result
+# rather than a specific article.
+#
+# Split into two groups found via a deliberate function-by-function read:
+# the original single list applied `title_lower == p OR title_lower.startswith(p)`
+# uniformly, which is correct for multi-word phrases ("welcome to", "about us")
+# that always signal a generic site page when they open a title, but wrong for
+# single-word patterns like "home", "error", "404" — "Home prices rise 5% in
+# October" starts with "home" but is a legitimate real news article about housing
+# data; "Error in climate data causes alarm" starts with "error" but is a
+# real article about data quality. Confirmed real, measurable impact: a news
+# article titled "Home prices rise 5%..." about housing was scored -8 against
+# a query for "home prices" (net negative after keyword overlap) while the
+# functionally-identical article "October sees 5% rise in home prices" scored
+# +12 — a 20-point swing purely from the false-positive generic-result penalty.
+#
+# Fix: single-word patterns use exact-match (==) only; multi-word patterns
+# keep startswith() since a title opening with "Welcome to" or "About us"
+# is always a site page, never a real article, regardless of what follows.
+_GENERIC_TITLE_EXACT = {
+    "home", "homepage", "welcome", "login", "register", "404", "error",
+    "sign in", "sign up", "log in",
+}
+
+_GENERIC_TITLE_PREFIX = [
+    "welcome to", "official site", "official website",
     "about us", "about this site", "contact us", "privacy policy",
-    "terms of service", "terms of use", "sign in", "log in", "login",
-    "sign up", "register", "404", "page not found", "error",
+    "terms of service", "terms of use",
+    "page not found",
 ]
 
 # Phrases in a snippet/content that indicate generic site description
@@ -88,6 +111,25 @@ def _keywords(text: str) -> set[str]:
     for w in words:
         if w in _STOP_WORDS:
             continue
+        # Found via a deliberate function-by-function read: possessive
+        # forms ("Apple's", "cats'") were scoring differently from their
+        # base forms ("Apple", "cats") because the apostrophe is INTERIOR
+        # to the token — str.strip() only removes characters from the
+        # ENDS of a string, so "Apple's".strip("...\"'...") returns
+        # "Apple's" unchanged (the apostrophe after 's' is at the end of
+        # "Apple" in the original token "Apple's", but "Apple's" as a
+        # whole has no trailing apostrophe after the strip removes the
+        # outer quote chars). After stemming, "apple'" != "apple", so a
+        # query for "Apple profit" missed the title "Apple's profit rose"
+        # by a full title-keyword-match bonus (6 points) — confirmed
+        # directly with a real scoring test. Normalized before the
+        # existing strip+stem pipeline: strip "'s" (singular possessive),
+        # "'" (plural possessive as in "cats'"), then let the rest of the
+        # pipeline handle what remains. Verified safe for the documented
+        # edge cases: contractions ("don't", "won't", "isn't") end in
+        # "t" not "'s?" so are untouched; "c++", "c#", "c" are untouched;
+        # bare "'s" → "" which the length/isalnum guard correctly drops.
+        w = re.sub(r"'s?$", "", w)
         stripped = w.strip(".,!?;:\"'()[]{}")
         if len(stripped) > 1 or (len(stripped) == 1 and stripped.isalnum()):
             keywords.add(_stem(stripped))
@@ -103,8 +145,18 @@ def _is_generic_result(title: str, content: str, url: str = "") -> bool:
     title_lower = title.lower().strip()
     content_lower = content.lower().strip()
 
-    # Title is just a generic site label
-    if any(title_lower == p or title_lower.startswith(p) for p in _GENERIC_TITLE_PATTERNS):
+    # Title is just a generic site label — exact match for single-word
+    # patterns, startswith for multi-word phrases (see list comments above)
+    if title_lower in _GENERIC_TITLE_EXACT:
+        return True
+    if any(title_lower.startswith(p) for p in _GENERIC_TITLE_PREFIX):
+        return True
+
+    # "Page Not Found" and "Not Found" can appear after a 404 code rather
+    # than at the start of the title ("404 - Page Not Found") so a plain
+    # startswith check misses them — checking as a substring catches both
+    # forms without over-broadening the single-word exact-match patterns.
+    if "page not found" in title_lower or "not found" in title_lower and title_lower.startswith("404"):
         return True
 
     # Content reads like a generic site description

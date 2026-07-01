@@ -4,6 +4,35 @@ All notable changes to Mnemolis are documented here, from v3.45.0 onward. For ev
 
 ---
 
+## [3.50.29]
+
+### Fixed — Four Real Bugs Found via Deliberate Function-by-Function Reads of `scoring.py` and `uptime_kuma.py`
+
+**`scoring.py` — Possessive forms silently scored worse than their base forms.**
+`_keywords()` uses `str.strip()` to remove punctuation from token edges, but `str.strip()` only removes characters from the *ends* of a string. The apostrophe in `"Apple's"` is interior to the token — between the word and the trailing `s` — so `"Apple's".strip("...\"'...")` returns `"Apple's"` unchanged. After stemming, `"apple'"` does not equal `"apple"`, so a query for `"Apple profit"` would miss the keyword match on a title reading `"Apple's profit rose"`, losing the full title-keyword-match bonus. Confirmed real and measured: a 20-point scoring difference between identical articles where only the possessive form of one word changed, determined by direct scoring comparison. Fixed by normalizing `'s` and trailing apostrophes before the existing strip/stem pipeline. Verified safe for contractions (`"don't"`, `"won't"` — end in `"t"`, not `"'s?"`) and programming language names (`"c++"`, `"c#"` — unchanged).
+
+**`scoring.py` — Generic-title detection applied `startswith()` uniformly to single-word patterns, causing false positives on real news articles.**
+`_is_generic_result()` checked `title_lower == p or title_lower.startswith(p)` for every pattern uniformly. For single-word patterns like `"home"`, `"error"`, and `"404"`, this meant legitimate articles titled `"Home prices rise 5% in October"`, `"Error in climate data causes alarm"`, and `"404 error handling best practices"` were incorrectly flagged as generic site pages and penalized 20 points — while multi-word phrases like `"welcome to"` and `"about us"` correctly use `startswith()` since any title opening with those phrases is always a site page. Fixed by splitting the pattern list: single-word patterns use exact-match only; multi-word phrases keep `startswith()`. The existing `"404 - Page Not Found"` test briefly failed during the fix and required a targeted substring check for that particular form, which lives outside both buckets.
+
+**`uptime_kuma.py` — Unknown status codes dropped monitors silently from all output.**
+`search()`'s status-dispatch loop had no `else` branch for status codes beyond the known `0` (DOWN), `1` (UP), `2` (PENDING), `3` (MAINTENANCE). Any monitor returning an unrecognized status fell through all four `elif` branches, disappearing from every output bucket entirely. With `up_count=0` and no monitor in any named list, the output was `"All 0 monitored services are up"` — an actively wrong statement for a deployment that has monitors. Not a realistic concern with the current `uptime-kuma-api` (MonitorStatus values 0-3 have been stable), but silently lying about a monitor that exists is strictly worse than reporting it honestly. Fixed by adding an `else` branch that logs a warning and treats the monitor as `no_data`, following the same pattern already used for genuinely data-absent monitors.
+
+**`uptime_kuma.py` — `get_connection()` called from `main.py` startup without holding `_connection_lock`.**
+`get_connection()`'s own docstring explicitly states "Callers must hold `_connection_lock`." `main.py`'s lifespan warm-up called it bare via `uptime_kuma.get_connection` without the lock. No actual race is possible at that specific point (the scheduler hasn't started and the app isn't yet accepting requests when this runs), so this was never a live correctness failure — but the contract violation is real, and a future startup-sequence change could expose the latent race. Fixed by adding `warm_connection()` — a purpose-built public function that correctly acquires `_connection_lock`, handles exceptions gracefully (logging a warning rather than crashing startup), and includes its own config guard — replacing the bare `get_connection()` call in `main.py`.
+
+### Changed (Documentation)
+- `Confidence-Aware-Fusion.md` — expanded the generic-result penalty section to explain the exact/prefix distinction and the possessive-normalization fix; both previously undocumented
+- `Multi-Book-Fusion.md` — clarified that `KIWIX_MULTI_BOOK_FUSION_THRESHOLD_PCT` takes a fraction (0–1), not a percentage (0–100), as the `_PCT` suffix could mislead
+
+### Added (Tests)
+- 7 new tests in `test_scoring.py`: 4 for possessive normalization (singular possessive, plural possessive, contractions-are-not-mangled, and end-to-end scoring parity), 3 for generic-title false-positive regression (home-prices article, error-in-data article, 404-error-handling article)
+- 1 new test in `test_uptime_kuma.py`: unknown status code must not claim all services are up; the named monitor must appear in output
+
+### Changed
+- Version bumped to 3.50.29
+
+---
+
 ## [3.50.28]
 
 ### Fixed — A Real Lint Regression, Self-Introduced and Caught by CI, Not by This Project's Own Verification Routine
