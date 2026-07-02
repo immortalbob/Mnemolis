@@ -870,3 +870,100 @@ class TestPerSourceRetention:
             # fraction of it happened to survive an undersized prune
             results = _get_snapshots_since("uptime", since_hours=48)
             assert len(results) > 700  # the old 288-row cap would have failed this
+
+
+class TestGetChangesEventDedup:
+    """Regression tests for the seen_changes deduplication bug found via a
+    deliberate function-by-function read: the original code used a
+    seen_changes set on the event-based sources (ha and news), which
+    suppressed legitimate repeated state transitions — a door that opened,
+    closed, then opened again within the query window would only report
+    the first opened event, silently dropping the second."""
+
+    def setup_method(self):
+        import tempfile
+        from unittest.mock import patch
+        self.temp_db_fixture = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.temp_db = self.temp_db_fixture.name
+        self.temp_db_fixture.close()
+        self.patcher = patch("app.snapshots.SNAPSHOT_DB", self.temp_db)
+        self.patcher.start()
+        from app.snapshots import init_snapshot_db
+        init_snapshot_db()
+
+    def teardown_method(self):
+        import os
+        self.patcher.stop()
+        os.unlink(self.temp_db)
+
+    def _insert_snapshot(self, source, content, timestamp):
+        from app.snapshots import _connect, SNAPSHOT_DB
+        con = _connect(SNAPSHOT_DB)
+        con.execute(
+            "INSERT INTO snapshots (timestamp, source, content) VALUES (?, ?, ?)",
+            (timestamp, source, content)
+        )
+        con.commit()
+        con.close()
+
+    def _ago(self, minutes_ago: int) -> str:
+        from datetime import datetime, timedelta, timezone
+        ts = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_repeated_door_open_event_is_not_suppressed(self):
+        """A door that opens, closes, then opens again within the query
+        window must report all three transitions — not just the first two.
+        Before the fix, the second 'opened' event was silently dropped by
+        seen_changes, making the final (currently-open) state invisible."""
+        import json
+        from app.snapshots import get_changes
+
+        def snap(state):
+            return json.dumps([{
+                "entity_id": "binary_sensor.front_door",
+                "state": state,
+                "friendly_name": "Front Door",
+                "device_class": "door",
+            }])
+
+        self._insert_snapshot("ha", snap("off"), self._ago(40))   # closed
+        self._insert_snapshot("ha", snap("on"),  self._ago(30))   # opened
+        self._insert_snapshot("ha", snap("off"), self._ago(20))   # closed again
+        self._insert_snapshot("ha", snap("on"),  self._ago(10))   # opened again
+
+        changes = get_changes(since_hours=1)
+        assert "ha" in changes
+        ha_changes = [c["change"] for c in changes["ha"]]
+        # All three transitions must appear
+        opened_count = sum(1 for c in ha_changes if "opened" in c)
+        closed_count = sum(1 for c in ha_changes if "closed" in c)
+        assert opened_count == 2, f"Expected 2 opened events, got {opened_count}: {ha_changes}"
+        assert closed_count == 1, f"Expected 1 closed event, got {closed_count}: {ha_changes}"
+
+    def test_repeated_motion_event_is_not_suppressed(self):
+        """Motion that triggers twice in a window (off->on->off->on) must
+        report both detections — they are separate, real events."""
+        import json
+        from app.snapshots import get_changes
+
+        def snap(state):
+            return json.dumps([{
+                "entity_id": "binary_sensor.hallway_motion",
+                "state": state,
+                "friendly_name": "Hallway Motion",
+                "device_class": "motion",
+            }])
+
+        self._insert_snapshot("ha", snap("off"), self._ago(50))
+        self._insert_snapshot("ha", snap("on"),  self._ago(40))   # motion 1
+        self._insert_snapshot("ha", snap("off"), self._ago(30))
+        self._insert_snapshot("ha", snap("on"),  self._ago(20))   # motion 2
+        self._insert_snapshot("ha", snap("off"), self._ago(10))
+
+        changes = get_changes(since_hours=1)
+        assert "ha" in changes
+        ha_changes = [c["change"] for c in changes["ha"]]
+        motion_count = sum(1 for c in ha_changes if "motion detected" in c)
+        assert motion_count == 2, f"Expected 2 motion events, got {motion_count}: {ha_changes}"
+

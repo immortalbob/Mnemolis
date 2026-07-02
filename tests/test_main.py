@@ -936,6 +936,51 @@ class TestLogsStatsEndpoint:
         entry = next(q for q in result["top_queries"] if q["query"] == "deterministic source test")
         assert entry["source"] == "forecast"  # the most recently inserted row's source
 
+    def test_ttfk_uses_first_occurrence_latency_not_minimum(self):
+        """Regression test for a real bug found via a deliberate function-
+        by-function read: the TTFK SQL used MIN(id) and MIN(latency_ms)
+        as two INDEPENDENT aggregates in the same GROUP BY. MIN(id)
+        correctly identifies the first occurrence's row, but MIN(latency_ms)
+        independently selects the smallest latency across ALL non-cached
+        occurrences — not the latency of the first occurrence's row. For
+        a query asked repeatedly without caching (e.g. adversarial test
+        queries), this reported the fastest cold run rather than the
+        genuine first cold hit, consistently under-estimating true TTFK.
+
+        Confirmed real: a query with first latency 3000ms and second
+        latency 200ms reported TTFK of 200ms (the minimum), not 3000ms
+        (the actual first-seen cold cost).
+
+        Fixed by joining back to the row with min(id) to read its
+        actual latency, rather than independently computing min(latency_ms)
+        in the same aggregation."""
+        import app.main as main_module
+        import time
+        con = main_module._connect(main_module._LOG_DB)
+        con.execute("DELETE FROM query_log")
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        # First cold hit: slow (3000ms)
+        con.execute(
+            "INSERT INTO query_log (timestamp, query, source_requested, source_used, cached, success, latency_ms) "
+            "VALUES (?, 'ttfk regression query', 'auto', 'kiwix', 0, 1, 3000)",
+            (now,)
+        )
+        # Second cold hit: faster (200ms) — MIN(latency_ms) would wrongly pick this
+        con.execute(
+            "INSERT INTO query_log (timestamp, query, source_requested, source_used, cached, success, latency_ms) "
+            "VALUES (?, 'ttfk regression query', 'auto', 'kiwix', 0, 1, 200)",
+            (now,)
+        )
+        con.commit()
+        con.close()
+
+        result = main_module.query_log_stats()
+        # TTFK must reflect the first occurrence's latency (3000ms), not min(200ms)
+        assert result["ttfk_ms"] == 3000.0, (
+            f"TTFK should be 3000ms (first cold hit), got {result['ttfk_ms']}ms. "
+            f"MIN(latency_ms) bug would report 200ms."
+        )
+
 
 class TestLifespanMountRefresh:
     """Tests for the lifespan function's MCP mount-refresh logic, added

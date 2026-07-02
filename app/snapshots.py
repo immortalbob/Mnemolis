@@ -643,16 +643,39 @@ def get_changes(since_hours: int | float = 24) -> dict[str, list[dict[str, str]]
             for diff in diffs:
                 source_changes.append({"timestamp": ts_last, "change": diff})
         else:
-            # Walk consecutive pairs — every event matters
-            seen_changes = set()
+            # Walk consecutive pairs — every event matters.
+            #
+            # Found via a deliberate function-by-function read: the
+            # original code used a `seen_changes` set to deduplicate
+            # change descriptions across consecutive pairs, preventing
+            # the same description from appearing twice. The intent was
+            # correct for UPTIME and FORECAST — if a service stays down
+            # across multiple snapshot pairs, the same "outage" message
+            # would appear in each pair. But uptime and forecast already
+            # use the NET_CHANGE_SOURCES path above, never reaching here.
+            #
+            # For the actual event-based sources that DO reach here (ha
+            # and news), the dedup is both unnecessary AND actively
+            # harmful: _diff_ha() only fires on REAL state transitions
+            # (old["state"] != new["state"]), so the same change text
+            # can only recur in consecutive pairs if the entity genuinely
+            # transitioned the same direction AGAIN — a door opened,
+            # closed, then opened again. That second "opened" is a
+            # separate, real event the user should see. The dedup
+            # silently dropped it. Same logic applies to _diff_news():
+            # an article is only "new" in pair i→i+1 if it wasn't in
+            # snap_i; it can't appear as "new" again in pair i+1→i+2
+            # unless it was somehow removed from snap_i+1 and re-added
+            # to snap_i+2, which the append-only news structure makes
+            # impossible. Confirmed directly: door open→close→open in
+            # a window produced only "opened" and "closed" before this
+            # fix; the final open state was invisible in the summary.
             for i in range(len(snapshots) - 1):
                 ts_old, content_old = snapshots[i]
                 ts_new, content_new = snapshots[i + 1]
                 diffs = diff_fn(content_old, content_new)
                 for diff in diffs:
-                    if diff not in seen_changes:
-                        source_changes.append({"timestamp": ts_new, "change": diff})
-                        seen_changes.add(diff)
+                    source_changes.append({"timestamp": ts_new, "change": diff})
 
         if source_changes:
             changes[source] = source_changes

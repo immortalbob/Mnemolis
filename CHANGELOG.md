@@ -4,6 +4,28 @@ All notable changes to Mnemolis are documented here, from v3.45.0 onward. For ev
 
 ---
 
+## [3.50.30]
+
+### Fixed — Three Real Bugs Found via Deliberate Function-by-Function Reads of `snapshots.py` and `main.py`
+
+**`snapshots.py` — `get_changes()` silently dropped legitimate repeated HA and news events.**
+The event-based path in `get_changes()` used a `seen_changes` set to deduplicate change descriptions across consecutive snapshot pairs. The intent was to prevent the same change from being reported twice — correct for UPTIME and FORECAST, which would otherwise produce the same "outage" message in every pair while a service stayed down. But UPTIME and FORECAST never reach the event-based path: they use the `NET_CHANGE_SOURCES` path above it. The event-based path only serves `ha` and `news`, and for both of those, the underlying diff functions (`_diff_ha`, `_diff_news`) already only fire on genuine state transitions — the same change text in consecutive pairs means the event literally happened twice. `seen_changes` was therefore silently suppressing real, separate occurrences: a door that opened, closed, then opened again within the query window would only report the first two transitions, leaving the final open state completely invisible in the summary. Confirmed directly: the third "Front Door opened" event was dropped even though it corresponded to a distinct, real state change. Fixed by removing `seen_changes` entirely.
+
+**`main.py` — TTFK (Time To First Knowledge) SQL reported minimum latency instead of first-occurrence latency.**
+`query_log_stats()`'s TTFK calculation used `MIN(id)` and `MIN(latency_ms)` as two independent aggregates in the same `GROUP BY`. These are computed independently: `MIN(id)` correctly identifies the first occurrence's row, but `MIN(latency_ms)` picks the *smallest latency across all non-cached occurrences for that query* — not the latency of the row whose id is `MIN(id)`. For a query asked repeatedly without caching (e.g. adversarial test queries), this would report the fastest cold run rather than the genuine first cold hit, consistently under-estimating true TTFK. Confirmed directly: a query with first occurrence at 3000ms and second at 200ms reported TTFK of 200ms. Fixed with a correlated subquery that joins back to the row with `min(id)` to read its actual latency.
+
+**`kiwix.py` — Dead defensive guard comment added (not a code bug).**
+The `if not selected_books` guard in `search()` is currently unreachable with the present code structure (the inline fallback path always produces a non-empty list when `books` is non-empty). Kept deliberately — it guards against a real contract violation by `_pick_books_with_llm` that a future refactor could expose. Added a comment explaining why the guard exists despite being currently unreachable, matching this project's existing pattern for similar defensive branches.
+
+### Added (Tests)
+- 2 new tests in `test_snapshots.py` (`TestGetChangesEventDedup`): repeated door-open and repeated motion events are both correctly reported after the `seen_changes` removal; tests call through the real SQLite layer to confirm end-to-end
+- 1 new test in `test_main.py` (`TestLogsStatsEndpoint::test_ttfk_uses_first_occurrence_latency_not_minimum`): confirms TTFK reports the first-occurrence latency (3000ms), not the minimum across all cold hits (200ms); confirmed it fails against the reverted bug
+
+### Changed
+- Version bumped to 3.50.30
+
+---
+
 ## [3.50.29]
 
 ### Fixed — Four Real Bugs Found via Deliberate Function-by-Function Reads of `scoring.py` and `uptime_kuma.py`

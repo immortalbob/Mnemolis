@@ -327,7 +327,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mnemolis",
     description="Unified local knowledge search API with multi-source fusion. Routes queries to Kiwix, Open-Meteo, FreshRSS, SearXNG, Uptime Kuma, or multiple sources concurrently.",
-    version="3.50.29",
+    version="3.50.30",
     lifespan=lifespan,
 )
 
@@ -1055,14 +1055,26 @@ def query_log_stats():
         fallbacks = totals[4] or 0
 
         # TTFK — average latency of first-seen queries (cached=0, first occurrence)
-        # A query's "cold" cost is its first appearance in the log
+        # A query's "cold" cost is its first appearance in the log.
+        # Found via a deliberate function-by-function read: the original
+        # SQL selected MIN(id) and MIN(latency_ms) as two independent
+        # aggregates in the same GROUP BY — MIN(id) gives the first
+        # row's id correctly, but MIN(latency_ms) gives the SMALLEST
+        # latency across all non-cached occurrences for that query, not
+        # the latency of the row whose id is MIN(id). For a query asked
+        # repeatedly without caching (e.g. adversarial test queries),
+        # this would report the fastest cold run rather than the genuine
+        # first cold hit — consistently under-estimating true TTFK.
+        # Fixed with a correlated subquery joining back to the row that
+        # actually has min(id), matching the documented intent precisely.
         ttfk_rows = con.execute("""
-            SELECT AVG(latency_ms) FROM (
-                SELECT MIN(id) as first_id, MIN(latency_ms) as latency_ms
+            SELECT AVG(q.latency_ms) FROM (
+                SELECT MIN(id) as first_id
                 FROM query_log
                 WHERE cached = 0
                 GROUP BY LOWER(TRIM(query))
-            )
+            ) AS first_ids
+            JOIN query_log q ON q.id = first_ids.first_id
         """).fetchone()
         ttfk_ms = round(ttfk_rows[0] or 0, 1)
 

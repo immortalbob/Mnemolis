@@ -787,6 +787,16 @@ def search(query: str) -> str:
         selected_books = [fallback]
 
     if not selected_books:
+        # Defensive — currently unreachable: when books is non-empty and LLM
+        # is unconfigured, the inline fallback above always produces a non-empty
+        # list; when LLM IS configured, _pick_books_with_llm's own internal
+        # fallback (_fallback_book_choice) also always returns at least one book.
+        # Kept deliberately: _pick_books_with_llm already has an early `return []`
+        # for empty books (which can't reach here), and its internal logic could
+        # change — this guard surfaces a clean, specific, already-documented
+        # error message instead of a confusing downstream crash if that contract
+        # is ever violated by a future refactor. Same rationale as the
+        # `if not found_mount` warning in main.py's lifespan function.
         return "Could not determine which Kiwix book to search."
 
     search_terms = _build_search_terms(query)
